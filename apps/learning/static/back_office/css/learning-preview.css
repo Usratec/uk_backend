@@ -86,6 +86,14 @@
     border-radius: 6px;
     background: #000;
 }
+.adm-preview__cover {
+    display: block;
+    max-width: 240px;
+    height: auto;
+    margin: 18px 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+}
 
 /* A question's answers, with the right one marked — a staff page only. */
 .adm-preview__answers {

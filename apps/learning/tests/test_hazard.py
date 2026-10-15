@@ -21,7 +21,7 @@ from apps.learning.models import (
     MediaAsset,
     MediaKind,
 )
-from apps.learning.tests.conftest import sign_in
+from apps.learning.tests.conftest import sign_in, uploaded_image
 
 pytestmark = pytest.mark.django_db
 
@@ -39,7 +39,7 @@ def attempt_url(slug: str) -> str:
 
 @pytest.fixture
 def clip_video(db):
-    asset = MediaAsset.objects.create(title="Country lane", kind=MediaKind.VIDEO, duration_seconds=30)
+    asset = MediaAsset.objects.create(title="Country lane", kind=MediaKind.VIDEO)
     asset.file.save("lane.mp4", SimpleUploadedFile("lane.mp4", b"video bytes", content_type="video/mp4"), save=True)
     return asset
 
@@ -143,13 +143,12 @@ class TestWhatMakesAClipUsable:
 
         assert "not a video" in services.problems_with_clip(clip)[0]
 
-    def test_a_hazard_past_the_end_of_the_video_is_refused(self, clip):
-        """It could never be spotted, so it would only lose students marks."""
+    def test_a_hazard_past_the_end_of_the_video_is_no_longer_caught_here(self, clip):
         HazardWindow.objects.create(clip=clip, label="Too late", starts_at="29.00", ends_at="40.00", order=2)
 
         problems = services.problems_with_clip(clip)
 
-        assert any("only 30s long" in problem for problem in problems)
+        assert not any("long" in problem for problem in problems)
 
     def test_overlapping_hazards_are_refused(self, clip):
         """One click would otherwise score for two hazards at once."""
@@ -198,7 +197,7 @@ class TestWhatTheStudentIsGiven:
         view = services.student_view_of_clip(clip)
 
         assert view["url"]
-        assert view["durationSeconds"] == 30
+        assert "durationSeconds" not in view
 
 
 class TestTheEndpoints:
@@ -431,3 +430,188 @@ class TestTheAdmin:
 
         assert "4/5" in page
         assert publisher_client.get(reverse("admin:learning_hazardattempt_add")).status_code == 403
+
+
+class TestTheThumbnail:
+    """The still staff can give a clip, so a list of clips is not a list of grey rectangles.
+
+    Optional throughout: clips were built before the field existed, and a player that has no
+    still falls back to the video itself.
+    """
+
+    def test_a_clip_can_be_given_one(self, clip):
+        clip.thumbnail.save("still.png", uploaded_image(), save=True)
+        clip.refresh_from_db()
+
+        assert clip.thumbnail.name.endswith(".png")
+        assert clip.thumbnail_url is not None
+
+    def test_it_is_stored_where_uploads_go(self, clip):
+        """Through the configured storage backend, under its own folder, as the library is."""
+        clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        assert clip.thumbnail.name.startswith("learning/hazard-thumbnail/")
+        assert clip.thumbnail.storage.exists(clip.thumbnail.name)
+
+    def test_a_clip_without_one_says_so_rather_than_breaking(self, clip):
+        assert clip.thumbnail_url is None
+        assert services.student_view_of_clip(clip)["thumbnailUrl"] is None
+
+    def test_the_student_payload_carries_the_url(self, api, student, live_clip):
+        live_clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        clip = sign_in(api, student()).get(clip_url("country-lane")).data
+
+        assert clip["thumbnailUrl"] == live_clip.thumbnail.url
+        assert clip["thumbnailUrl"] != clip["url"]
+
+    def test_the_listing_carries_it_too(self, api, student, live_clip):
+        live_clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        listed = sign_in(api, student()).get(CLIPS_URL).data["clips"]
+
+        assert listed[0]["thumbnailUrl"] == live_clip.thumbnail.url
+
+    def test_a_clip_served_without_one_still_carries_the_key(self, api, student, live_clip):
+        """So the frontend needs no special case for a clip predating the field."""
+        clip = sign_in(api, student()).get(clip_url("country-lane")).data
+
+        assert clip["thumbnailUrl"] is None
+
+    def test_a_lesson_showing_the_clip_carries_it(self, api, student, live_clip, published_tree, publisher):
+        _, subchapter, _ = published_tree
+        live_clip.thumbnail.save("still.png", uploaded_image(), save=True)
+        block = LearningContent.objects.create(
+            subchapter=subchapter,
+            slug="spot-it",
+            title="Spot the hazard",
+            content_type=ContentType.HAZARD,
+            hazard_clip=live_clip,
+            order=2,
+        )
+        services.publish(actor=publisher, instance=block)
+
+        lesson = sign_in(api, student()).get(reverse("learn-lesson", args=[subchapter.slug])).data
+
+        assert lesson["clips"]["country-lane"]["thumbnailUrl"] == live_clip.thumbnail.url
+
+    def test_the_timings_do_not_come_with_it(self, api, student, live_clip):
+        """Adding a field to the payload must not have added the answers to it."""
+        live_clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        clip = sign_in(api, student()).get(clip_url("country-lane")).data
+
+        assert "startsAt" not in str(clip)
+        assert "10.0" not in str(clip)
+
+
+def clip_form(clip, **overrides) -> dict:
+    """The clip's admin form, its hazard inline included, so a post does not wipe the windows."""
+    windows = list(clip.windows.all())
+    data: dict = {
+        "title": clip.title,
+        "slug": clip.slug,
+        "description": clip.description,
+        "media": clip.media_id,
+        "max_clicks": clip.max_clicks,
+        "order": clip.order,
+        "publish_from": "",
+        "windows-TOTAL_FORMS": str(len(windows)),
+        "windows-INITIAL_FORMS": str(len(windows)),
+        "windows-MIN_NUM_FORMS": "0",
+        "windows-MAX_NUM_FORMS": "1000",
+    }
+    for index, window in enumerate(windows):
+        data |= {
+            f"windows-{index}-id": window.pk,
+            f"windows-{index}-clip": clip.pk,
+            f"windows-{index}-label": window.label,
+            f"windows-{index}-starts_at": window.starts_at,
+            f"windows-{index}-ends_at": window.ends_at,
+            f"windows-{index}-order": window.order,
+        }
+    return data | overrides
+
+
+class TestManagingTheThumbnailInTheAdmin:
+    def change_url(self, clip) -> str:
+        return reverse("admin:learning_hazardclip_change", args=[clip.pk])
+
+    def test_the_form_offers_a_thumbnail_field(self, editor_client, clip):
+        page = editor_client.get(self.change_url(clip)).content.decode()
+
+        assert 'name="thumbnail"' in page
+
+    def test_an_editor_can_upload_one(self, editor_client, clip):
+        response = editor_client.post(
+            self.change_url(clip), clip_form(clip, thumbnail=uploaded_image("lane.png")), follow=True
+        )
+
+        assert response.status_code == 200
+        clip.refresh_from_db()
+        assert clip.thumbnail
+
+    def test_uploading_one_leaves_the_video_alone(self, editor_client, clip):
+        """The two are separate fields and separate files: a still is not a replacement video."""
+        was = clip.media.file.name
+
+        editor_client.post(self.change_url(clip), clip_form(clip, thumbnail=uploaded_image("lane.png")))
+
+        clip.refresh_from_db()
+        assert clip.media.file.name == was
+        assert clip.thumbnail.name != was
+
+    def test_uploading_one_leaves_the_hazards_alone(self, editor_client, clip):
+        editor_client.post(self.change_url(clip), clip_form(clip, thumbnail=uploaded_image("lane.png")))
+
+        assert clip.windows.count() == 1
+
+    def test_an_editor_can_replace_one(self, editor_client, clip):
+        clip.thumbnail.save("first.png", uploaded_image("first.png"), save=True)
+        first = clip.thumbnail.name
+
+        editor_client.post(self.change_url(clip), clip_form(clip, thumbnail=uploaded_image("second.png")))
+
+        clip.refresh_from_db()
+        assert clip.thumbnail.name != first
+        assert "second" in clip.thumbnail.name
+
+    def test_an_editor_can_remove_one(self, editor_client, clip):
+        clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        editor_client.post(self.change_url(clip), clip_form(clip, **{"thumbnail-clear": "on"}))
+
+        clip.refresh_from_db()
+        assert not clip.thumbnail
+        assert services.student_view_of_clip(clip)["thumbnailUrl"] is None
+
+    def test_a_file_that_is_not_an_image_is_refused(self, editor_client, clip):
+        """Otherwise the player is handed something it cannot draw."""
+        not_an_image = SimpleUploadedFile("still.png", b"this is not a picture", content_type="image/png")
+
+        response = editor_client.post(self.change_url(clip), clip_form(clip, thumbnail=not_an_image))
+
+        assert response.status_code == 200
+        assert "valid image" in response.content.decode()
+        clip.refresh_from_db()
+        assert not clip.thumbnail
+
+    def test_the_change_page_shows_the_still(self, editor_client, clip):
+        clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        page = editor_client.get(self.change_url(clip)).content.decode()
+
+        assert f'<img src="{clip.thumbnail.url}"' in page
+
+    def test_the_list_shows_it_too(self, editor_client, clip):
+        clip.thumbnail.save("still.png", uploaded_image(), save=True)
+
+        page = editor_client.get(reverse("admin:learning_hazardclip_changelist")).content.decode()
+
+        assert f'<img src="{clip.thumbnail.url}"' in page
+
+    def test_a_clip_without_one_lists_without_complaint(self, editor_client, clip):
+        page = editor_client.get(reverse("admin:learning_hazardclip_changelist")).content.decode()
+
+        assert clip.title in page
+        assert '<img src=""' not in page

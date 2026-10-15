@@ -21,8 +21,10 @@ from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
     Chapter,
     ContentType,
+    Ebook,
     HazardAttempt,
     HazardClip,
+    HazardWindow,
     LearningContent,
     LessonProgress,
     MediaKind,
@@ -93,7 +95,25 @@ def problems_with(instance) -> list[str]:
         return problems_with_exam(instance)
     if isinstance(instance, HazardClip):
         return problems_with_clip(instance)
+    if isinstance(instance, Ebook):
+        return problems_with_ebook(instance)
     return []
+
+
+def problems_with_ebook(ebook: Ebook) -> list[str]:
+    """What would make an e-book unusable: nothing to open, or the wrong kind of file."""
+    problems = []
+
+    if ebook.file_id is None:
+        problems.append("No file has been chosen from the media library.")
+    elif ebook.file.kind != MediaKind.DOCUMENT:
+        # Otherwise the reader is handed a video and asked to read it.
+        problems.append(f"'{ebook.file.title}' is {ebook.file.get_kind_display().lower()}, not a document.")
+
+    if not ebook.slug:
+        problems.append("There is no slug yet, so the e-book has no address to be read at.")
+
+    return problems
 
 
 def problems_with_clip(clip: HazardClip) -> list[str]:
@@ -107,11 +127,6 @@ def problems_with_clip(clip: HazardClip) -> list[str]:
     if not windows:
         # Without one there is nothing to spot, and every attempt would score nothing.
         problems.append("This clip has no hazards marked yet.")
-
-    length = clip.media.duration_seconds
-    for window in windows:
-        if length and float(window.ends_at) > length:
-            problems.append(f"'{window.label}' ends at {window.ends_at}s but the video is only {length}s long.")
 
     # Overlapping windows would let one click score for two hazards at once.
     in_order = sorted(windows, key=lambda window: window.starts_at)
@@ -201,6 +216,11 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
 
     if exam.pass_mark > len(questions):
         problems.append(f"The pass mark is {exam.pass_mark} but there are only {len(questions)} questions.")
+
+    draft_clips = [clip for clip in exam.hazard_clips.all() if not clip.is_published]
+    if draft_clips:
+        listed = ", ".join(clip.title for clip in draft_clips[:5])
+        problems.append(f"Some hazard clips are not published yet: {listed}.")
 
     return problems
 
@@ -347,6 +367,14 @@ def student_view_of(instance) -> dict:
             "blocks": [],
         }
 
+    if isinstance(instance, Ebook):
+        return {
+            "slug": instance.slug,
+            "title": instance.title,
+            "summary": instance.description,
+            "blocks": [],
+        }
+
     if isinstance(instance, Question):
         # A question has no body to render, so the preview page shows the answer sheet instead.
         return {
@@ -419,7 +447,6 @@ def block_for(content: LearningContent) -> dict:
             "type": content.content_type,
             "title": content.title,
             "url": content.media.file.url,
-            "durationSeconds": content.media.duration_seconds,
         }
 
     return {"type": "html", "html": content.body_html, "title": content.title}
@@ -462,7 +489,55 @@ def questions_in_exam(exam: PracticeExam, at=None):
     ).order_by("exam_places__order")
 
 
-def mark_exam(exam: PracticeExam, answers: dict[str, list[str]]) -> dict:
+def clips_in_exam(exam: PracticeExam, at=None):
+    return live(
+        HazardClip.objects.filter(exam_places__exam=exam).select_related("media").prefetch_related("windows"),
+        at=at,
+    ).order_by("exam_places__order")
+
+
+def hazard_totals_for(exams, at=None) -> dict[int, dict]:
+    """How many live clips each exam has, and what they are worth, in one query.
+
+    One query for the whole listing rather than two per exam: the numbers are small but the
+    database is not local, so it is the round trips that cost — the same reason the course
+    listing works this way.
+
+    Exams with no clips are simply absent, which the caller reads as none.
+    """
+    rows = (
+        live(HazardClip.objects.filter(exam_places__exam__in=exams), at=at)
+        .values_list("exam_places__exam_id")
+        .annotate(clips=Count("id", distinct=True), hazards=Count("windows", distinct=True))
+    )
+    return {
+        exam_id: {"clipCount": clips, "hazardMaxScore": hazards * HazardWindow.BANDS}
+        for exam_id, clips, hazards in rows
+    }
+
+
+def statistics(*, total: int, correct: int, unanswered: int, hazard_score: int, hazard_max: int) -> dict:
+    return {
+        "totalQuestions": total,
+        "correctQuestions": correct,
+        "incorrectQuestions": max(total - correct - unanswered, 0),
+        "unansweredQuestions": unanswered,
+        "hazardTotalScore": hazard_score,
+        "hazardMaxScore": hazard_max,
+    }
+
+
+def attempt_statistics(attempt: MockAttempt) -> dict:
+    return statistics(
+        total=attempt.total,
+        correct=attempt.score,
+        unanswered=attempt.unanswered,
+        hazard_score=attempt.hazard_score,
+        hazard_max=attempt.hazard_top_score,
+    )
+
+
+def mark_exam(exam: PracticeExam, answers: dict[str, list[str]], clicks: dict[str, list[float]] | None = None) -> dict:
     """Score a whole sitting, which is the only place a pass or fail is decided.
 
     ``answers`` maps a question id to the option ids chosen for it. Anything not answered counts
@@ -471,12 +546,14 @@ def mark_exam(exam: PracticeExam, answers: dict[str, list[str]]) -> dict:
     """
     results = []
     score = 0
+    unanswered = 0
 
     for question in questions_in_exam(exam):
         chosen = answers.get(str(question.pk)) or []
         correct_ids = question.correct_option_ids
         correct = sorted(chosen) == sorted(correct_ids)
         score += correct
+        unanswered += not chosen
         results.append(
             {
                 "id": question.pk,
@@ -488,13 +565,37 @@ def mark_exam(exam: PracticeExam, answers: dict[str, list[str]]) -> dict:
             }
         )
 
+    clips, hazard_score, hazard_max = _mark_clips(exam, clicks or {})
+
     return {
         "score": score,
         "total": len(results),
         "passMark": exam.pass_mark,
         "passed": score >= exam.pass_mark,
         "questions": results,
+        "clips": clips,
+        **statistics(
+            total=len(results),
+            correct=score,
+            unanswered=unanswered,
+            hazard_score=hazard_score,
+            hazard_max=hazard_max,
+        ),
     }
+
+
+def _mark_clips(exam: PracticeExam, clicks: dict[str, list[float]]) -> tuple[list[dict], int, int]:
+    scored: list[dict] = []
+    score = 0
+    top_score = 0
+
+    for clip in clips_in_exam(exam):
+        marked = score_clip(clip, [float(moment) for moment in clicks.get(clip.slug) or []])
+        score += marked["score"]
+        top_score += marked["topScore"]
+        scored.append({"id": clip.pk, "slug": clip.slug, "title": clip.title, **marked})
+
+    return scored, score, top_score
 
 
 def mark_answer(question: Question, selected: list[str]) -> dict:
@@ -525,11 +626,17 @@ def record_answer(student, question: Question, was_correct: bool) -> None:
     QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
 
 
+@transaction.atomic
 def record_sitting(student, exam: PracticeExam, result: dict) -> None:
-    """Remember one exam sitting: the score, and every answer that made it up.
+    """Remember one exam sitting: the score, and every answer and clip that made it up.
 
     The answers are recorded too, so a question got wrong in a mock turns up under "mistakes"
-    exactly as one got wrong while practising.
+    exactly as one got wrong while practising — and each clip is recorded as a hazard attempt for
+    the same reason: a clip sat in a mock is a go at that clip, and leaving it out would make a
+    student's hazard history disagree with the mocks they have sat.
+
+    Atomic, so a sitting is never half recorded: the attempt, its answers and its clips are one
+    record of one event.
     """
     MockAttempt.objects.create(
         student=student,
@@ -537,10 +644,23 @@ def record_sitting(student, exam: PracticeExam, result: dict) -> None:
         score=result["score"],
         total=result["total"],
         passed=result["passed"],
+        unanswered=result["unansweredQuestions"],
+        hazard_score=result["hazardTotalScore"],
+        hazard_top_score=result["hazardMaxScore"],
     )
     QuestionAttempt.objects.bulk_create(
         QuestionAttempt(student=student, question_id=answer["id"], was_correct=answer["correct"])
         for answer in result["questions"]
+    )
+    HazardAttempt.objects.bulk_create(
+        HazardAttempt(
+            student=student,
+            clip_id=clip["id"],
+            score=clip["score"],
+            top_score=clip["topScore"],
+            voided=clip["voided"],
+        )
+        for clip in result["clips"]
     )
 
 
@@ -720,7 +840,7 @@ def student_view_of_clip(clip: HazardClip) -> dict:
         "title": clip.title,
         "description": clip.description,
         "url": clip.media.file.url,
-        "durationSeconds": clip.media.duration_seconds,
+        "thumbnailUrl": clip.thumbnail_url,
         "hazards": clip.windows.count(),
         "topScore": clip.top_score,
         "maxClicks": clip.max_clicks,
@@ -781,7 +901,6 @@ def hazard_sheet_for(clip: HazardClip) -> dict:
     """
     return {
         "url": clip.media.file.url,
-        "duration": clip.media.duration_seconds,
         "max_clicks": clip.max_clicks,
         "top_score": clip.top_score,
         "windows": [
@@ -792,4 +911,45 @@ def hazard_sheet_for(clip: HazardClip) -> dict:
             }
             for window in clip.windows.all()
         ],
+    }
+
+
+def live_ebooks(at=None):
+    """The e-books students can see now, in the order staff put them in."""
+    return live(Ebook.objects.select_related("file"), at=at).order_by("order", "title")
+
+
+def ebook_on_the_shelf(ebook: Ebook) -> dict:
+    return {
+        "slug": ebook.slug,
+        "title": ebook.title,
+        "description": ebook.description,
+        "coverUrl": ebook.cover_url,
+        "updatedAt": ebook.updated_at,
+    }
+
+
+def ebook_sheet_for(ebook: Ebook) -> dict:
+    document = ebook.file if ebook.file_id else None
+    return {
+        "url": document.file.url if document and document.file else "",
+        "file_title": document.title if document else "",
+        "kind": document.get_kind_display() if document else "",
+        "content_type": document.content_type if document else "",
+        "size_bytes": document.size_bytes if document else 0,
+        "cover_url": ebook.cover_url,
+    }
+
+
+def student_view_of_ebook(ebook: Ebook) -> dict:
+    """An e-book to read, with the link to its file.
+
+    The URL is signed and expires, and is built at the moment of serving rather than stored, so a
+    link cannot be kept or shared beyond its lifetime — the same arrangement as a lesson's video.
+    """
+    return {
+        **ebook_on_the_shelf(ebook),
+        "url": ebook.file.file.url,
+        "contentType": ebook.file.content_type,
+        "sizeBytes": ebook.file.size_bytes,
     }

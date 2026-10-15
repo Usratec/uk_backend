@@ -24,6 +24,7 @@ the public contract once published.
 
 from django.conf import settings
 from django.db import models
+from django.utils.text import slugify
 
 from apps.core.models import PublishableModel, TimestampedModel
 from apps.learning import html
@@ -203,9 +204,6 @@ class MediaAsset(TimestampedModel):
     # Recorded at upload because asking the bucket costs a request, and these are shown in a list.
     size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
     content_type = models.CharField(max_length=100, blank=True, editable=False)
-    duration_seconds = models.PositiveIntegerField(
-        null=True, blank=True, help_text="For video. Shown to students before they play it."
-    )
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploads"
     )
@@ -357,12 +355,6 @@ class ExamKind(models.TextChoices):
 
 
 class PracticeExam(PublishableModel, TimestampedModel):
-    """A set of questions a student sits in one go.
-
-    Questions are referred to, not copied, so the same question can appear in several exams and an
-    edit reaches all of them.
-    """
-
     slug = models.SlugField(unique=True)
     title = models.CharField(max_length=160)
     description = models.CharField(max_length=300, blank=True)
@@ -373,6 +365,14 @@ class PracticeExam(PublishableModel, TimestampedModel):
     order = models.PositiveSmallIntegerField(default=0)
 
     questions = models.ManyToManyField(Question, through="learning.ExamQuestion", related_name="exams")
+    hazard_clips = models.ManyToManyField(
+        "learning.HazardClip",
+        through="learning.ExamHazardClip",
+        related_name="exams",
+        blank=True,
+        verbose_name="hazard clips",
+        help_text="Clips sat after the questions. Leave empty for a question-only paper.",
+    )
 
     class Meta:
         ordering = ["order", "title"]
@@ -395,6 +395,21 @@ class ExamQuestion(models.Model):
 
     def __str__(self) -> str:
         return f"{self.exam.title}: {self.question}"
+
+
+class ExamHazardClip(models.Model):
+    exam = models.ForeignKey(PracticeExam, on_delete=models.CASCADE, related_name="exam_clips")
+    clip = models.ForeignKey("learning.HazardClip", on_delete=models.PROTECT, related_name="exam_places")
+    order = models.PositiveSmallIntegerField(default=0, help_text="Position within this exam's clips.")
+
+    class Meta:
+        ordering = ["exam", "order"]
+        verbose_name = "hazard clip in an exam"
+        verbose_name_plural = "hazard clips in an exam"
+        constraints = [models.UniqueConstraint(fields=["exam", "clip"], name="unique_clip_per_exam")]
+
+    def __str__(self) -> str:
+        return f"{self.exam.title}: {self.clip}"
 
 
 # --- What a student has done ---------------------------------------------------------------------
@@ -425,17 +440,16 @@ class QuestionAttempt(TimestampedModel):
 
 
 class MockAttempt(TimestampedModel):
-    """One sitting of an exam, with the score it earned.
-
-    The score is stored rather than recomputed, because an exam's questions and pass mark can
-    change afterwards and a past result should not move.
-    """
-
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="mock_attempts")
     exam = models.ForeignKey(PracticeExam, on_delete=models.CASCADE, related_name="attempts")
-    score = models.PositiveSmallIntegerField()
-    total = models.PositiveSmallIntegerField()
+    score = models.PositiveSmallIntegerField(help_text="Questions answered correctly.")
+    total = models.PositiveSmallIntegerField(help_text="Questions asked.")
     passed = models.BooleanField()
+    unanswered = models.PositiveSmallIntegerField(default=0, help_text="Questions left blank.")
+    hazard_score = models.PositiveSmallIntegerField(default=0, help_text="Scored on this sitting's hazard clips.")
+    hazard_top_score = models.PositiveSmallIntegerField(
+        default=0, help_text="The most this sitting's clips could score. 0 for a question-only paper."
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -443,6 +457,11 @@ class MockAttempt(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.student} · {self.exam.title} · {self.score}/{self.total}"
+
+    @property
+    def incorrect(self) -> int:
+        """Questions answered wrongly, as opposed to not answered at all."""
+        return max(self.total - self.score - self.unanswered, 0)
 
 
 class LessonProgress(models.Model):
@@ -494,6 +513,10 @@ class SavedQuestion(models.Model):
 # complain about it.
 
 
+def hazard_thumbnail_path(instance, filename: str) -> str:
+    return f"learning/hazard-thumbnail/{filename}"
+
+
 class HazardClip(PublishableModel, TimestampedModel):
     """A video with hazards in it for a student to spot.
 
@@ -509,6 +532,11 @@ class HazardClip(PublishableModel, TimestampedModel):
         on_delete=models.PROTECT,
         related_name="hazard_clips",
         help_text="The video from the media library.",
+    )
+    thumbnail = models.ImageField(
+        upload_to=hazard_thumbnail_path,
+        blank=True,
+        help_text="A still shown before the clip plays. Optional — without one the player shows the video itself.",
     )
     # The real test ends an attempt that is clicked through indiscriminately, because clicking
     # constantly would otherwise score full marks without spotting anything.
@@ -529,6 +557,10 @@ class HazardClip(PublishableModel, TimestampedModel):
     def top_score(self) -> int:
         """The most a student could score: five per hazard."""
         return self.windows.count() * HazardWindow.BANDS
+
+    @property
+    def thumbnail_url(self) -> str | None:
+        return self.thumbnail.url if self.thumbnail else None
 
 
 class HazardWindow(models.Model):
@@ -594,3 +626,58 @@ class HazardAttempt(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.student} · {self.clip.title} · {self.score}/{self.top_score}"
+
+
+def ebook_cover_path(instance, filename: str) -> str:
+    return f"learning/ebook-cover/{filename}"
+
+
+class Ebook(PublishableModel, TimestampedModel):
+    slug = models.SlugField(
+        unique=True,
+        blank=True,
+        help_text="Used in links. Filled in from the title if left empty. Changing it breaks saved links.",
+    )
+    title = models.CharField(max_length=160)
+    description = models.CharField(max_length=300, blank=True, help_text="A sentence or two, shown on the shelf.")
+    file = models.ForeignKey(
+        "learning.MediaAsset",
+        on_delete=models.PROTECT,
+        related_name="ebooks",
+        help_text="The document from the media library.",
+    )
+    cover = models.ImageField(
+        upload_to=ebook_cover_path,
+        blank=True,
+        help_text="The cover shown on the shelf. Optional.",
+    )
+    order = models.PositiveSmallIntegerField(default=0, help_text="Lower numbers come first.")
+
+    class Meta:
+        ordering = ["order", "title"]
+        verbose_name = "ebook"
+        verbose_name_plural = "ebooks"
+        permissions = [("publish_ebook", "Can publish and unpublish ebooks")]
+
+    def __str__(self) -> str:
+        return self.title
+
+    @property
+    def cover_url(self) -> str | None:
+        """The cover's URL, or None without one. Signed and short-lived, like every upload."""
+        return self.cover.url if self.cover else None
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = _unused_ebook_slug(slugify(self.title), exclude=self.pk)
+        super().save(*args, **kwargs)
+
+
+def _unused_ebook_slug(base: str, exclude=None) -> str:
+    base = base or "ebook"
+    taken = Ebook.objects.exclude(pk=exclude) if exclude else Ebook.objects.all()
+    candidate, suffix = base, 1
+    while taken.filter(slug=candidate).exists():
+        suffix += 1
+        candidate = f"{base}-{suffix}"
+    return candidate
