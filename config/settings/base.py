@@ -37,6 +37,8 @@ ENVIRONMENT = env.str("ENVIRONMENT", default="local")
 
 ALLOWED_HOSTS: list[str] = env.list("ALLOWED_HOSTS", default=[])
 
+TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
+
 INSTALLED_APPS = [
     # Before django.contrib.admin, because it replaces the admin's templates.
     "jazzmin",
@@ -124,6 +126,7 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     # Swagger shows a padlock only where a token is really needed; see apps/core/schema.py.
     "DEFAULT_SCHEMA_CLASS": "apps.core.schema.SecurityAwareAutoSchema",
+    "NUM_PROXIES": TRUSTED_PROXY_COUNT,
     # Views pick a scope by name, e.g. throttle_scope / a throttle class with scope = "auth_anon".
     "DEFAULT_THROTTLE_RATES": {
         "auth_anon": "10/minute",

@@ -94,6 +94,13 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 class EmailChangeSerializer(serializers.Serializer):
     new_email = serializers.EmailField()
+    current_password = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        default="",
+        style={"input_type": "password"},
+    )
 
     def validate_new_email(self, value: str) -> str:
         return value.lower()

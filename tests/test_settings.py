@@ -108,6 +108,46 @@ class TestEmailTransport:
         assert "'REQUESTS_TIMEOUT': 7" in production_setting("ANYMAIL", env)
 
 
+class TestTrustedProxies:
+    """How many X-Forwarded-For entries were written by infrastructure we control.
+
+    Rate limits and login lockouts count against the address this picks out, so a deployment that
+    trusts too few of them is one where the caller chooses their own identity and neither control
+    counts anything.
+    """
+
+    def test_one_proxy_by_default(self):
+        """A deployed environment is always behind a load balancer: the AWS ALB, or Render's
+        router today. Both append the address they were called from."""
+        assert production_setting("TRUSTED_PROXY_COUNT", PRODUCTION_ENV) == "1"
+
+    def test_the_count_can_be_raised_for_a_cdn_in_front_of_the_api(self):
+        env = {**PRODUCTION_ENV, "TRUSTED_PROXY_COUNT": "2"}
+
+        assert production_setting("TRUSTED_PROXY_COUNT", env) == "2"
+
+    def test_drf_throttles_use_the_same_count(self):
+        """Throttling and lockout must not disagree about who is calling."""
+        env = {**PRODUCTION_ENV, "TRUSTED_PROXY_COUNT": "2"}
+
+        assert production_setting("REST_FRAMEWORK['NUM_PROXIES']", env) == "2"
+
+    def test_refuses_to_start_with_no_trusted_proxy(self):
+        """Zero is correct on a developer machine and never in a deployment, where it would read
+        an address the caller wrote."""
+        result = run_django("check", env={**PRODUCTION_ENV, "TRUSTED_PROXY_COUNT": "0"})
+
+        assert result.returncode != 0
+        assert "TRUSTED_PROXY_COUNT" in result.stderr
+
+
+def test_the_test_suite_trusts_no_proxy():
+    """Nothing stands in front of the test client, so X-Forwarded-For is only ever caller-supplied
+    and must be ignored unless a test opts in."""
+    assert settings.TRUSTED_PROXY_COUNT == 0
+    assert settings.REST_FRAMEWORK["NUM_PROXIES"] == 0
+
+
 @pytest.mark.parametrize(
     ("url", "expected"),
     [

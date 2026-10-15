@@ -1,15 +1,26 @@
+from django.conf import settings
 from django.http import HttpRequest
 
 
 def client_ip(request: HttpRequest) -> str:
-    """The caller's IP address.
+    """Return the client's IP address using trusted proxy settings.
 
-    In a deployed environment requests arrive through a load balancer, so REMOTE_ADDR is the
-    balancer and the real address is the first entry of X-Forwarded-For. A client can put
-    anything in that header, so treat the result as a hint for spreading out rate limits,
-    never as proof of identity.
+    Uses TRUSTED_PROXY_COUNT to identify the client IP in X-Forwarded-For
+    and prevent IP spoofing.
+
+    Keeps client identification consistent with DRF's NUM_PROXIES setting.
     """
-    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "")
+    remote_addr = request.META.get("REMOTE_ADDR", "")
+
+    trusted_proxies = settings.TRUSTED_PROXY_COUNT
+    if trusted_proxies < 1:
+        # Nothing trustworthy in front, so the header is noise and the socket is the truth.
+        return remote_addr
+
+    forwarded_for = [entry.strip() for entry in request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")]
+    forwarded_for = [entry for entry in forwarded_for if entry]
+
+    if len(forwarded_for) < trusted_proxies:
+        return remote_addr
+
+    return forwarded_for[-trusted_proxies]

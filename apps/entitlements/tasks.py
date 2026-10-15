@@ -35,6 +35,8 @@ def send_expiry_reminders() -> int:
         expiry_reminder_sent_at__isnull=True,
         user__isnull=False,
         user__is_active=True,
+        # Nobody is warned that access is about to end when it ended already, with their refund.
+        revoked_at__isnull=True,
     ).select_related("user", "package")
 
     sent = 0

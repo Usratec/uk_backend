@@ -100,6 +100,11 @@ class CheckoutView(APIView):
                 last_name=data.validated_data["last_name"],
                 promo_code=data.validated_data["promo_code"],
             )
+        except checkout.PromoCodeUnavailableError:
+            return Response(
+                {"detail": "This promo code has just been fully claimed. Please try again without it."},
+                status=status.HTTP_409_CONFLICT,
+            )
         except checkout.FreeOrderNotSupportedError:
             return Response(
                 {"detail": "This discount covers the whole price. Please contact support to complete your order."},

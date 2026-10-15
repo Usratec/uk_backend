@@ -4,6 +4,13 @@ from django.utils import timezone
 from apps.core.models import TimestampedModel
 
 
+class RevocationReason(models.TextChoices):
+    """Why a period of access was withdrawn before its end date."""
+
+    REFUND = "refund", "Refunded"
+    DISPUTE = "dispute", "Payment disputed"
+
+
 class Subscription(TimestampedModel):
     """A period of access bought by one order.
 
@@ -36,6 +43,9 @@ class Subscription(TimestampedModel):
 
     expiry_reminder_sent_at = models.DateTimeField(null=True, blank=True)
 
+    revoked_at = models.DateTimeField(null=True, blank=True, help_text="When this access was withdrawn.")
+    revoked_reason = models.CharField(max_length=20, choices=RevocationReason.choices, blank=True)
+
     class Meta:
         ordering = ["-package_expires_at"]
         indexes = [models.Index(fields=["user", "-package_expires_at"])]
@@ -45,12 +55,20 @@ class Subscription(TimestampedModel):
         return f"{who} | {self.package.name} | until {self.package_expires_at:%d %b %Y}"
 
     @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
+
+    @property
     def is_active(self) -> bool:
         """Whether learning access is live right now."""
+        if self.is_revoked:
+            return False
         return self.starts_at <= timezone.now() < self.package_expires_at
 
     @property
     def status_display(self) -> str:
+        if self.is_revoked:
+            return self.get_revoked_reason_display() or "Revoked"
         return "Active" if self.is_active else "Expired"
 
     @property

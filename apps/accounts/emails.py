@@ -47,6 +47,25 @@ def send_email_change_confirmation(user, new_email: str, token: str) -> None:
     )
 
 
+def send_email_changed_notice(user, previous_email: str, new_email: str) -> None:
+    """Tell the *old* address that the account has moved.
+
+    Sent to the address being left behind, deliberately: once the change lands, every other
+    message goes to the new inbox, so this is the only warning the previous owner of the account
+    would get if the change was not theirs.
+    """
+    email.send(
+        template="email_changed_notice",
+        subject="Your email address has been changed",
+        to=previous_email,
+        context={
+            "first_name": user.first_name,
+            "previous_email": previous_email,
+            "new_email": new_email,
+        },
+    )
+
+
 def send_password_changed(user) -> None:
     email.send(
         template="password_changed",

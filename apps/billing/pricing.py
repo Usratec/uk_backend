@@ -5,10 +5,16 @@ the price quoted and the price charged cannot drift apart.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
-from apps.billing.models import PromoCode
+from django.db.models import Q
+from django.utils import timezone
+
+from apps.billing.models import Order, OrderStatus, PromoCode
 from apps.catalog.models import Package
+
+PROMO_HOLD = timedelta(hours=1)
 
 
 @dataclass(frozen=True)
@@ -21,6 +27,38 @@ class Quote:
     @property
     def is_free(self) -> bool:
         return self.final_price <= 0
+
+
+def uses_in_flight(promo_code: PromoCode, at=None) -> int:
+    """Orders holding a claim on this code that ``uses_count`` does not know about yet.
+
+    Two kinds, and both have to be counted or the limit leaks:
+
+    * a checkout started within the hold window and not yet paid, and
+    * one that *has* been paid but is still waiting to be fulfilled, which is the window in
+      which the count is incremented.
+    """
+    at = at or timezone.now()
+    return (
+        Order.objects.filter(promo_code=promo_code)
+        .filter(
+            Q(status=OrderStatus.PENDING, created_at__gt=at - PROMO_HOLD)
+            | Q(status=OrderStatus.PAID, subscription__isnull=True)
+        )
+        .count()
+    )
+
+
+def slots_left(promo_code: PromoCode, at=None) -> int | None:
+    """How many more customers can still claim this code. ``None`` means no limit.
+
+    Read this under ``select_for_update`` on the code's row when it is about to decide whether
+    somebody may be charged: on its own it is a number that two simultaneous checkouts would
+    both read as one.
+    """
+    if promo_code.max_uses is None:
+        return None
+    return max(0, promo_code.max_uses - promo_code.uses_count - uses_in_flight(promo_code, at))
 
 
 def find_usable_promo_code(code: str) -> PromoCode | None:

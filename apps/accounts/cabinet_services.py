@@ -58,10 +58,22 @@ def confirm_email_change(raw_token: str) -> User | None:
         raise EmailAlreadyTakenError
 
     user = token.user
+    previous_email = user.email
     user.email = new_email.lower()
     # Verified now, and only now: the link was delivered to this address and followed.
     user.email_verified = True
     user.save(update_fields=["email", "email_verified", "updated_at"])
+
+    services.invalidate_tokens(user, [TokenPurpose.EMAIL_CHANGE])
+
+    # Signed out everywhere, as a password change does. Whoever asked for this change has to
+    # prove themselves again against the account as it now stands.
+    services.revoke_refresh_tokens(user)
+
+    # The last message the old address will ever get, and the only way its owner learns the
+    # account has moved: everything after this goes to the new inbox.
+    emails.send_quietly(emails.send_email_changed_notice, user, previous_email, user.email)
+
     logger.info("Changed the email address of account %s", user.pk)
     return user
 

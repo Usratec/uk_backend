@@ -1,0 +1,9 @@
+Hi {{ first_name|default:"there" }},
+
+The 1Theory account that used {{ previous_email }} now uses {{ new_email }}. Sign in with the new
+address from now on. You have been signed out everywhere and will need to sign in again.
+
+If this was not you, contact support@1theory.co.uk straight away and quote this address. This is
+the last message we can send here.
+
+The 1Theory team

@@ -8,7 +8,7 @@ report no issues with these settings.
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
-from .base import database, env, with_trailing_slash
+from .base import REST_FRAMEWORK, database, env, with_trailing_slash
 
 SECRET_KEY = env.str("SECRET_KEY")
 if not SECRET_KEY.strip():
@@ -52,6 +52,16 @@ if not ANYMAIL["POSTMARK_SERVER_TOKEN"]:
         "POSTMARK_SERVER_TOKEN must be set. A deployment that cannot send email cannot verify an "
         "address or reset a password, so it stops here rather than at a customer's registration."
     )
+
+TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=1)
+if TRUSTED_PROXY_COUNT < 1:
+    raise ImproperlyConfigured(
+        "TRUSTED_PROXY_COUNT must be at least 1 in a deployed environment: requests arrive through "
+        "a load balancer, and reading X-Forwarded-For with fewer trusted proxies than there really "
+        "are lets a caller choose their own rate-limit and lockout identity."
+    )
+
+REST_FRAMEWORK = {**REST_FRAMEWORK, "NUM_PROXIES": TRUSTED_PROXY_COUNT}
 
 # --- HTTPS ---------------------------------------------------------------------------------------
 # TLS terminates at the load balancer, which forwards the original scheme in X-Forwarded-Proto.
