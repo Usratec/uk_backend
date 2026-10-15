@@ -75,12 +75,11 @@ services:
       - key: CSRF_TRUSTED_ORIGINS
         value: https://1theory-demo.vercel.app,https://uk-backend-dev.onrender.com
 
+      - key: DEFAULT_FROM_EMAIL
+        value: 1Theory <orest@orangeuni.com>
+
       # --- Secrets ----------------------------------------------------------------------------
-      # Postmark SMTP: the server token goes in both. production.py reads them with no default,
-      # so the service will not start until they are set.
-      - key: EMAIL_HOST_USER
-        sync: false
-      - key: EMAIL_HOST_PASSWORD
+      - key: POSTMARK_SERVER_TOKEN
         sync: false
       # Also read with no default. Use test-mode keys here.
       - key: STRIPE_SECRET_KEY

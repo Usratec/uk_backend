@@ -20,4 +20,10 @@ DATABASES = {
 CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
 
 # Print emails to the container logs instead of sending them.
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
+
+ANYMAIL = {
+    "POSTMARK_SERVER_TOKEN": env.str("POSTMARK_SERVER_TOKEN", default=""),
+    "REQUESTS_TIMEOUT": env.int("EMAIL_TIMEOUT", default=10),
+}

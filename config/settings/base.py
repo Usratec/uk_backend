@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "django_ckeditor_5",
+    "anymail",
     # Local
     "apps.core",
     "apps.accounts",
