@@ -54,6 +54,9 @@ class OrderInline(RelatedRecordsInline):
         return format_html('<a href="{}">{}</a>', url, str(order.pk)[:8])
 
 
+SUBSCRIPTION_TONES = {"Active": "success", "Scheduled": "info"}
+
+
 class SubscriptionInline(RelatedRecordsInline):
     model = Subscription
     fk_name = "user"
@@ -64,8 +67,8 @@ class SubscriptionInline(RelatedRecordsInline):
 
     @admin.display(description="Status")
     def state(self, subscription: Subscription) -> SafeString:
-        active = subscription.is_active
-        return badge("Active" if active else "Expired", "success" if active else "neutral")
+        status = subscription.status_display
+        return badge(status, SUBSCRIPTION_TONES.get(status, "neutral"))
 
 
 class CandidateForm(forms.ModelForm):

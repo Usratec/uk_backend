@@ -164,6 +164,26 @@ class TestDetail:
         assert "Learning access ends" in content
         assert "Account closes" in content
 
+    def test_a_period_bought_for_later_is_not_shown_as_expired(
+        self, client, crm_reader_with_history, paying_candidate, package
+    ):
+        """Renewing early schedules the next period, and support read "Expired" as a failed payment."""
+        order = Order.objects.create(
+            package=package,
+            email=paying_candidate.email,
+            user=paying_candidate,
+            status=OrderStatus.PAID,
+            paid_at=timezone.now(),
+            original_price=package.price,
+            final_price=package.price,
+        )
+        entitlements.activate(order, paying_candidate)
+
+        content = client.get(detail_url(paying_candidate)).content.decode()
+
+        assert "Scheduled" in content
+        assert "Expired" not in content
+
     def test_the_plan_cannot_be_edited_from_here(self, client, crm_manager, paying_candidate):
         """Access follows from purchases; changing a date by hand would make the record a lie."""
         content = client.get(detail_url(paying_candidate)).content.decode()

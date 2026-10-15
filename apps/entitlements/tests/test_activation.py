@@ -222,3 +222,11 @@ class TestSubscriptionProperties:
             User.objects.create_user(email="other@example.com", first_name="Other"),
         )
         assert expired.status_display == "Expired"
+
+    def test_a_period_bought_for_later_reads_scheduled(self, user, make_paid_order):
+        """Not "Expired": renewing early is a successful purchase, and must not look like a failed one."""
+        services.activate(make_paid_order(paid_at=timezone.now() - timedelta(days=19)), user)
+        second, _ = services.activate(make_paid_order(), user)
+
+        assert second.starts_at > timezone.now()
+        assert second.status_display == "Scheduled"
