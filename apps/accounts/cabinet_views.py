@@ -163,6 +163,7 @@ class SubscriptionStatusView(APIView):
     def get(self, request: Request) -> Response:
         user = cast(User, request.user)
         subscription = entitlements.current_subscription(user)
+        live = entitlements.has_access(user)
 
         if subscription is None:
             return Response(
@@ -184,10 +185,10 @@ class SubscriptionStatusView(APIView):
                 "package_name": subscription.package.name,
                 "package_expires_at": subscription.package_expires_at,
                 "account_expires_at": subscription.account_expires_at,
-                "status": subscription.status_display,
+                "status": "Active" if live else "Expired",
                 # Kept for the storefront, which reads this key to decide whether to show the
                 # "start learning" button. It now means "learning access is live".
-                "online_platform_activated": subscription.is_active,
+                "online_platform_activated": live,
                 "purchase_date": subscription.order.paid_at,
                 "days_remaining": subscription.days_remaining,
             }

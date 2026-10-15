@@ -13,6 +13,7 @@ from apps.accounts.models import SecurityToken, TokenPurpose, User
 from apps.billing.models import Order, OrderStatus
 from apps.catalog.models import Package
 from apps.entitlements import services as entitlements
+from apps.entitlements.models import Subscription
 
 from .conftest import PASSWORD
 
@@ -68,6 +69,37 @@ def with_access(user, package):
         return subscription
 
     return activate
+
+
+@pytest.fixture
+def with_period(user, package):
+    """Put a period of access on the account directly, for dates a purchase cannot produce.
+
+    Buying always begins a period now or when the current one ends, so a period that starts in the
+    future with nothing live before it only arises from staff work in the admin.
+    """
+
+    def schedule(starts_in):
+        order = Order.objects.create(
+            package=package,
+            email=user.email,
+            status=OrderStatus.PAID,
+            paid_at=timezone.now(),
+            original_price=package.price,
+            final_price=package.price,
+        )
+        starts_at = timezone.now() + starts_in
+        duration = timedelta(days=package.duration_days)
+        return Subscription.objects.create(
+            user=user,
+            order=order,
+            package=package,
+            starts_at=starts_at,
+            package_expires_at=starts_at + duration,
+            account_expires_at=starts_at + duration * 2,
+        )
+
+    return schedule
 
 
 @pytest.mark.parametrize("url", CABINET_URLS)
@@ -291,6 +323,29 @@ class TestPasswordChange:
         assert "Google" in response.data["detail"]
 
 
+def _one_live_period(buy, schedule):
+    buy()
+
+
+def _one_expired_period(buy, schedule):
+    buy(paid_at=timezone.now() - timedelta(days=40))
+
+
+def _renewed_early(buy, schedule):
+    """A second plan bought with 11 days still to run on the first."""
+    buy(paid_at=timezone.now() - timedelta(days=19))
+    buy()
+
+
+def _every_period_expired(buy, schedule):
+    buy(paid_at=timezone.now() - timedelta(days=80))
+    buy(paid_at=timezone.now() - timedelta(days=45))
+
+
+def _only_a_period_yet_to_begin(buy, schedule):
+    schedule(starts_in=timedelta(days=5))
+
+
 class TestSubscriptionStatus:
     def test_reports_nothing_bought(self, authenticated_api):
         response = authenticated_api.get(SUBSCRIPTION_URL)
@@ -331,12 +386,80 @@ class TestSubscriptionStatus:
         assert response.data["online_platform_activated"] is False
 
     def test_shows_the_latest_purchase_after_buying_again(self, authenticated_api, with_access):
+        """Buying early reports the extended expiry, and still reports access as live.
+
+        The second period begins when the first one ends, so it is the one reaching furthest ahead
+        and the one the cabinet describes — but it has not started, and reading its own state told
+        a customer who was studying that minute that their access had expired.
+        """
         with_access(paid_at=timezone.now() - timedelta(days=10))
         second = with_access()
 
         response = authenticated_api.get(SUBSCRIPTION_URL)
 
+        assert response.data["status"] == "Active"
+        assert response.data["online_platform_activated"] is True
         assert response.data["package_expires_at"] == second.package_expires_at
+        assert response.data["account_expires_at"] == second.account_expires_at
+        assert response.data["package_name"] == "30 day access"
+        assert response.data["purchase_date"] == second.order.paid_at
+        # Both periods, because they run back to back: 20 days left on the first and 30 on the
+        # second, less the part-day already gone.
+        assert response.data["days_remaining"] == 49
+
+    def test_reports_expired_once_every_period_has_run_out(self, authenticated_api, with_access):
+        with_access(paid_at=timezone.now() - timedelta(days=80))
+        with_access(paid_at=timezone.now() - timedelta(days=45))
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.data["has_subscription"] is True
+        assert response.data["status"] == "Expired"
+        assert response.data["online_platform_activated"] is False
+        assert response.data["days_remaining"] == 0
+
+    def test_reports_expired_while_a_period_has_yet_to_begin(self, authenticated_api, with_period):
+        """A period bought for later grants nothing yet, so the cabinet must not claim it does."""
+        with_period(starts_in=timedelta(days=5))
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.data["has_subscription"] is True
+        assert response.data["status"] == "Expired"
+        assert response.data["online_platform_activated"] is False
+
+    @pytest.mark.parametrize(
+        ("build_history", "live"),
+        [
+            (_one_live_period, True),
+            (_one_expired_period, False),
+            (_renewed_early, True),
+            (_every_period_expired, False),
+            (_only_a_period_yet_to_begin, False),
+        ],
+        ids=[
+            "one live period",
+            "one expired period",
+            "renewed early",
+            "every period expired",
+            "only a period yet to begin",
+        ],
+    )
+    def test_the_access_fields_agree_with_has_access(
+        self, authenticated_api, user, with_access, with_period, build_history, live
+    ):
+        """One question, one answer.
+
+        ``has_access`` decides what the learning endpoints allow, so whatever history the customer
+        has, the cabinet has to report the same thing or the two apps disagree.
+        """
+        build_history(with_access, with_period)
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert entitlements.has_access(user) is live
+        assert response.data["online_platform_activated"] is live
+        assert response.data["status"] == ("Active" if live else "Expired")
 
 
 class TestLearningEntry:

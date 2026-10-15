@@ -69,7 +69,10 @@ class Subscription(TimestampedModel):
     def status_display(self) -> str:
         if self.is_revoked:
             return self.get_revoked_reason_display() or "Revoked"
-        return "Active" if self.is_active else "Expired"
+        now = timezone.now()
+        if now < self.starts_at:
+            return "Scheduled"
+        return "Active" if now < self.package_expires_at else "Expired"
 
     @property
     def days_remaining(self) -> int:

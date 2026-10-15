@@ -37,6 +37,15 @@ def crm_editor(db, client):
 
 
 @pytest.fixture
+def crm_reader_with_history(db, client):
+    """Staff who may also see a customer's access history: CRM access alone does not reveal it."""
+    user = User.objects.create_user(email="history@example.com", password=PASSWORD, first_name="Hana", is_staff=True)
+    grant(user, "view_candidate", "view_subscription")
+    client.force_login(user)
+    return user
+
+
+@pytest.fixture
 def plain_staff(db, client):
     """Staff with no CRM permissions at all."""
     user = User.objects.create_user(email="other@example.com", password=PASSWORD, first_name="Otto", is_staff=True)
