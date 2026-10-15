@@ -37,15 +37,21 @@ STRIPE_SECRET_KEY = env.str("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET")
 
 # --- Email ---------------------------------------------------------------------------------------
-# Postmark is the mail provider; these are its SMTP settings (username and password are both the
-# Postmark server token). Any other SMTP provider works with the same four variables.
+# Postmark over its HTTP API: Render blocks outbound 25, 465 and 587 on free instance types, so
+# SMTP mail never leaves the service and dies in the worker with `TimeoutError: timed out`.
 
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = env.str("EMAIL_HOST", default="smtp.postmarkapp.com")
-EMAIL_PORT = env.int("EMAIL_PORT", default=587)
-EMAIL_HOST_USER = env.str("EMAIL_HOST_USER")
-EMAIL_HOST_PASSWORD = env.str("EMAIL_HOST_PASSWORD")
-EMAIL_USE_TLS = True
+EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="anymail.backends.postmark.EmailBackend")
+
+ANYMAIL = {
+    "POSTMARK_SERVER_TOKEN": env.str("POSTMARK_SERVER_TOKEN", default=env.str("EMAIL_HOST_PASSWORD", default="")),
+    "REQUESTS_TIMEOUT": env.int("EMAIL_TIMEOUT", default=10),
+}
+
+if not ANYMAIL["POSTMARK_SERVER_TOKEN"]:
+    raise ImproperlyConfigured(
+        "POSTMARK_SERVER_TOKEN must be set. A deployment that cannot send email cannot verify an "
+        "address or reset a password, so it stops here rather than at a customer's registration."
+    )
 
 # --- HTTPS ---------------------------------------------------------------------------------------
 # TLS terminates at the load balancer, which forwards the original scheme in X-Forwarded-Proto.

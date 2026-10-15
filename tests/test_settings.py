@@ -21,8 +21,7 @@ PRODUCTION_ENV = {
     "DATABASE_URL": "postgres://user:pass@db.invalid:5432/uk_backend",
     "FRONTEND_BASE_URL": "https://frontend.example.com",
     "REDIS_URL": "redis://redis.invalid:6379/0",
-    "EMAIL_HOST_USER": "postmark-server-token",
-    "EMAIL_HOST_PASSWORD": "postmark-server-token",
+    "POSTMARK_SERVER_TOKEN": "postmark-server-token",
     "CELERY_BROKER_URL": "redis://redis.invalid:6379/1",
     "STRIPE_SECRET_KEY": "sk_test_not_a_real_key",
     "STRIPE_WEBHOOK_SECRET": "whsec_not_a_real_secret",
@@ -85,6 +84,28 @@ class TestProductionSettings:
         env = {**PRODUCTION_ENV, "FRONTEND_BASE_URL": "https://x.co"}
 
         assert production_setting("FRONTEND_BASE_URL", env) == "https://x.co/"
+
+
+class TestEmailTransport:
+    def test_mail_does_not_go_over_smtp(self):
+        assert production_setting("EMAIL_BACKEND", PRODUCTION_ENV) == "anymail.backends.postmark.EmailBackend"
+
+    def test_the_server_token_reaches_anymail(self):
+        assert "postmark-server-token" in production_setting("ANYMAIL", PRODUCTION_ENV)
+
+    def test_the_smtp_password_still_supplies_the_token(self):
+        """The same token lived in EMAIL_HOST_PASSWORD while this was SMTP. An environment still
+        set up that way keeps sending rather than failing to boot on the deploy that switches."""
+        env = {key: value for key, value in PRODUCTION_ENV.items() if key != "POSTMARK_SERVER_TOKEN"}
+        env["EMAIL_HOST_PASSWORD"] = "token-from-the-old-variable"
+
+        assert "token-from-the-old-variable" in production_setting("ANYMAIL", env)
+
+    def test_the_wait_on_the_provider_is_bounded(self):
+        """requests waits indefinitely unless told not to, and EMAIL_TIMEOUT only reaches smtplib."""
+        env = {**PRODUCTION_ENV, "EMAIL_TIMEOUT": "7"}
+
+        assert "'REQUESTS_TIMEOUT': 7" in production_setting("ANYMAIL", env)
 
 
 @pytest.mark.parametrize(
