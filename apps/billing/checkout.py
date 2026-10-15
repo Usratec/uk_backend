@@ -9,9 +9,10 @@ import logging
 
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
-from apps.billing.models import Order
-from apps.billing.pricing import quote
+from apps.billing.models import Order, PromoCode
+from apps.billing.pricing import PROMO_HOLD, quote, slots_left
 from apps.catalog.models import Package
 from apps.integrations import stripe_client
 
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 class FreeOrderNotSupportedError(Exception):
     """The discount covers the whole price, and Stripe cannot take a payment of nothing."""
+
+
+class PromoCodeUnavailableError(Exception):
+    """The campaign is still running but every redemption has been claimed."""
 
 
 def start_checkout(
@@ -34,7 +39,8 @@ def start_checkout(
     customer.
 
     Raises ``stripe_client.StripeError`` if Stripe cannot be reached; the order is then left
-    pending and the customer can try again.
+    pending and the customer can try again. Raises ``PromoCodeUnavailableError`` if the code was
+    taken while the customer was looking at the price.
     """
     priced = quote(package, promo_code)
     if priced.is_free:
@@ -42,7 +48,10 @@ def start_checkout(
         # promo codes from ever reaching 100%. Refusing is the safe default meanwhile.
         raise FreeOrderNotSupportedError
 
+    # The claim and the order are taken together, under a lock on the code, so two checkouts
+    # arriving at once cannot both read the same last redemption as free.
     with transaction.atomic():
+        _claim_promo_slot(promo_code)
         order = Order.objects.create(
             package=package,
             email=email.lower(),
@@ -62,6 +71,10 @@ def start_checkout(
         reference=str(order.id),
         success_url=f"{settings.FRONTEND_BASE_URL}payment/success?order_id={order.id}",
         cancel_url=f"{settings.FRONTEND_BASE_URL}checkout?order_id={order.id}&cancelled=1",
+        # Discounted orders expire when their discount-code reservation expires.
+        # This prevents the code from being used twice.
+        # Orders without discounts keep Stripe's default 24-hour expiry.
+        expires_at=_session_expiry(priced.promo_code),
     )
 
     order.stripe_session_id = session.id
@@ -69,3 +82,34 @@ def start_checkout(
     logger.info("Started checkout for order %s", order.id)
 
     return order, session.url
+
+
+def _claim_promo_slot(code: str) -> None:
+    """Reserve a discount code redemption or reject checkout.
+
+    Must be called inside the order-creation transaction to prevent
+    multiple orders from using the same remaining redemption.
+
+    Unknown or expired codes are ignored, and the customer pays full price.
+    If the code has no redemptions left, reject checkout to avoid charging
+    more than the price shown to the customer.
+    """
+    typed = code.strip()
+    if not typed:
+        return
+
+    promo_code = PromoCode.objects.select_for_update().filter(code__iexact=typed).first()
+    if promo_code is None or not promo_code.is_within_window():
+        return
+
+    remaining = slots_left(promo_code)
+    if remaining is not None and remaining <= 0:
+        logger.info("Refusing checkout: every redemption of %s is claimed", promo_code.code)
+        raise PromoCodeUnavailableError
+
+
+def _session_expiry(promo_code: PromoCode | None) -> int | None:
+    """When Stripe should stop accepting payment, as a Unix timestamp."""
+    if promo_code is None:
+        return None
+    return int((timezone.now() + PROMO_HOLD).timestamp())

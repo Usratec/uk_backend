@@ -17,11 +17,15 @@ class CandidateQuerySet(models.QuerySet):
         """Attach the current plan's name and end date, in one query, for the list and detail views.
 
         A customer can have several subscriptions once they buy again, so "current" means the one
-        reaching furthest ahead, matching how access itself is decided.
+        reaching furthest ahead, matching how access itself is decided — which means leaving out
+        the ones that were refunded or charged back, so support is not told a customer is on a
+        plan they no longer hold.
         """
         from apps.entitlements.models import Subscription
 
-        current = Subscription.objects.filter(user=OuterRef("pk")).order_by("-package_expires_at")
+        current = Subscription.objects.filter(user=OuterRef("pk"), revoked_at__isnull=True).order_by(
+            "-package_expires_at"
+        )
         return self.annotate(
             current_plan_name=Subquery(current.values("package__name")[:1]),
             current_plan_expires_at=Subquery(current.values("package_expires_at")[:1]),

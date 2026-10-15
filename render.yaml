@@ -64,6 +64,14 @@ services:
       - key: CELERY_BROKER_URL
         sync: false
 
+      # --- The proxy in front -----------------------------------------------------------------
+      # One: Render's router, which appends the address it was called from to X-Forwarded-For.
+      # The caller's real address is therefore the last entry, and rate limits and login lockouts
+      # are counted against it. Raise this to 2 only if a CDN is ever put in front of this
+      # service itself; setting it lower lets a caller pick their own identity with a header.
+      - key: TRUSTED_PROXY_COUNT
+        value: 1
+
       # --- Hosts and origins ------------------------------------------------------------------
       # Must match this service's own hostname. Update if Render appends a suffix to the name.
       - key: ALLOWED_HOSTS

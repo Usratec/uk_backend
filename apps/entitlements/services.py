@@ -8,29 +8,37 @@ import logging
 from datetime import timedelta
 
 from constance import config
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.models import Order, PromoCode
-from apps.entitlements.models import Subscription
+from apps.core import audit
+from apps.entitlements.models import RevocationReason, Subscription
 
 logger = logging.getLogger(__name__)
+
+
+def granting() -> models.QuerySet[Subscription]:
+    """Subscriptions that still grant something.
+
+    Revoked ones are kept as history but are not access, so every path that asks what somebody may
+    do starts here rather than from the whole table. Keeping that in one place is the point: a
+    refund that stopped learning access but was forgotten in, say, the package lookup would leave
+    a refunded customer reading the material anyway.
+    """
+    return Subscription.objects.filter(revoked_at__isnull=True)
 
 
 def current_subscription(user: User) -> Subscription | None:
     """The subscription that decides the customer's access: the one reaching furthest ahead.
 
     Returns the most recently expiring subscription even when it has already lapsed, because the
-    cabinet shows "expired" rather than "never bought anything".
+    cabinet shows "expired" rather than "never bought anything". Revoked ones are left out: a
+    purchase that was refunded should not be what the cabinet calls the customer's package.
     """
-    return (
-        Subscription.objects.filter(user=user)
-        .select_related("package", "order")
-        .order_by("-package_expires_at")
-        .first()
-    )
+    return granting().filter(user=user).select_related("package", "order").order_by("-package_expires_at").first()
 
 
 def has_access(user: User, at=None) -> bool:
@@ -39,11 +47,7 @@ def has_access(user: User, at=None) -> bool:
         return False
 
     at = at or timezone.now()
-    return Subscription.objects.filter(
-        user=user,
-        starts_at__lte=at,
-        package_expires_at__gt=at,
-    ).exists()
+    return granting().filter(user=user, starts_at__lte=at, package_expires_at__gt=at).exists()
 
 
 def package_of(user: User) -> int | None:
@@ -173,7 +177,8 @@ def activate(order: Order, user: User) -> tuple[Subscription, bool]:
     # the days they have left.
     starts_at = order.paid_at or timezone.now()
     active = (
-        Subscription.objects.select_for_update()
+        granting()
+        .select_for_update()
         .filter(user=user, package_expires_at__gt=starts_at)
         .order_by("-package_expires_at")
         .first()
@@ -194,11 +199,110 @@ def activate(order: Order, user: User) -> tuple[Subscription, bool]:
     _sync_account(user, subscription)
 
     if order.promo_code_id:
-        # F() so simultaneous purchases both count.
-        PromoCode.objects.filter(pk=order.promo_code_id).update(uses_count=F("uses_count") + 1)
+        _count_promo_use(order.promo_code_id)
 
     logger.info("Granted access to %s until %s", user.email, subscription.package_expires_at)
     return subscription, True
+
+
+def _count_promo_use(promo_code_id: int) -> None:
+    """Record that a redemption has been spent, and say so if that was one too many.
+
+    The customer has paid by the time this runs, so going over the limit is never a reason to
+    refuse them anything — checkout is where a code is turned down, because it is the last
+    moment before money changes hands. Exceeding it here means a claim was counted wrongly
+    somewhere, which is worth knowing about rather than silently absorbing.
+
+    Not undone by a refund: a redemption is spent once used.
+    """
+    # F() so simultaneous purchases both count.
+    PromoCode.objects.filter(pk=promo_code_id).update(uses_count=F("uses_count") + 1)
+
+    promo_code = PromoCode.objects.filter(pk=promo_code_id).first()
+    if promo_code is not None and promo_code.max_uses is not None and promo_code.uses_count > promo_code.max_uses:
+        logger.error(
+            "Promo code %s has been used %d times, more than its limit of %d",
+            promo_code.code,
+            promo_code.uses_count,
+            promo_code.max_uses,
+        )
+
+
+@transaction.atomic
+def revoke(order: Order, reason: RevocationReason) -> Subscription | None:
+    """Revoke learning access for a refunded order.
+
+    Returns the revoked subscription, or None if the order has no subscription.
+    Repeated calls do not change an already revoked subscription.
+
+    The account remains active so the customer can still sign in and make
+    new purchases. Only learning access is revoked.
+
+    Later subscriptions keep their original start dates, which may leave a
+    gap in access after a refund.
+    """
+    subscription = Subscription.objects.select_for_update().filter(order=order).first()
+    if subscription is None:
+        logger.warning("Order %s has no subscription to revoke", order.id)
+        return None
+
+    if subscription.is_revoked:
+        logger.info("Subscription for order %s is already revoked", order.id)
+        return subscription
+
+    subscription.revoked_at = timezone.now()
+    subscription.revoked_reason = reason
+    subscription.save(update_fields=["revoked_at", "revoked_reason", "updated_at"])
+
+    audit.record(
+        actor=None,
+        action=f"entitlements.subscription.revoked.{reason}",
+        target=subscription,
+        changes={"revoked_at": {"from": "", "to": str(subscription.revoked_at)}},
+        reason=f"Stripe reported a {reason} for order {order.id}",
+    )
+    logger.warning("Revoked access for order %s (%s)", order.id, reason)
+    return subscription
+
+
+@transaction.atomic
+def restore(order: Order, reason: RevocationReason) -> Subscription | None:
+    """Give back access that was revoked, because the money came back to us.
+
+    Only undoes a revocation made for ``reason``: a dispute we went on to win must not quietly
+    reinstate access that was separately refunded.
+
+    The dates are left as they were. Access runs to the day it always ran to, so a customer who
+    was wrongly cut off during a dispute loses those days. Giving them back means deciding how
+    many, which is a product question rather than a security one; see the branch notes.
+    """
+    subscription = Subscription.objects.select_for_update().filter(order=order).first()
+    if subscription is None or not subscription.is_revoked:
+        return subscription
+
+    if subscription.revoked_reason != reason:
+        logger.info(
+            "Not restoring order %s: access was revoked for %s, not %s",
+            order.id,
+            subscription.revoked_reason,
+            reason,
+        )
+        return subscription
+
+    was_revoked_at = subscription.revoked_at
+    subscription.revoked_at = None
+    subscription.revoked_reason = ""
+    subscription.save(update_fields=["revoked_at", "revoked_reason", "updated_at"])
+
+    audit.record(
+        actor=None,
+        action="entitlements.subscription.restored",
+        target=subscription,
+        changes={"revoked_at": {"from": str(was_revoked_at), "to": ""}},
+        reason=f"The {reason} for order {order.id} was resolved in our favour",
+    )
+    logger.info("Restored access for order %s", order.id)
+    return subscription
 
 
 def _sync_account(user: User, subscription: Subscription) -> None:

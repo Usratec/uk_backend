@@ -59,16 +59,20 @@ class PromoCode(TimestampedModel):
         self.code = self.code.strip().upper()
         super().save(*args, **kwargs)
 
-    def is_usable(self, at=None) -> bool:
-        """Whether the code can be used at the given moment."""
+    def is_within_window(self, at=None) -> bool:
         at = at or timezone.now()
         if not self.is_active:
             return False
         if self.valid_from > at:
             return False
-        if self.valid_until and self.valid_until < at:
-            return False
+        return not (self.valid_until and self.valid_until < at)
+
+    def has_uses_left(self) -> bool:
         return self.max_uses is None or self.uses_count < self.max_uses
+
+    def is_usable(self, at=None) -> bool:
+        """Whether the code can be used at the given moment."""
+        return self.is_within_window(at) and self.has_uses_left()
 
     def discount_for(self, price: Decimal) -> Decimal:
         """How much comes off this price. Never more than the price itself."""
@@ -127,6 +131,7 @@ class Order(TimestampedModel):
     promo_code = models.ForeignKey(PromoCode, on_delete=models.SET_NULL, null=True, blank=True, related_name="orders")
 
     paid_at = models.DateTimeField(null=True, blank=True)
+    refunded_at = models.DateTimeField(null=True, blank=True)
 
     # Set when this purchase created the account, so a retry still knows a welcome email is owed
     # even though the account exists by then.

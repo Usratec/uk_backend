@@ -73,6 +73,27 @@ class TestRequest:
 
         assert response.status_code == 429
 
+    def test_rotating_x_forwarded_for_does_not_get_a_fresh_allowance(self, api, user, settings):
+        """The throttle counts against an address, and the caller writes the start of the header
+        it is read from. Left unconfigured, DRF keys on the whole header, so a new value in it is
+        a new allowance and this limit — which is what stops the endpoint spamming an inbox —
+        counts nothing at all. One proxy in front, as deployed."""
+        settings.TRUSTED_PROXY_COUNT = 1
+        settings.REST_FRAMEWORK = {**settings.REST_FRAMEWORK, "NUM_PROXIES": 1}
+
+        def request_as(caller_sent):
+            return api.post(
+                REQUEST_URL,
+                {"email": user.email},
+                format="json",
+                HTTP_X_FORWARDED_FOR=f"{caller_sent}, 203.0.113.9",
+            )
+
+        for attempt in range(5):
+            assert request_as(f"10.0.0.{attempt}").status_code == 200
+
+        assert request_as("10.0.0.99").status_code == 429
+
 
 class TestConfirm:
     def test_sets_the_new_password(self, api, user, reset_token):

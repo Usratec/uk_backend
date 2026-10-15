@@ -46,15 +46,21 @@ def create_checkout_session(
     reference: str,
     success_url: str,
     cancel_url: str,
+    expires_at: int | None = None,
 ) -> CheckoutSession:
     """Open a hosted Stripe payment page and return where to send the customer.
 
     ``reference`` is our order id. It travels on the session as both ``client_reference_id`` and
     metadata, so the webhook can find the order again even if one of the two is missing.
     """
+    params: dict = {}
+    if expires_at is not None:
+        params["expires_at"] = expires_at
+
     try:
         session = _client().v1.checkout.sessions.create(
             params={
+                **params,
                 "mode": "payment",
                 "line_items": [
                     {

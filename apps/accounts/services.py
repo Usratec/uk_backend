@@ -4,6 +4,7 @@ Views parse input and choose a status code; everything that decides what *happen
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import timedelta
 
 from django.core.cache import cache
@@ -26,6 +27,7 @@ SHORT_REFRESH_LIFETIME = timedelta(hours=24)
 REMEMBER_ME_CLAIM = "remember_me"
 
 MAX_FAILED_LOGINS = 5
+MAX_FAILED_LOGINS_PER_EMAIL = 20
 LOCKOUT_DURATION = timedelta(minutes=15)
 
 
@@ -97,17 +99,43 @@ def uses_google_sign_in_only(user: User) -> bool:
 # by guessing badly on purpose.
 
 
+def _normalised(email: str) -> str:
+    """The form an email takes in a cache key.
+
+    Accounts are found with ``email__iexact``, so two spellings that differ only in case are one
+    account and must share one counter — otherwise varying the case is a way past the lock. The
+    endpoints lowercase what they are given, but ``clear_failed_logins`` is called with the
+    address as it is stored, which is whatever case the account was created with.
+    """
+    return email.lower()
+
+
 def _attempts_key(email: str, ip: str) -> str:
-    return f"failed_logins:{email}:{ip}"
+    return f"failed_logins:{_normalised(email)}:{ip}"
 
 
 def _known_ips_key(email: str) -> str:
     """Remembers which IP addresses have failed for this email, so they can all be cleared."""
-    return f"failed_login_ips:{email}"
+    return f"failed_login_ips:{_normalised(email)}"
+
+
+def _email_attempts_key(email: str) -> str:
+    """Failures for this account from anywhere at all.
+
+    The per-address counter above only slows down an attacker who has one address. Anyone with a
+    botnet, or just a mobile connection they can re-dial, gets five guesses per address and an
+    unlimited number of addresses. This second counter is the backstop, set much higher than the
+    per-address one so that locking a real customer out on purpose costs twenty wrong guesses
+    rather than five.
+    """
+    return f"failed_logins_email:{_normalised(email)}"
 
 
 def is_locked_out(email: str, ip: str) -> bool:
-    return cache.get(_attempts_key(email, ip), 0) >= MAX_FAILED_LOGINS
+    return (
+        cache.get(_attempts_key(email, ip), 0) >= MAX_FAILED_LOGINS
+        or cache.get(_email_attempts_key(email), 0) >= MAX_FAILED_LOGINS_PER_EMAIL
+    )
 
 
 def record_failed_login(email: str, ip: str) -> None:
@@ -120,12 +148,28 @@ def record_failed_login(email: str, ip: str) -> None:
     if ip not in known_ips:
         cache.set(_known_ips_key(email), [*known_ips, ip], timeout)
 
+    _record_email_failure(email, timeout)
+
+
+def _record_email_failure(email: str, timeout: int) -> None:
+    key = _email_attempts_key(email)
+    # `add` sets the 15-minute lock only on the first failure.
+    # New failures don't extend the lock, preventing attackers from locking an account
+    # indefinitely by repeatedly failing to sign in.
+    cache.add(key, 0, timeout)
+    try:
+        cache.incr(key)
+    except ValueError:
+        # The window ended between the two calls. Start the next one.
+        cache.set(key, 1, timeout)
+
 
 def clear_failed_logins(email: str) -> None:
     """Forget every failed attempt for this email, after a successful sign-in or a reset."""
     for ip in cache.get(_known_ips_key(email), []):
         cache.delete(_attempts_key(email, ip))
     cache.delete(_known_ips_key(email))
+    cache.delete(_email_attempts_key(email))
 
 
 # --- Registration -------------------------------------------------------------------------------
@@ -148,6 +192,21 @@ def register(email: str, first_name: str, password: str) -> User:
     )
     send_email_verification(user)
     return user
+
+
+# --- Tokens -------------------------------------------------------------------------------------
+
+
+def invalidate_tokens(user: User, purposes: Sequence[str], at=None) -> int:
+    """Burn this account's unused links of these kinds. Returns how many were burnt.
+
+    Marks them used rather than deleting them, which is what ``consume`` already checks, so a link
+    that is followed afterwards is refused exactly as a spent one is — and the row survives to say
+    the link existed, which is the question asked when an account has been meddled with.
+    """
+    return SecurityToken.objects.filter(purpose__in=purposes, user=user, used_at__isnull=True).update(
+        used_at=at or timezone.now()
+    )
 
 
 # --- Email verification -------------------------------------------------------------------------
@@ -188,15 +247,20 @@ def reset_password(raw_token: str, new_password: str) -> User | None:
     return user
 
 
+# Tokens that must become invalid when the password changes.
+# This includes password-reset and email-change links.
+# A pending email-change link could let someone take over the account
+# even after the password is reset.
+# Verification links remain valid because they only confirm the current address.
+INVALIDATED_BY_A_PASSWORD_CHANGE = [TokenPurpose.PASSWORD_RESET, TokenPurpose.EMAIL_CHANGE]
+
+
 def set_password(user: User, new_password: str) -> None:
     """Change a password and make sure nobody stays signed in with the old one."""
     user.set_password(new_password)
     user.save(update_fields=["password", "updated_at"])
 
-    # Unused reset links for this account must stop working once the password has changed.
-    SecurityToken.objects.filter(purpose=TokenPurpose.PASSWORD_RESET, user=user, used_at__isnull=True).update(
-        used_at=user.updated_at
-    )
+    invalidate_tokens(user, INVALIDATED_BY_A_PASSWORD_CHANGE, at=user.updated_at)
 
     revoke_refresh_tokens(user)
     # Someone who has just proved ownership by email should not stay locked out.

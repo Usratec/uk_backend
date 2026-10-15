@@ -29,6 +29,23 @@ LOGIN_URL = reverse("auth-login")
 CABINET_URLS = [PROFILE_URL, EMAIL_CHANGE_URL, PASSWORD_URL, SUBSCRIPTION_URL, LEARNING_URL]
 
 
+def ask_to_change_email(api, new_email, current_password=PASSWORD):
+    """Ask to move the account to another address.
+
+    Moving the address is as serious as changing the password, so the endpoint asks for the
+    password too; everything that is not about that check passes the right one and carries on.
+    """
+    return api.post(
+        EMAIL_CHANGE_URL,
+        {"new_email": new_email, "current_password": current_password},
+        format="json",
+    )
+
+
+def token_from_last_email():
+    return mail.outbox[0].body.split("token=")[1].split()[0]
+
+
 @pytest.fixture
 def package(db):
     return Package.objects.create(name="30 day access", duration_days=30, price=Decimal("29.99"))
@@ -110,22 +127,22 @@ class TestProfile:
 class TestEmailChange:
     def test_the_confirmation_goes_to_the_new_address(self, authenticated_api, user):
         """Sending it to the old address proved nothing about who owns the new one."""
-        response = authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "new.address@example.com"}, format="json")
+        response = ask_to_change_email(authenticated_api, "new.address@example.com")
 
         assert response.status_code == 200
         assert mail.outbox[0].to == ["new.address@example.com"]
         assert mail.outbox[0].subject == "Confirm your new email address"
 
     def test_nothing_changes_until_the_link_is_followed(self, authenticated_api, user):
-        authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "new.address@example.com"}, format="json")
+        ask_to_change_email(authenticated_api, "new.address@example.com")
 
         user.refresh_from_db()
         assert user.email == "student@example.com"
         assert user.email_verified is False
 
     def test_confirming_moves_the_account_to_the_new_address(self, api, authenticated_api, user):
-        authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "new.address@example.com"}, format="json")
-        token = mail.outbox[0].body.split("token=")[1].split()[0]
+        ask_to_change_email(authenticated_api, "new.address@example.com")
+        token = token_from_last_email()
 
         response = api.get(EMAIL_CONFIRM_URL, {"token": token})
 
@@ -136,8 +153,8 @@ class TestEmailChange:
         assert user.email_verified is True
 
     def test_sign_in_follows_the_new_address(self, api, authenticated_api, user):
-        authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "new.address@example.com"}, format="json")
-        token = mail.outbox[0].body.split("token=")[1].split()[0]
+        ask_to_change_email(authenticated_api, "new.address@example.com")
+        token = token_from_last_email()
         api.get(EMAIL_CONFIRM_URL, {"token": token})
 
         assert (
@@ -150,7 +167,7 @@ class TestEmailChange:
         )
 
     def test_an_address_in_use_is_refused_when_asked_for(self, authenticated_api, google_user):
-        response = authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": google_user.email}, format="json")
+        response = ask_to_change_email(authenticated_api, google_user.email)
 
         assert response.status_code == 409
         assert response.data["detail"] == "An account with this email already exists."
@@ -158,8 +175,8 @@ class TestEmailChange:
 
     def test_an_address_claimed_in_the_meantime_is_refused_at_confirmation(self, api, authenticated_api, user):
         """Two people can ask for the same address; the first to confirm gets it."""
-        authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "contested@example.com"}, format="json")
-        token = mail.outbox[0].body.split("token=")[1].split()[0]
+        ask_to_change_email(authenticated_api, "contested@example.com")
+        token = token_from_last_email()
         User.objects.create_user(email="contested@example.com", first_name="Quicker")
 
         response = api.get(EMAIL_CONFIRM_URL, {"token": token})
@@ -169,18 +186,18 @@ class TestEmailChange:
         assert user.email == "student@example.com"
 
     def test_asking_for_your_own_address_is_refused(self, authenticated_api, user):
-        response = authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": user.email}, format="json")
+        response = ask_to_change_email(authenticated_api, user.email)
 
         assert response.status_code == 400
 
     def test_the_address_is_matched_regardless_of_case(self, authenticated_api, google_user):
-        response = authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": google_user.email.upper()}, format="json")
+        response = ask_to_change_email(authenticated_api, google_user.email.upper())
 
         assert response.status_code == 409
 
     def test_the_link_works_once(self, api, authenticated_api):
-        authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "new.address@example.com"}, format="json")
-        token = mail.outbox[0].body.split("token=")[1].split()[0]
+        ask_to_change_email(authenticated_api, "new.address@example.com")
+        token = token_from_last_email()
         api.get(EMAIL_CONFIRM_URL, {"token": token})
 
         assert api.get(EMAIL_CONFIRM_URL, {"token": token}).status_code == 400
@@ -206,9 +223,9 @@ class TestEmailChange:
 
     def test_requests_are_throttled(self, authenticated_api):
         for index in range(5):
-            authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": f"a{index}@example.com"}, format="json")
+            ask_to_change_email(authenticated_api, f"a{index}@example.com")
 
-        response = authenticated_api.post(EMAIL_CHANGE_URL, {"new_email": "last@example.com"}, format="json")
+        response = ask_to_change_email(authenticated_api, "last@example.com")
 
         assert response.status_code == 429
 

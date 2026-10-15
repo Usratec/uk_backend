@@ -70,6 +70,16 @@ class EmailChangeRequestView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Changing the address affects the account and its purchases, so it requires
+        # the same verification as changing the password.
+        # An access token alone is not enough to prove ownership.
+        # Google-only accounts have no password, so session verification is used.
+        if user.has_usable_password() and not user.check_password(data.validated_data["current_password"]):
+            return Response(
+                {"detail": "Current password is incorrect."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             cabinet_services.request_email_change(user, new_email)
         except cabinet_services.EmailAlreadyTakenError:
