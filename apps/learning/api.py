@@ -34,10 +34,10 @@ from apps.learning.models import (
     Subchapter,
 )
 from apps.learning.serializers import (
+    EBOOK_DETAIL,
     AnswerRequestSerializer,
     AnswerResponseSerializer,
     DoneResponseSerializer,
-    EbookChapterResponseSerializer,
     EbookListResponseSerializer,
     ExamDetailResponseSerializer,
     ExamListResponseSerializer,
@@ -241,20 +241,20 @@ def _link(neighbours: list, position: int | None, step: int) -> dict | None:
 
 
 class EbookView(APIView):
-    """The Highway Code: a chapter like any other, presented as a book."""
-
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         operation_id="listChapters",
-        summary="List the e-book chapters",
+        summary="List the e-books and the e-book chapters",
         responses={200: EbookListResponseSerializer},
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
+        shelf = [services.ebook_on_the_shelf(ebook) for ebook in services.live_ebooks()]
+
         book = services.live(Chapter.objects.all()).filter(slug=HIGHWAY_CODE_SLUG).first()
         if book is None:
-            return Response({"chapters": [], "current": None})
+            return Response({"ebooks": shelf, "chapters": [], "current": None})
 
         sections = entitlements.visible_subchapters(student, services.live_subchapters_of(book)).order_by(
             "order", "title"
@@ -274,6 +274,7 @@ class EbookView(APIView):
 
         return Response(
             {
+                "ebooks": shelf,
                 "chapters": chapters,
                 # The first section not yet read, which is where "continue reading" goes. The
                 # last section once the book is finished, so the button always has a target.
@@ -286,17 +287,24 @@ class EbookView(APIView):
 
 
 class EbookChapterView(APIView):
-    """One part of the Highway Code to read."""
-
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         operation_id="getChapter",
-        summary="Read an e-book chapter",
-        responses={200: EbookChapterResponseSerializer},
+        summary="Read an e-book, or an e-book chapter",
+        responses={200: EBOOK_DETAIL},
     )
     def get(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
+
+        ebook = services.live_ebooks().filter(slug=slug).first()
+        if ebook is not None:
+            # The file's signed URL is the thing being asked for, so this is where a plan is
+            # needed — browsing the shelf is not.
+            if not entitlements.has_access(student):
+                return plan_needed()
+            return Response({"ebook": services.student_view_of_ebook(ebook)})
+
         section = (
             services.live(Subchapter.objects.select_related("chapter"))
             .filter(slug=slug, chapter__slug=HIGHWAY_CODE_SLUG)
@@ -462,7 +470,8 @@ class AnswerView(APIView):
         return Response(marked)
 
 
-def _exam_summary(exam: PracticeExam, question_count: int) -> dict:
+def _exam_summary(exam: PracticeExam, question_count: int, hazards: dict | None = None) -> dict:
+    hazards = hazards or {}
     return {
         "slug": exam.slug,
         "title": exam.title,
@@ -471,6 +480,8 @@ def _exam_summary(exam: PracticeExam, question_count: int) -> dict:
         "questionCount": question_count,
         "passMark": exam.pass_mark,
         "timeLimitSeconds": exam.time_limit_seconds,
+        "clipCount": hazards.get("clipCount", 0),
+        "hazardMaxScore": hazards.get("hazardMaxScore", 0),
     }
 
 
@@ -511,11 +522,14 @@ class ExamListView(APIView):
         if kind:
             exams = exams.filter(kind=kind)
 
+        exams = list(exams)
+        hazards = services.hazard_totals_for(exams)
+
         listed = []
         for exam in exams:
             included, asked = _wholly_included(student, exam)
             if included:
-                listed.append(_exam_summary(exam, len(asked)))
+                listed.append(_exam_summary(exam, len(asked), hazards.get(exam.pk)))
 
         return Response({"exams": listed})
 
@@ -543,11 +557,18 @@ class ExamDetailView(APIView):
         if not included:
             return plan_needed()
 
+        clips = list(services.clips_in_exam(exam))
+
         return Response(
             {
-                "exam": _exam_summary(exam, len(asked)),
+                "exam": _exam_summary(
+                    exam,
+                    len(asked),
+                    {"clipCount": len(clips), "hazardMaxScore": sum(clip.top_score for clip in clips)},
+                ),
                 "questions": [services.student_view_of_question(question) for question in asked],
                 "signs": sign_map(_sign_codes_in(asked)),
+                "clips": [services.student_view_of_clip(clip) for clip in clips],
             }
         )
 
@@ -579,9 +600,14 @@ class ExamSubmitView(APIView):
         submission = ExamSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
 
-        # Marked on the server against every question the exam asks, so a sitting cannot be
-        # passed by sending back fewer answers than there were questions.
-        result = services.mark_exam(exam, submission.validated_data["answers"])
+        # Marked on the server against every question the exam asks and every clip it shows, so a
+        # sitting cannot be passed by sending back fewer answers than there were questions, nor a
+        # hazard score claimed for a clip that was never clicked in.
+        result = services.mark_exam(
+            exam,
+            submission.validated_data["answers"],
+            submission.validated_data.get("hazardClicks"),
+        )
         services.record_sitting(student, exam, result)
         return Response(result)
 

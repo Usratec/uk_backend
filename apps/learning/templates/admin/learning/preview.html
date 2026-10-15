@@ -56,6 +56,27 @@
                         <li class="adm-preview__placeholder">No hazards are marked yet.</li>
                     {% endfor %}
                 </ol>
+            {% elif ebook_sheet %}
+                {% comment %}
+                    An e-book is a file a student is handed, so there are no blocks to render and
+                    nothing to read on this page. What staff need to check is that the right
+                    document opens and the cover is the one they meant.
+                {% endcomment %}
+                {% if ebook_sheet.cover_url %}
+                    <img class="adm-preview__cover" src="{{ ebook_sheet.cover_url }}" alt="The cover of this e-book">
+                {% else %}
+                    <p class="adm-preview__placeholder">No cover has been uploaded. The shelf will show the title alone.</p>
+                {% endif %}
+                {% if ebook_sheet.url %}
+                    <p><a class="adm-btn" href="{{ ebook_sheet.url }}" target="_blank">Open the document</a></p>
+                    <p class="adm-preview__meta">
+                        {{ ebook_sheet.file_title }} · {{ ebook_sheet.kind|lower }}
+                        {% if ebook_sheet.content_type %} · {{ ebook_sheet.content_type }}{% endif %}
+                        {% if ebook_sheet.size_bytes %} · {{ ebook_sheet.size_bytes|filesizeformat }}{% endif %}
+                    </p>
+                {% else %}
+                    <p class="adm-preview__placeholder">No file has been chosen from the media library yet.</p>
+                {% endif %}
             {% elif answer_sheet %}
                 {% comment %}
                     A question, so there is nothing to read: what staff need to check is the

@@ -27,6 +27,8 @@ from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
     Chapter,
     ContentType,
+    Ebook,
+    ExamHazardClip,
     ExamQuestion,
     HazardAttempt,
     HazardClip,
@@ -160,6 +162,12 @@ class PublishableAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
         return actions
 
 
+def _thumbnail(image, width: int) -> SafeString:
+    if not image:
+        return placeholder()
+    return format_html('<img src="{}" style="max-width:{}px;height:auto;border-radius:4px" alt="">', image.url, width)
+
+
 def _hazard_sheet(instance) -> dict | None:
     """The clip and its hazard timings, for a clip or for a content item showing one."""
     clip = instance if isinstance(instance, HazardClip) else getattr(instance, "hazard_clip", None)
@@ -170,6 +178,10 @@ def _answer_sheet(instance) -> dict | None:
     """The answers to check, for a question or for a content item that asks one."""
     question = instance if isinstance(instance, Question) else getattr(instance, "question", None)
     return services.answer_sheet_for(question) if question else None
+
+
+def _ebook_sheet(instance) -> dict | None:
+    return services.ebook_sheet_for(instance) if isinstance(instance, Ebook) else None
 
 
 class PreviewMixin(admin.ModelAdmin):
@@ -210,6 +222,8 @@ class PreviewMixin(admin.ModelAdmin):
                 "answer_sheet": _answer_sheet(instance),
                 # A hazard clip, or a content item showing one.
                 "hazard_sheet": _hazard_sheet(instance),
+                # An e-book, which has a file to open rather than a body to read.
+                "ebook_sheet": _ebook_sheet(instance),
                 "opts": self.model._meta,
             },
         )
@@ -452,21 +466,43 @@ class ExamQuestionInline(admin.TabularInline):
     autocomplete_fields = ["question"]
 
 
+class ExamHazardClipInline(admin.TabularInline):
+    model = ExamHazardClip
+    extra = 1
+    fields = ["order", "clip", "worth"]
+    readonly_fields = ["worth"]
+    ordering = ["order"]
+    autocomplete_fields = ["clip"]
+    verbose_name = "hazard clip"
+    verbose_name_plural = "Hazard clips"
+
+    @admin.display(description="Top score")
+    def worth(self, place: ExamHazardClip) -> str:
+        """What this clip adds to the sitting's hazard total, so staff can see the paper's worth."""
+        if place.pk is None or place.clip_id is None:
+            return placeholder()
+        return f"{place.clip.top_score} marks"
+
+
 @admin.register(PracticeExam)
 class PracticeExamAdmin(PublishableAdmin):
-    list_display = ["title", "kind", "question_count", "pass_mark", "order", "state"]
+    list_display = ["title", "kind", "question_count", "clip_count", "pass_mark", "order", "state"]
     list_editable = ["order"]
     list_filter = ["status", "kind"]
     search_fields = ["title", "slug", "description"]
     prepopulated_fields = {"slug": ("title",)}
-    inlines = [ExamQuestionInline]
+    inlines = [ExamQuestionInline, ExamHazardClipInline]
     fieldsets = (
         (None, {"fields": ("title", "slug", "description", "kind", "order")}),
         (
             "Rules",
             {
-                "fields": ("pass_mark", "time_limit_seconds"),
-                "description": "How many answers must be right, and how long the student has.",
+                "fields": ("pass_mark", "time_limit_seconds", "hazard_worth"),
+                "description": (
+                    "How many answers must be right, and how long the student has. The pass mark "
+                    "covers the questions only — the hazard clips are scored and reported beside "
+                    "them, as in the real test."
+                ),
             },
         ),
         (
@@ -474,11 +510,25 @@ class PracticeExamAdmin(PublishableAdmin):
             {"fields": ("status", "publish_from", "published_at", "published_by", "readiness")},
         ),
     )
-    readonly_fields = ["status", "published_at", "published_by", "readiness"]
+    readonly_fields = ["status", "published_at", "published_by", "readiness", "hazard_worth"]
 
     @admin.display(description="Questions")
     def question_count(self, exam: PracticeExam) -> int:
         return exam.questions.count()
+
+    @admin.display(description="Clips")
+    def clip_count(self, exam: PracticeExam) -> int:
+        return exam.hazard_clips.count()
+
+    @admin.display(description="Hazard marks available")
+    def hazard_worth(self, exam: PracticeExam) -> str:
+        """What the clips add up to, which is what a student's hazard score is out of."""
+        if exam.pk is None:
+            return placeholder()
+        clips = list(exam.hazard_clips.all())
+        if not clips:
+            return "No clips, so this is a question-only paper."
+        return f"{sum(clip.top_score for clip in clips)} marks across {len(clips)} clip(s)"
 
 
 # --- What students have done ---------------------------------------------------------------------
@@ -515,15 +565,50 @@ class QuestionAttemptAdmin(ReadOnlyAdmin):
 
 @admin.register(MockAttempt)
 class MockAttemptAdmin(ReadOnlyAdmin):
-    list_display = ["student", "exam", "result", "passed", "created_at"]
+    list_display = ["student", "exam", "result", "hazard_result", "passed", "created_at"]
     list_filter = ["passed", "exam", "created_at"]
     search_fields = ["student__email", "exam__title"]
     list_select_related = ["student", "exam"]
     date_hierarchy = "created_at"
+    fieldsets = (
+        (None, {"fields": ("student", "exam", "created_at")}),
+        (
+            "Questions",
+            {
+                "fields": ("result", "breakdown", "passed"),
+                "description": "The pass mark covers the questions only. A blank answer counts as a wrong one.",
+            },
+        ),
+        (
+            "Hazard perception",
+            {
+                "fields": ("hazard_result",),
+                "description": "Scored separately from the questions, and never added to them.",
+            },
+        ),
+    )
+    readonly_fields = ["student", "exam", "created_at", "result", "breakdown", "passed", "hazard_result"]
 
-    @admin.display(description="Score")
+    @admin.display(description="Questions")
     def result(self, attempt: MockAttempt) -> str:
         return f"{attempt.score}/{attempt.total}"
+
+    @admin.display(description="Breakdown")
+    def breakdown(self, attempt: MockAttempt) -> str:
+        counts = services.attempt_statistics(attempt)
+        return (
+            f"{counts['correctQuestions']} right, "
+            f"{counts['incorrectQuestions']} wrong, "
+            f"{counts['unansweredQuestions']} left blank, "
+            f"of {counts['totalQuestions']} asked"
+        )
+
+    @admin.display(description="Hazard score")
+    def hazard_result(self, attempt: MockAttempt) -> str:
+        counts = services.attempt_statistics(attempt)
+        if not counts["hazardMaxScore"]:
+            return "—"
+        return f"{counts['hazardTotalScore']}/{counts['hazardMaxScore']}"
 
 
 @admin.register(LessonProgress)
@@ -550,12 +635,12 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     credentials stay on the server and nothing arrives in it that staff did not put there.
     """
 
-    list_display = ["title", "kind", "readable_size", "duration_seconds", "used_by", "created_at"]
+    list_display = ["title", "kind", "readable_size", "created_at"]
     list_filter = ["kind", "created_at"]
     search_fields = ["title", "file"]
     readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link"]
     fieldsets = (
-        (None, {"fields": ("title", "kind", "file", "duration_seconds")}),
+        (None, {"fields": ("title", "kind", "file")}),
         (
             "About the file",
             {
@@ -573,12 +658,6 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
                 return f"{size:.0f} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
             size /= 1024
         return f"{size:.1f} GB"
-
-    @admin.display(description="Used by")
-    def used_by(self, asset: MediaAsset) -> str:
-        """How many content items refer to this file, so staff can see what a deletion affects."""
-        count = asset.used_in.count()
-        return f"{count} item{'' if count == 1 else 's'}"
 
     @admin.display(description="File")
     def download_link(self, asset: MediaAsset) -> SafeString:
@@ -637,7 +716,8 @@ class HazardWindowInline(admin.TabularInline):
 class HazardClipAdmin(PreviewMixin, PublishableAdmin):
     """Hazard perception clips: a video from the library, plus when its hazards develop."""
 
-    list_display = ["title", "hazard_count", "top_score", "max_clicks", "order", "state"]
+    list_display = ["still", "title", "hazard_count", "top_score", "max_clicks", "order", "state"]
+    list_display_links = ["title"]
     list_editable = ["order"]
     list_filter = ["status"]
     search_fields = ["title", "slug", "description"]
@@ -645,7 +725,16 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
     autocomplete_fields = ["media"]
     inlines = [HazardWindowInline]
     fieldsets = (
-        (None, {"fields": ("title", "slug", "description", "media", "order")}),
+        (
+            None,
+            {
+                "fields": ("title", "slug", "description", "media", "thumbnail", "thumbnail_preview", "order"),
+                "description": (
+                    "The video comes from the media library. The thumbnail is uploaded here and is "
+                    "optional — tick 'Clear' beside it to remove one."
+                ),
+            },
+        ),
         (
             "Scoring",
             {
@@ -661,7 +750,7 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
             {"fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link")},
         ),
     )
-    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link"]
+    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link", "thumbnail_preview"]
 
     @admin.display(description="Hazards")
     def hazard_count(self, clip: HazardClip) -> int:
@@ -670,6 +759,15 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
     @admin.display(description="Top score")
     def top_score(self, clip: HazardClip) -> int:
         return clip.top_score
+
+    @admin.display(description="")
+    def still(self, clip: HazardClip) -> SafeString:
+        """The thumbnail in the list, so staff can see at a glance which clips have one."""
+        return _thumbnail(clip.thumbnail, width=64)
+
+    @admin.display(description="Shown before it plays")
+    def thumbnail_preview(self, clip: HazardClip) -> SafeString:
+        return _thumbnail(clip.thumbnail, width=320)
 
 
 @admin.register(HazardAttempt)
@@ -683,3 +781,58 @@ class HazardAttemptAdmin(ReadOnlyAdmin):
     @admin.display(description="Score")
     def result(self, attempt: HazardAttempt) -> str:
         return f"{attempt.score}/{attempt.top_score}"
+
+
+@admin.register(Ebook)
+class EbookAdmin(PreviewMixin, PublishableAdmin):
+    list_display = ["cover_thumbnail", "title", "slug", "file", "order", "state"]
+    # The title, not the picture, is what staff click to open one.
+    list_display_links = ["title"]
+    list_editable = ["order"]
+    list_filter = ["status", "created_at"]
+    search_fields = ["title", "slug", "description"]
+    # Filled in from the title as staff type, and editable afterwards: the slug is in links, so a
+    # published e-book's slug is a decision rather than something to regenerate.
+    prepopulated_fields = {"slug": ("title",)}
+    autocomplete_fields = ["file"]
+    date_hierarchy = "created_at"
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": ("title", "slug", "description", "order"),
+                "description": "The slug is how the API addresses this e-book. Changing it breaks saved links.",
+            },
+        ),
+        (
+            "The book",
+            {
+                "fields": ("file", "cover", "cover_thumbnail"),
+                "description": (
+                    "The file is a document from the media library. The cover is uploaded here and "
+                    "is optional — tick 'Clear' beside it to remove one."
+                ),
+            },
+        ),
+        (
+            "Publishing",
+            {
+                "fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link"),
+                "description": "Students see this only once it is published.",
+            },
+        ),
+    )
+    readonly_fields = [
+        "status",
+        "published_at",
+        "published_by",
+        "readiness",
+        "preview_link",
+        "cover_thumbnail",
+        "created_at",
+        "updated_at",
+    ]
+
+    @admin.display(description="")
+    def cover_thumbnail(self, ebook: Ebook) -> SafeString:
+        return _thumbnail(ebook.cover, width=90)

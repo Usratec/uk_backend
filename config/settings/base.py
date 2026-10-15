@@ -411,6 +411,7 @@ JAZZMIN_SETTINGS = {
         "learning.PracticeExam": "fas fa-list-check",
         "learning.MediaAsset": "fas fa-photo-film",
         "learning.HazardClip": "fas fa-video",
+        "learning.Ebook": "fas fa-book",
         # What students have done, as opposed to what staff have written.
         "learning.HazardAttempt": "fas fa-triangle-exclamation",
         "learning.QuestionAttempt": "fas fa-pen-to-square",

@@ -27,7 +27,7 @@ def upload(kind=MediaKind.VIDEO, name="clip.mp4", title="A clip", **fields) -> M
 
 @pytest.fixture
 def video(db):
-    return upload(duration_seconds=90)
+    return upload()
 
 
 @pytest.fixture
@@ -116,7 +116,6 @@ class TestBlocks:
 
         assert block["type"] == "video"
         assert block["title"] == "Watch this"
-        assert block["durationSeconds"] == 90
         assert block["url"]
 
     def test_a_document_is_served_as_a_document_block(self, subchapter, document):
@@ -125,10 +124,11 @@ class TestBlocks:
         assert block["type"] == "document"
         assert block["url"]
 
-    def test_a_video_with_no_known_length_says_so_rather_than_omitting_it(self, subchapter):
-        block = services.block_for(media_content(subchapter, upload()))
+    def test_a_video_block_does_not_carry_a_length(self, subchapter, video):
+        """The media library no longer records one, so nothing claims to know it."""
+        block = services.block_for(media_content(subchapter, video))
 
-        assert block["durationSeconds"] is None
+        assert "durationSeconds" not in block
 
     def test_material_whose_file_is_missing_falls_back_to_html(self, subchapter):
         """A half-made item is served as an empty block rather than crashing the lesson."""
@@ -151,7 +151,7 @@ class TestWhatStudentsAreServed:
 
         video_block = next(b for b in response.data["lesson"]["blocks"] if b["type"] == "video")
         assert video_block["url"]
-        assert video_block["durationSeconds"] == 90
+        assert "durationSeconds" not in video_block
 
     def test_somebody_without_a_plan_gets_no_url_because_they_get_no_lesson(
         self, api, published_video, subchapter, db
@@ -187,14 +187,6 @@ class TestTheAdmin:
         assert video.title in page
         assert "18 bytes" in page
 
-    def test_it_says_how_many_items_use_a_file(self, editor_client, subchapter, video):
-        """So staff can see what removing it would affect."""
-        media_content(subchapter, video)
-
-        page = editor_client.get(reverse("admin:learning_mediaasset_changelist")).content.decode()
-
-        assert "1 item" in page
-
     def test_the_uploader_is_recorded(self, editor_client, editor):
         editor_client.post(
             reverse("admin:learning_mediaasset_add"),
@@ -202,7 +194,6 @@ class TestTheAdmin:
                 "title": "Uploaded in the admin",
                 "kind": MediaKind.DOCUMENT,
                 "file": SimpleUploadedFile("notes.pdf", b"pdf bytes", content_type="application/pdf"),
-                "duration_seconds": "",
             },
         )
 

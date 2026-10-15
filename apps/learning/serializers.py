@@ -129,9 +129,6 @@ class MediaBlockSerializer(serializers.Serializer):
     type = serializers.ChoiceField(choices=[("video", "video"), ("document", "document")])
     title = serializers.CharField()
     url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
-    durationSeconds = serializers.IntegerField(  # noqa: N815
-        allow_null=True, help_text="For video, when it is known."
-    )
 
 
 CONTENT_BLOCK = PolymorphicProxySerializer(
@@ -177,12 +174,23 @@ class HazardClipSerializer(serializers.Serializer):
     title = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
     url = serializers.URLField(help_text="A short-lived signed URL for the video. Do not cache it.")
-    durationSeconds = serializers.IntegerField(allow_null=True)  # noqa: N815
+    thumbnailUrl = serializers.URLField(  # noqa: N815
+        allow_null=True,
+        help_text="A short-lived signed URL for the still, or null when the clip has none.",
+    )
     hazards = serializers.IntegerField(help_text="How many hazards are in the clip, but not when.")
     topScore = serializers.IntegerField(help_text="The most this clip can score: five per hazard.")  # noqa: N815
     maxClicks = serializers.IntegerField(  # noqa: N815
         help_text="Clicking more often than this scores nothing, as in the real test."
     )
+
+
+class HazardResultSerializer(serializers.Serializer):
+    label = serializers.CharField(help_text="What the hazard was.")  # type: ignore[assignment]
+    startsAt = serializers.FloatField()  # noqa: N815
+    endsAt = serializers.FloatField()  # noqa: N815
+    score = serializers.IntegerField(help_text="5 for spotting it earliest, down to 1, or 0 if missed.")
+    spotted = serializers.BooleanField()
 
 
 class ClipMapField(serializers.DictField):
@@ -265,10 +273,31 @@ class EbookChapterSummarySerializer(serializers.Serializer):
     read = serializers.BooleanField(help_text="Always false until reading progress is recorded.")
 
 
+class EbookSummarySerializer(serializers.Serializer):
+    slug = serializers.SlugField(help_text="Ask for the book itself at /api/learn/ebook/<slug>/.")
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    coverUrl = serializers.URLField(  # noqa: N815
+        allow_null=True, help_text="A short-lived signed URL for the cover, or null without one."
+    )
+    updatedAt = serializers.DateTimeField(help_text="When staff last changed it.")  # noqa: N815
+
+
+class EbookSerializer(EbookSummarySerializer):
+    url = serializers.URLField(help_text="A short-lived signed URL for the document. Do not cache it.")
+    contentType = serializers.CharField(allow_blank=True, help_text="For example application/pdf.")  # noqa: N815
+    sizeBytes = serializers.IntegerField(help_text="So the reader can warn before a large download.")  # noqa: N815
+
+
 class EbookListResponseSerializer(serializers.Serializer):
-    chapters = EbookChapterSummarySerializer(many=True)
+    ebooks = EbookSummarySerializer(
+        many=True, help_text="The documents managed in the Ebooks section of the back office."
+    )
+    chapters = EbookChapterSummarySerializer(
+        many=True, help_text="The Highway Code, read section by section out of the course hierarchy."
+    )
     current = serializers.SlugField(
-        allow_null=True, help_text="Where the student left off. Always null until reading progress is recorded."
+        allow_null=True, help_text="Where the student left off in the Highway Code, by section slug."
     )
 
 
@@ -296,6 +325,20 @@ class EbookChapterResponseSerializer(serializers.Serializer):
         help_text="Empty today: the e-book is read straight through, and its sections carry no check blocks."
     )
     clips = ClipMapField()
+
+
+class EbookDetailResponseSerializer(serializers.Serializer):
+    ebook = EbookSerializer()
+
+
+EBOOK_DETAIL = PolymorphicProxySerializer(
+    component_name="EbookDetail",
+    serializers={
+        "ebook": EbookDetailResponseSerializer,
+        "chapter": EbookChapterResponseSerializer,
+    },
+    resource_type_field_name=None,
+)
 
 
 # --- Signs, practice and answering ---------------------------------------------------------------
@@ -350,6 +393,12 @@ class ExamSummarySerializer(serializers.Serializer):
     timeLimitSeconds = serializers.IntegerField(  # noqa: N815
         allow_null=True, help_text="Null when the exam is untimed."
     )
+    clipCount = serializers.IntegerField(  # noqa: N815
+        help_text="How many hazard clips are sat after the questions. 0 for a question-only paper."
+    )
+    hazardMaxScore = serializers.IntegerField(  # noqa: N815
+        help_text="The most the clips can score: five per hazard. 0 for a question-only paper."
+    )
 
 
 class ExamListResponseSerializer(serializers.Serializer):
@@ -362,6 +411,10 @@ class ExamDetailResponseSerializer(serializers.Serializer):
     exam = ExamSummarySerializer()
     questions = StudentQuestionSerializer(many=True, help_text="In the order staff arranged them.")
     signs = SignMapField()
+    clips = HazardClipSerializer(
+        many=True,
+        help_text="The hazard clips to sit after the questions, in order. Empty for a question-only paper.",
+    )
 
 
 class ExamSubmissionSerializer(serializers.Serializer):
@@ -370,6 +423,15 @@ class ExamSubmissionSerializer(serializers.Serializer):
     answers = serializers.DictField(
         child=serializers.ListField(child=serializers.CharField()),
         help_text='The option ids chosen for each question, keyed by the question\'s `id`, e.g. {"12": ["a"]}.',
+    )
+    hazardClicks = serializers.DictField(  # noqa: N815
+        required=False,
+        child=serializers.ListField(child=serializers.FloatField(min_value=0)),
+        help_text=(
+            "For a mock test with clips: the seconds into each clip at which the student clicked, "
+            'keyed by the clip\'s `slug`, e.g. {"country-lane": [4.2, 11.8]}. A clip left out '
+            "scores nothing, as an unanswered question does."
+        ),
     )
 
 
@@ -382,14 +444,36 @@ class ExamQuestionResultSerializer(serializers.Serializer):
     explanation = serializers.CharField(allow_blank=True)
 
 
-class ExamResultResponseSerializer(serializers.Serializer):
-    """The marking for a whole sitting. Not stored: attempt history arrives with progress."""
+class ExamClipResultSerializer(serializers.Serializer):
+    """How one hazard clip in the sitting was scored, revealed once it is over."""
 
+    id = serializers.IntegerField()
+    slug = serializers.SlugField()
+    title = serializers.CharField()
     score = serializers.IntegerField()
-    total = serializers.IntegerField()
+    topScore = serializers.IntegerField(help_text="The most this clip was worth.")  # noqa: N815
+    voided = serializers.BooleanField(help_text="True when the clip was clicked through too often to count.")
+    hazards = HazardResultSerializer(many=True, help_text="Every hazard, spotted or not, with its timing.")
+
+
+class ExamStatisticsSerializer(serializers.Serializer):
+    totalQuestions = serializers.IntegerField(help_text="Questions the exam asked.")  # noqa: N815
+    correctQuestions = serializers.IntegerField()  # noqa: N815
+    incorrectQuestions = serializers.IntegerField(help_text="Answered, but wrongly.")  # noqa: N815
+    unansweredQuestions = serializers.IntegerField(help_text="Left blank. Counted as wrong.")  # noqa: N815
+    hazardTotalScore = serializers.IntegerField(help_text="Scored on the clips. 0 without any.")  # noqa: N815
+    hazardMaxScore = serializers.IntegerField(  # noqa: N815
+        help_text="The most the clips could score: five per hazard. 0 without any."
+    )
+
+
+class ExamResultResponseSerializer(ExamStatisticsSerializer):
+    score = serializers.IntegerField(help_text="Questions right. The same as `correctQuestions`.")
+    total = serializers.IntegerField(help_text="Questions asked. The same as `totalQuestions`.")
     passMark = serializers.IntegerField()  # noqa: N815
-    passed = serializers.BooleanField()
+    passed = serializers.BooleanField(help_text="Decided on the question score alone.")
     questions = ExamQuestionResultSerializer(many=True, help_text="Every question, answered or not.")
+    clips = ExamClipResultSerializer(many=True, help_text="Every clip in the exam, clicked in or not.")
 
 
 # --- Progress ------------------------------------------------------------------------------------
@@ -437,19 +521,6 @@ class HazardAttemptRequestSerializer(serializers.Serializer):
         allow_empty=True,
         help_text="Seconds into the clip at which the student clicked, e.g. [4.2, 11.8].",
     )
-
-
-class HazardResultSerializer(serializers.Serializer):
-    """How one hazard was scored, revealed once the attempt is over."""
-
-    # "label" is also the name of an attribute every DRF field has, which is why mypy objects.
-    # Safe here: the serializer metaclass moves declared fields off the class before anything
-    # reads Field.label. Named for the API, which calls the hazard's description its label.
-    label = serializers.CharField(help_text="What the hazard was.")  # type: ignore[assignment]
-    startsAt = serializers.FloatField()  # noqa: N815
-    endsAt = serializers.FloatField()  # noqa: N815
-    score = serializers.IntegerField(help_text="5 for spotting it earliest, down to 1, or 0 if missed.")
-    spotted = serializers.BooleanField()
 
 
 class HazardAttemptResponseSerializer(serializers.Serializer):
