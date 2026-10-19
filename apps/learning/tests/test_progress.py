@@ -203,6 +203,26 @@ class TestPracticeModes:
 
         assert response.data["questions"] == []
 
+    def test_a_question_got_wrong_again_comes_back_to_the_list(self, api, student, live_question):
+        learner = sign_in(api, student())
+        answer(learner, live_question, "a")
+        answer(learner, live_question, "b")
+
+        response = learner.get(PRACTICE_URL, {"mode": "mistakes"})
+
+        assert [q["key"] for q in response.data["questions"]] == [live_question.key]
+
+    def test_the_last_of_many_attempts_decides(self, api, student, live_question):
+        learner = sign_in(api, student())
+        answer(learner, live_question, "b")
+        answer(learner, live_question, "a")
+        answer(learner, live_question, "b")
+        answer(learner, live_question, "a")
+
+        response = learner.get(PRACTICE_URL, {"mode": "mistakes"})
+
+        assert response.data["questions"] == []
+
     def test_saved_practises_only_what_was_saved(self, api, student, live_question, make_question, publisher):
         other = make_question(key="not-saved")
         services.publish(actor=publisher, instance=other)
