@@ -300,6 +300,7 @@ if S3_CONFIGURED:
 
 # Path the Django admin is mounted on, without a leading slash.
 ADMIN_URL = with_trailing_slash(env.str("ADMIN_URL", default="api/admin/"))
+LOGIN_REDIRECT_URL = f"/{ADMIN_URL}"
 
 # Storefront/cabinet frontend. Used to build links in emails and Stripe redirect URLs.
 FRONTEND_BASE_URL = with_trailing_slash(env.str("FRONTEND_BASE_URL", default="http://localhost:3000/"))
