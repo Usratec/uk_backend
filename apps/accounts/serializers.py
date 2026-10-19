@@ -28,6 +28,12 @@ class PasswordField(serializers.CharField):
         super().__init__(**kwargs)
 
 
+class EmailField(serializers.EmailField):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("max_length", 254)
+        super().__init__(**kwargs)
+
+
 class ConfirmedPasswordSerializer(serializers.Serializer):
     """Base for the forms that ask for the new password twice: `password` and `confirm_password`."""
 
@@ -38,7 +44,7 @@ class ConfirmedPasswordSerializer(serializers.Serializer):
 
 
 class RegisterSerializer(ConfirmedPasswordSerializer):
-    email = serializers.EmailField()
+    email = EmailField()
     first_name = serializers.CharField(max_length=150)
     password = PasswordField()
     confirm_password = serializers.CharField(write_only=True)
@@ -48,7 +54,7 @@ class RegisterSerializer(ConfirmedPasswordSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = EmailField()
     password = serializers.CharField(write_only=True, style={"input_type": "password"})
     # Chooses the session length: 30 days when true, 24 hours when false.
     remember_me = serializers.BooleanField(default=False)
@@ -61,7 +67,7 @@ class GoogleSignInSerializer(serializers.Serializer):
     id_token = serializers.CharField()
     # Accepted so older clients keep working, then ignored. It used to choose which account to
     # sign into, which let anyone with a Google token take over another person's account.
-    order_email = serializers.EmailField(required=False, allow_blank=True)
+    order_email = EmailField(required=False, allow_blank=True)
 
 
 class GoogleLinkSerializer(serializers.Serializer):
@@ -69,7 +75,7 @@ class GoogleLinkSerializer(serializers.Serializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = EmailField()
 
     def validate_email(self, value: str) -> str:
         return value.lower()
@@ -93,7 +99,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 
 class EmailChangeSerializer(serializers.Serializer):
-    new_email = serializers.EmailField()
+    new_email = EmailField()
     current_password = serializers.CharField(
         write_only=True,
         required=False,

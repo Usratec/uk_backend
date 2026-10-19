@@ -222,6 +222,15 @@ class TestEmailChange:
 
         assert response.status_code == 400
 
+    def test_an_address_longer_than_254_characters_is_refused(self, authenticated_api):
+        local_part = "a" * (255 - len("@example.com"))
+
+        response = ask_to_change_email(authenticated_api, f"{local_part}@example.com")
+
+        assert response.status_code == 400
+        assert "new_email" in response.data
+        assert mail.outbox == []
+
     def test_the_address_is_matched_regardless_of_case(self, authenticated_api, google_user):
         response = ask_to_change_email(authenticated_api, google_user.email.upper())
 

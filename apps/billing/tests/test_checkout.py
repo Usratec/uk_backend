@@ -152,6 +152,15 @@ class TestRefusedCheckout:
         assert response.status_code == 400
         assert Order.objects.count() == 0
 
+    def test_an_email_longer_than_254_characters_is_refused(self, api, package, stripe):
+        local_part = "a" * (255 - len("@example.com"))
+
+        response = checkout(api, package, email=f"{local_part}@example.com")
+
+        assert response.status_code == 400
+        assert "email" in response.data
+        assert Order.objects.count() == 0
+
     def test_stripe_failure_returns_503_and_leaves_the_order_pending(self, api, package, stripe_down):
         """The customer can try again, and the pending order shows the attempt was made."""
         response = checkout(api, package)

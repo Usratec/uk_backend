@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 
 from django.core.cache import cache
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
@@ -179,17 +180,28 @@ def find_by_email(email: str) -> User | None:
     return User.objects.filter(email__iexact=email).first()
 
 
+class EmailAlreadyRegisteredError(Exception):
+    """Raised when the account was created between ``find_by_email`` and the INSERT."""
+
+
 def register(email: str, first_name: str, password: str) -> User:
     """Create a password account and email a verification link.
 
     The account is usable immediately; verifying the email does not gate anything today.
     """
-    user = User.objects.create_user(
-        email=email,
-        password=password,
-        first_name=first_name,
-        auth_method=AuthMethod.EMAIL,
-    )
+    try:
+        # Atomic, so a duplicate leaves the surrounding transaction usable rather than broken.
+        with transaction.atomic():
+            user = User.objects.create_user(
+                email=email,
+                password=password,
+                first_name=first_name,
+                auth_method=AuthMethod.EMAIL,
+            )
+    except IntegrityError as exc:
+        # Two registrations for one address can both pass the caller's duplicate check. The
+        # unique index settles it; the loser is a duplicate, not a server error.
+        raise EmailAlreadyRegisteredError(email) from exc
     send_email_verification(user)
     return user
 

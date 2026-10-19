@@ -1,10 +1,13 @@
 """POST /api/auth/register/"""
 
+import itertools
+
 import pytest
 from django.core import mail
 from django.core.mail import EmailMultiAlternatives
 from django.urls import reverse
 
+from apps.accounts import services
 from apps.accounts.models import AuthMethod, SecurityToken, TokenPurpose, User
 
 pytestmark = pytest.mark.django_db
@@ -73,9 +76,7 @@ class TestDuplicateEmail:
         response = api.post(URL, {**VALID_PAYLOAD, "email": user.email}, format="json")
 
         assert response.status_code == 409
-        assert response.data["detail"] == (
-            "An account with this email already exists. Please log in or reset your password."
-        )
+        assert response.data["detail"] == "An account with this email already exists."
 
     def test_existing_google_account_returns_the_google_message(self, api, google_user):
         response = api.post(URL, {**VALID_PAYLOAD, "email": google_user.email}, format="json")
@@ -87,6 +88,47 @@ class TestDuplicateEmail:
         response = api.post(URL, {**VALID_PAYLOAD, "email": user.email.upper()}, format="json")
 
         assert response.status_code == 409
+
+    @staticmethod
+    def _lose_the_race(monkeypatch):
+        """Blind the first duplicate check, as if the rival account appeared just after it ran.
+
+        The second call, the one the 409 message is built from, sees the database as it is.
+        """
+        real_find = services.find_by_email
+        calls = itertools.count()
+
+        def find_by_email(email):
+            return None if next(calls) == 0 else real_find(email)
+
+        monkeypatch.setattr(services, "find_by_email", find_by_email)
+
+    def test_an_account_created_mid_request_returns_409_not_500(self, api, monkeypatch):
+        User.objects.create_user(email=VALID_PAYLOAD["email"], password="Meadowlark21", first_name="Rival")
+        self._lose_the_race(monkeypatch)
+
+        response = api.post(URL, VALID_PAYLOAD, format="json")
+
+        assert response.status_code == 409
+        assert response.data["detail"] == "An account with this email already exists."
+        # The winning account is untouched and no second one was written.
+        assert User.objects.filter(email=VALID_PAYLOAD["email"]).count() == 1
+        assert User.objects.get(email=VALID_PAYLOAD["email"]).first_name == "Rival"
+        assert len(mail.outbox) == 0
+
+    def test_a_google_account_created_mid_request_returns_the_google_message(self, api, monkeypatch):
+        User.objects.create_user(
+            email=VALID_PAYLOAD["email"],
+            first_name="Rival",
+            auth_method=AuthMethod.GOOGLE,
+            google_id="rival-google-id",
+        )
+        self._lose_the_race(monkeypatch)
+
+        response = api.post(URL, VALID_PAYLOAD, format="json")
+
+        assert response.status_code == 409
+        assert response.data["detail"] == "This email is registered via Google. Please sign in with Google."
 
 
 class TestValidation:
@@ -129,6 +171,42 @@ class TestValidation:
 
         assert response.status_code == 400
         assert field in response.data
+
+    @pytest.mark.parametrize(
+        ("email", "code"),
+        [
+            (None, "null"),
+            ("", "blank"),
+            ("   ", "blank"),
+        ],
+        ids=["null", "empty", "whitespace only"],
+    )
+    def test_an_absent_email_is_refused(self, api, email, code):
+        """Missing is covered above; these are the ways an email can be present but say nothing."""
+        response = api.post(URL, {**VALID_PAYLOAD, "email": email}, format="json")
+
+        assert response.status_code == 400
+        assert [error.code for error in response.data["email"]] == [code]
+        assert User.objects.count() == 0
+
+    def test_an_email_longer_than_254_characters_is_refused(self, api):
+        local_part = "a" * (255 - len("@example.com"))
+        payload = {**VALID_PAYLOAD, "email": f"{local_part}@example.com"}
+
+        response = api.post(URL, payload, format="json")
+
+        assert response.status_code == 400
+        assert "email" in response.data
+        assert User.objects.count() == 0
+
+    def test_an_email_of_exactly_254_characters_is_accepted(self, api):
+        local_part = "a" * (254 - len("@example.com"))
+        email = f"{local_part}@example.com"
+
+        response = api.post(URL, {**VALID_PAYLOAD, "email": email}, format="json")
+
+        assert response.status_code == 201
+        assert User.objects.filter(email=email).exists()
 
     def test_nothing_is_created_when_validation_fails(self, api):
         api.post(URL, {**VALID_PAYLOAD, "email": "not-an-email"}, format="json")
