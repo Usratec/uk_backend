@@ -15,6 +15,7 @@ ALLOWED_HOSTS = ["testserver"]
 CORS_ALLOWED_ORIGINS = []
 CSRF_TRUSTED_ORIGINS = []
 FRONTEND_BASE_URL = "http://frontend.test/"
+BACKEND_BASE_URL = "http://backend.test/"
 
 # Tasks run immediately, in-process, so the suite needs no worker or queue.
 CELERY_TASK_ALWAYS_EAGER = True

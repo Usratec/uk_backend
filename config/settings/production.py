@@ -21,6 +21,7 @@ if not ALLOWED_HOSTS:
 DATABASES = {"default": database(env.str("DATABASE_URL"))}
 
 FRONTEND_BASE_URL = with_trailing_slash(env.str("FRONTEND_BASE_URL"))
+BACKEND_BASE_URL = with_trailing_slash(env.str("BACKEND_BASE_URL", default=f"https://{ALLOWED_HOSTS[0]}/"))
 
 CACHES = {
     "default": {

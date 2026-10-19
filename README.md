@@ -81,16 +81,17 @@ stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
 
 Stripe's webhook marks the order paid and queues a background job, which creates the account if
 the buyer had none, grants access, and sends a welcome email with a single-use link to choose a
-password plus a receipt. The job is safe to repeat: Stripe redelivers events, and each step checks
-whether it has already run.
+password plus a receipt, and tells the CRM managers that a student now has access. The job is safe
+to repeat: Stripe redelivers events, and each step checks whether it has already run.
 
 Access is two dates. `package_expires_at` ends learning access; `account_expires_at` is later by
 `ACCOUNT_LIFETIME_COEFFICIENT` (1.5, editable in the admin), so a lapsed customer can still sign
 in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
 for is lost.
 
-Two scheduled jobs run from the `beat` service: expiry reminders at 09:00 and closing expired
-accounts at 00:30 (never staff accounts). There is deliberately no job to revoke learning access,
+Scheduled jobs run from the `beat` service: expiry reminders at 09:00, closing expired accounts at
+00:30 (never staff accounts), fulfilling lost orders every ten minutes, and telling the CRM about
+access it was never told about, hourly. There is deliberately no job to revoke learning access,
 because access is derived from the dates every time it is checked.
 
 ### Running without Docker
@@ -123,6 +124,12 @@ Roles are declared in code, in each app's `roles.py`, and created by a migration
 declares, so permissions added by hand in the admin are taken back. No role carries
 `crm.change_candidate` yet; grant it to an account directly, or add a role for it, once you decide
 who may edit customer details.
+
+When a purchase grants a student access, the staff who hold `crm.view_candidate` are emailed: the
+student's name and address, the package, when they paid, how long access runs, when they
+registered, the order reference and links to their CRM page and to the order. It is sent from
+fulfilment, after the subscription exists, so registering tells nobody and an abandoned checkout
+or failed payment tells nobody either.
 
 A candidate's orders and access history appear on their page only for staff who also hold
 `billing.view_order` / `entitlements.view_subscription`, so CRM access alone does not reveal

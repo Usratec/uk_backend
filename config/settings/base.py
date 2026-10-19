@@ -199,6 +199,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.fulfil_unfulfilled_orders",
         "schedule": crontab(minute="*/10"),
     },
+    "notify-pending-access-grants": {
+        "task": "apps.crm.tasks.notify_pending_access_grants",
+        "schedule": crontab(minute="15"),
+    },
 }
 
 # --- Learning ------------------------------------------------------------------------------------
@@ -304,6 +308,7 @@ LOGIN_REDIRECT_URL = f"/{ADMIN_URL}"
 
 # Storefront/cabinet frontend. Used to build links in emails and Stripe redirect URLs.
 FRONTEND_BASE_URL = with_trailing_slash(env.str("FRONTEND_BASE_URL", default="http://localhost:3000/"))
+BACKEND_BASE_URL = with_trailing_slash(env.str("BACKEND_BASE_URL", default="http://localhost:8000/"))
 
 # --- Security ------------------------------------------------------------------------------------
 

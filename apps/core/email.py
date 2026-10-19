@@ -13,7 +13,7 @@ from django.template.loader import render_to_string
 logger = logging.getLogger(__name__)
 
 
-def send(template: str, subject: str, to: str, context: dict) -> None:
+def send(template: str, subject: str, to: str | list[str], context: dict) -> None:
     """Hand one message to a worker to send, and return.
 
     Nothing in a request should wait for a mail server. One gunicorn worker serves the whole site
@@ -36,8 +36,8 @@ def send(template: str, subject: str, to: str, context: dict) -> None:
         send_now(template=template, subject=subject, to=to, context=context)
 
 
-def send_now(template: str, subject: str, to: str, context: dict) -> None:
-    """Render ``emails/<template>.html`` and ``.txt`` and send them to one recipient.
+def send_now(template: str, subject: str, to: str | list[str], context: dict) -> None:
+    """Render ``emails/<template>.html`` and ``.txt`` and send them.
 
     Raises whatever the mail backend raises; the caller decides whether a failure should fail
     the request. Registration, for example, succeeds even if its email cannot be sent.
@@ -46,7 +46,7 @@ def send_now(template: str, subject: str, to: str, context: dict) -> None:
         subject=subject,
         body=render_to_string(f"emails/{template}.txt", context),
         from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to],
+        to=[to] if isinstance(to, str) else list(to),
     )
     message.attach_alternative(render_to_string(f"emails/{template}.html", context), "text/html")
     message.send()

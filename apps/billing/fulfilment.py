@@ -14,6 +14,7 @@ from django.utils import timezone
 from apps.accounts.models import AuthMethod, User
 from apps.billing import emails
 from apps.billing.models import Order, OrderStatus
+from apps.crm import notifications
 from apps.entitlements import services as entitlements
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ def fulfil(order: Order) -> None:
     order.refresh_from_db()
     send_welcome(order, user)
     send_order_confirmation(order)
+    notifications.notify_access_granted(order, user)
 
 
 def provision_account(order: Order) -> User:
