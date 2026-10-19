@@ -786,15 +786,18 @@ def question_ids_already_learnt(student):
 def question_ids_answered_wrong(student):
     """Questions the student's most recent attempt got wrong, for practising mistakes.
 
-    A question answered right since is left out: it is no longer a mistake to go back over.
+    It is the latest attempt that decides, not whether the question was ever got right: a
+    question put right and then got wrong again is a mistake once more, and one got wrong and
+    then put right is no longer a mistake to go back over.
     """
-    wrong = set(
-        QuestionAttempt.objects.filter(student=student, was_correct=False).values_list("question_id", flat=True)
-    )
-    right = set(
-        QuestionAttempt.objects.filter(student=student, was_correct=True).values_list("question_id", flat=True)
-    )
-    return wrong - right
+    latest = {}
+    for question_id, was_correct in (
+        QuestionAttempt.objects.filter(student=student)
+        .order_by("created_at", "id")
+        .values_list("question_id", "was_correct")
+    ):
+        latest[question_id] = was_correct
+    return {question_id for question_id, was_correct in latest.items() if not was_correct}
 
 
 def progress_summary(student) -> dict:
