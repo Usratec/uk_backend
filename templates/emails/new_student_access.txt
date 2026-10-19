@@ -1,0 +1,16 @@
+A student has bought a package and their access is live. Their record is in the CRM and ready to
+review.
+
+Name: {{ student_name }}
+Email: {{ student_email }}
+Package: {{ package_name }}
+Registered: {{ registered_at }}
+Order: {{ reference }}
+
+Open in the CRM:
+{{ candidate_url }}
+
+The order itself:
+{{ order_url }}
+
+1Theory

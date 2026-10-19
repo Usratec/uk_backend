@@ -22,6 +22,6 @@ logger = logging.getLogger(__name__)
     autoretry_for=(Exception,),
     retry_backoff=True,
 )
-def send_email(self, template: str, subject: str, to: str, context: dict) -> None:
+def send_email(self, template: str, subject: str, to: str | list[str], context: dict) -> None:
     """Send one message. Retried a few times, because mail servers have bad minutes."""
     email.send_now(template=template, subject=subject, to=to, context=context)
