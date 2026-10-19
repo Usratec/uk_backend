@@ -307,6 +307,106 @@ class TestMockAttempts:
         assert attempt.score == 2
 
 
+class TestEachExamKindIsCountedOnItsOwn:
+    @pytest.fixture
+    def make_exam(self, chapter, make_question, publisher):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        def build(slug, kind, keys):
+            exam = PracticeExam.objects.create(slug=slug, title=slug.replace("-", " "), kind=kind, pass_mark=2)
+            for order, key in enumerate(keys, start=1):
+                question = make_question(key=key)
+                services.publish(actor=publisher, instance=question)
+                exam.exam_questions.create(question=question, order=order)
+            services.publish(actor=publisher, instance=exam)
+            return exam
+
+        return build
+
+    @pytest.fixture
+    def mock_test(self, make_exam):
+        return make_exam("mock-1", ExamKind.MOCK, ("mock-first", "mock-second"))
+
+    @pytest.fixture
+    def practice_exam(self, make_exam):
+        return make_exam("practice-1", ExamKind.PRACTICE, ("practice-first", "practice-second"))
+
+    def sit(self, api, exam, option="a"):
+        answers = {str(question.pk): [option] for question in services.questions_in_exam(exam)}
+        return api.post(reverse("learn-exam-submit", args=[exam.slug]), {"answers": answers}, format="json")
+
+    def test_sitting_a_practice_exam_leaves_the_mock_counters_alone(self, api, student, practice_exam):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice_exam)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["mockAttempts"] == 0
+        assert summary["mocksPassed"] == 0
+        assert summary["bestMockScore"] is None
+
+    def test_a_practice_exam_is_still_counted_as_a_practice_exam(self, api, student, practice_exam):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice_exam)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["practiceAttempts"] == 1
+        assert summary["practiceExamsPassed"] == 1
+        assert summary["bestPracticeScore"] == 2
+
+    def test_sitting_a_mock_test_counts_as_a_mock_test(self, api, student, mock_test):
+        learner = sign_in(api, student())
+
+        self.sit(learner, mock_test)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["mockAttempts"] == 1
+        assert summary["mocksPassed"] == 1
+        assert summary["bestMockScore"] == 2
+
+    def test_a_failed_mock_is_an_attempt_without_a_pass(self, api, student, mock_test):
+        learner = sign_in(api, student())
+
+        self.sit(learner, mock_test, option="b")
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["mockAttempts"] == 1
+        assert summary["mocksPassed"] == 0
+        assert summary["bestMockScore"] == 0
+
+    def test_a_mock_test_does_not_count_towards_the_practice_figures(self, api, student, mock_test):
+        learner = sign_in(api, student())
+
+        self.sit(learner, mock_test)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["practiceAttempts"] == 0
+        assert summary["practiceExamsPassed"] == 0
+        assert summary["bestPracticeScore"] is None
+
+    def test_sitting_both_counts_one_of_each(self, api, student, mock_test, practice_exam):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice_exam)
+        self.sit(learner, mock_test, option="b")
+
+        summary = learner.get(PROGRESS_URL).data
+        assert (summary["mockAttempts"], summary["mocksPassed"]) == (1, 0)
+        assert (summary["practiceAttempts"], summary["practiceExamsPassed"]) == (1, 1)
+
+    def test_the_figures_are_the_same_on_the_next_load(self, api, student, mock_test, practice_exam):
+        learner = sign_in(api, student())
+        self.sit(learner, practice_exam)
+        self.sit(learner, mock_test)
+
+        first = learner.get(PROGRESS_URL).data
+
+        assert learner.get(PROGRESS_URL).data == first
+        assert (first["mockAttempts"], first["practiceAttempts"]) == (1, 1)
+
+
 class TestMastery:
     def test_a_topic_starts_at_nothing_learnt(self, api, student, live_question, chapter):
         response = sign_in(api, student()).get(TOPICS_URL)
