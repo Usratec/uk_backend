@@ -489,9 +489,12 @@ class ProgressSummaryResponseSerializer(serializers.Serializer):
     questionsLearnt = serializers.IntegerField(help_text="Distinct questions answered correctly.")  # noqa: N815
     mastery = serializers.IntegerField(help_text="Questions learnt as a percentage of the whole bank.")
     lessonsCompleted = serializers.IntegerField()  # noqa: N815
-    mockAttempts = serializers.IntegerField()  # noqa: N815
+    mockAttempts = serializers.IntegerField(help_text="Mock tests sat. Practice exams are counted on their own.")  # noqa: N815
     mocksPassed = serializers.IntegerField()  # noqa: N815
     bestMockScore = serializers.IntegerField(allow_null=True)  # noqa: N815
+    practiceAttempts = serializers.IntegerField(help_text="Practice exams sat.")  # noqa: N815
+    practiceExamsPassed = serializers.IntegerField()  # noqa: N815
+    bestPracticeScore = serializers.IntegerField(allow_null=True)  # noqa: N815
     hazardAttempts = serializers.IntegerField()  # noqa: N815
     bestHazardScore = serializers.IntegerField(allow_null=True)  # noqa: N815
 

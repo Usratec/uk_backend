@@ -22,6 +22,7 @@ from apps.learning.models import (
     Chapter,
     ContentType,
     Ebook,
+    ExamKind,
     HazardAttempt,
     HazardClip,
     HazardWindow,
@@ -804,7 +805,10 @@ def progress_summary(student) -> dict:
     learnt = attempts.filter(was_correct=True).values("question_id").distinct().count()
     bank = live(Question.objects.all()).count()
     sittings = MockAttempt.objects.filter(student=student)
-    best = sittings.order_by("-score").first()
+    mocks = sittings.filter(exam__kind=ExamKind.MOCK)
+    practices = sittings.filter(exam__kind=ExamKind.PRACTICE)
+    best_mock = mocks.order_by("-score").first()
+    best_practice = practices.order_by("-score").first()
     clips = HazardAttempt.objects.filter(student=student)
     best_clip = clips.order_by("-score").first()
 
@@ -817,9 +821,12 @@ def progress_summary(student) -> dict:
         "questionsLearnt": learnt,
         "mastery": round(learnt * 100 / bank) if bank else 0,
         "lessonsCompleted": LessonProgress.objects.filter(student=student).count(),
-        "mockAttempts": sittings.count(),
-        "mocksPassed": sittings.filter(passed=True).count(),
-        "bestMockScore": best.score if best else None,
+        "mockAttempts": mocks.count(),
+        "mocksPassed": mocks.filter(passed=True).count(),
+        "bestMockScore": best_mock.score if best_mock else None,
+        "practiceAttempts": practices.count(),
+        "practiceExamsPassed": practices.filter(passed=True).count(),
+        "bestPracticeScore": best_practice.score if best_practice else None,
         "hazardAttempts": clips.count(),
         "bestHazardScore": best_clip.score if best_clip else None,
     }
