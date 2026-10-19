@@ -45,6 +45,15 @@ refresh_request = inline_serializer(
 )
 
 
+def _duplicate_email_response(existing: User | None) -> Response:
+    """409 for an address that is already taken, naming Google when that is how to get in."""
+    if existing is not None and existing.has_google_auth:
+        message = "This email is registered via Google. Please sign in with Google."
+    else:
+        message = "An account with this email already exists."
+    return Response({"detail": message}, status=status.HTTP_409_CONFLICT)
+
+
 class RegisterView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [AuthAnonThrottle]
@@ -61,17 +70,18 @@ class RegisterView(APIView):
 
         existing = services.find_by_email(email)
         if existing is not None:
-            if existing.has_google_auth:
-                message = "This email is registered via Google. Please sign in with Google."
-            else:
-                message = "An account with this email already exists. Please log in or reset your password."
-            return Response({"detail": message}, status=status.HTTP_409_CONFLICT)
+            return _duplicate_email_response(existing)
 
-        user = services.register(
-            email=email,
-            first_name=data.validated_data["first_name"],
-            password=data.validated_data["password"],
-        )
+        try:
+            user = services.register(
+                email=email,
+                first_name=data.validated_data["first_name"],
+                password=data.validated_data["password"],
+            )
+        except services.EmailAlreadyRegisteredError:
+            # Another request registered this address while this one was in flight. Answer as
+            # though the check above had caught it, rather than letting the INSERT become a 500.
+            return _duplicate_email_response(services.find_by_email(email))
         # Signed in straight away: confirming the email address is not required to use the site.
         tokens = services.issue_tokens(user)
         return Response(

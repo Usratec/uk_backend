@@ -1,11 +1,12 @@
 from rest_framework import serializers
 
+from apps.accounts.serializers import EmailField
 from apps.billing.models import Order
 
 
 class CheckoutSerializer(serializers.Serializer):
     package_id = serializers.IntegerField()
-    email = serializers.EmailField()
+    email = EmailField()
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
