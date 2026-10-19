@@ -3,6 +3,10 @@
 import pytest
 from django.urls import reverse
 
+from apps.accounts.models import User
+
+STAFF_PASSWORD = "Riverbank42"
+
 
 @pytest.mark.django_db
 def test_healthcheck_returns_empty_object_without_touching_the_database(client, django_assert_num_queries):
@@ -41,3 +45,40 @@ class TestOpenApiSchema:
         response = client.get(reverse(name))
 
         assert response.status_code == 200
+
+
+@pytest.mark.django_db
+class TestAdminLogin:
+    """Staff signing in to the admin must land on the admin index, never Django's /accounts/profile/."""
+
+    @pytest.fixture
+    def staff(self, db):
+        return User.objects.create_user(
+            email="staff@example.com", password=STAFF_PASSWORD, first_name="Stan", is_staff=True
+        )
+
+    def test_login_without_next_redirects_to_the_admin_index(self, client, staff):
+        response = client.post(
+            reverse("admin:login"), {"username": staff.email, "password": STAFF_PASSWORD}, follow=True
+        )
+
+        assert response.redirect_chain == [(reverse("admin:index"), 302)]
+        assert response.status_code == 200
+
+    def test_login_still_honours_an_explicit_next(self, client, staff):
+        target = reverse("admin:accounts_user_changelist")
+
+        response = client.post(
+            reverse("admin:login"), {"username": staff.email, "password": STAFF_PASSWORD, "next": target}
+        )
+
+        assert response.status_code == 302
+        assert response.url == target
+
+    def test_non_staff_cannot_sign_in_to_the_admin(self, client):
+        User.objects.create_user(email="student@example.com", password=STAFF_PASSWORD, first_name="Sam")
+
+        response = client.post(reverse("admin:login"), {"username": "student@example.com", "password": STAFF_PASSWORD})
+
+        assert response.status_code == 200
+        assert not response.wsgi_request.user.is_authenticated
