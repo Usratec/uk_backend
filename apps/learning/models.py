@@ -362,6 +362,12 @@ class PracticeExam(PublishableModel, TimestampedModel):
 
     time_limit_seconds = models.PositiveIntegerField(null=True, blank=True, help_text="Leave empty for no time limit.")
     pass_mark = models.PositiveSmallIntegerField(help_text="How many questions must be right to pass.")
+    hazard_pass_mark = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="hazard perception pass mark",
+        help_text="How many hazard marks are needed to pass the clips. Leave empty until it is decided.",
+    )
     order = models.PositiveSmallIntegerField(default=0)
 
     questions = models.ManyToManyField(Question, through="learning.ExamQuestion", related_name="exams")
@@ -449,6 +455,12 @@ class MockAttempt(TimestampedModel):
     hazard_score = models.PositiveSmallIntegerField(default=0, help_text="Scored on this sitting's hazard clips.")
     hazard_top_score = models.PositiveSmallIntegerField(
         default=0, help_text="The most this sitting's clips could score. 0 for a question-only paper."
+    )
+    result = models.JSONField(
+        default=dict,
+        blank=True,
+        editable=False,
+        help_text="The marked paper as it was reported, so the student can open it again.",
     )
 
     class Meta:

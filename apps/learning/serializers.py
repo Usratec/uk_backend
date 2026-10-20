@@ -390,6 +390,13 @@ class ExamSummarySerializer(serializers.Serializer):
     kind = serializers.ChoiceField(choices=ExamKind.choices)
     questionCount = serializers.IntegerField(help_text="How many questions will be asked.")  # noqa: N815
     passMark = serializers.IntegerField(help_text="How many must be right to pass.")  # noqa: N815
+    hazardPassMark = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "How many hazard marks pass the clips, scored apart from the questions and never "
+            "added to them. Null when no figure has been configured for this exam."
+        ),
+    )
     timeLimitSeconds = serializers.IntegerField(  # noqa: N815
         allow_null=True, help_text="Null when the exam is untimed."
     )
@@ -398,6 +405,14 @@ class ExamSummarySerializer(serializers.Serializer):
     )
     hazardMaxScore = serializers.IntegerField(  # noqa: N815
         help_text="The most the clips can score: five per hazard. 0 for a question-only paper."
+    )
+    attempts = serializers.IntegerField(help_text="How many times this student has sat it. 0 until they do.")
+    bestPercent = serializers.IntegerField(  # noqa: N815
+        help_text="Their best question score as a percentage, over their completed sittings. 0 until they sit it."
+    )
+    lastAttemptId = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text="Their latest sitting, to read back at /api/learn/exam-attempts/<id>/. Null until they sit it.",
     )
 
 
@@ -471,9 +486,58 @@ class ExamResultResponseSerializer(ExamStatisticsSerializer):
     score = serializers.IntegerField(help_text="Questions right. The same as `correctQuestions`.")
     total = serializers.IntegerField(help_text="Questions asked. The same as `totalQuestions`.")
     passMark = serializers.IntegerField()  # noqa: N815
-    passed = serializers.BooleanField(help_text="Decided on the question score alone.")
+    hazardPassMark = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="The clips' own pass mark, or null when none is configured."
+    )
+    questionsPassed = serializers.BooleanField(help_text="Whether the question score reached `passMark`.")  # noqa: N815
+    hazardPassed = serializers.BooleanField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Whether the hazard score reached `hazardPassMark`. Null when there is nothing to "
+            "judge: a question-only paper, or an exam with no hazard pass mark configured."
+        ),
+    )
+    passed = serializers.BooleanField(
+        help_text=(
+            "The sitting as a whole: both parts must be passed. A paper whose clips cannot be "
+            "judged is decided on the questions alone. The two scores are never added together."
+        )
+    )
     questions = ExamQuestionResultSerializer(many=True, help_text="Every question, answered or not.")
     clips = ExamClipResultSerializer(many=True, help_text="Every clip in the exam, clicked in or not.")
+    attemptId = serializers.IntegerField(  # noqa: N815
+        help_text="The sitting just recorded."
+    )
+
+
+class ExamAttemptSummarySerializer(serializers.Serializer):
+    id = serializers.IntegerField(help_text="Read its full results at /api/learn/exam-attempts/<id>/.")
+    completedAt = serializers.DateTimeField(help_text="When it was marked, which is when it was finished.")  # noqa: N815
+    score = serializers.IntegerField(help_text="Questions right.")
+    total = serializers.IntegerField(help_text="Questions asked in that sitting.")
+    passed = serializers.BooleanField()
+    percent = serializers.IntegerField(help_text="The question score as a percentage of that sitting's total.")
+    hazardScore = serializers.IntegerField(help_text="Scored on the clips. 0 for a question-only paper.")  # noqa: N815
+    hazardMaxScore = serializers.IntegerField(  # noqa: N815
+        help_text="The most that sitting's clips could score. 0 for a question-only paper."
+    )
+
+
+class ExamAttemptListResponseSerializer(serializers.Serializer):
+    attempts = ExamAttemptSummarySerializer(many=True, help_text="Newest first.")
+    bestPercent = serializers.IntegerField(help_text="The best percentage over these sittings. 0 when there are none.")  # noqa: N815
+    lastAttemptId = serializers.IntegerField(allow_null=True, help_text="The newest sitting's id, or null.")  # noqa: N815
+
+
+class ExamRefSerializer(serializers.Serializer):
+    slug = serializers.SlugField()
+    title = serializers.CharField()
+    kind = serializers.ChoiceField(choices=ExamKind.choices)
+
+
+class ExamAttemptResultResponseSerializer(ExamResultResponseSerializer):
+    completedAt = serializers.DateTimeField()  # noqa: N815
+    exam = ExamRefSerializer()
 
 
 # --- Progress ------------------------------------------------------------------------------------

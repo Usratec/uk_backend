@@ -152,6 +152,11 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "1Theory UK API",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Both exams and question media have a field called `kind`, but they use different values.
+    # Using the exam's own type to name its components keeps the names consistent and predictable.
+    "ENUM_NAME_OVERRIDES": {
+        "ExamKindEnum": "apps.learning.models.ExamKind.choices",
+    },
 }
 
 # --- Cache ---------------------------------------------------------------------------------------

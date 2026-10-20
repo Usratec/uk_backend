@@ -10,15 +10,18 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.billing.models import Order, OrderStatus
 from apps.catalog.models import Package
+from apps.core.models import PublishStatus
 from apps.entitlements import services as entitlements
 from apps.learning.models import (
     Chapter,
     Ebook,
+    ExamKind,
     HazardClip,
     HazardWindow,
     LearningContent,
     MediaAsset,
     MediaKind,
+    PracticeExam,
     Question,
     QuestionOption,
     QuestionType,
@@ -195,6 +198,43 @@ def published_tree(chapter, subchapter, content, publisher):
     for item in (chapter, subchapter, content):
         item.refresh_from_db()
     return chapter, subchapter, content
+
+
+@pytest.fixture
+def live_exam(chapter, make_question, publisher):
+    """A published mock test of two published questions, the first answer right in each.
+
+    Shared rather than built per module: sitting an exam, its attempt history and its results all
+    start from the same paper, and two copies of it would drift apart.
+    """
+    from apps.learning import services
+
+    chapter.status = PublishStatus.PUBLISHED
+    chapter.save(update_fields=["status"])
+
+    exam = PracticeExam.objects.create(
+        slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=2, time_limit_seconds=3420
+    )
+    for order, key in enumerate(("first", "second"), start=1):
+        question = make_question(key=key)
+        services.publish(actor=publisher, instance=question)
+        exam.exam_questions.create(question=question, order=order)
+
+    services.publish(actor=publisher, instance=exam)
+    exam.refresh_from_db()
+    return exam
+
+
+@pytest.fixture
+def mock_with_clips(live_exam, make_clip, publisher):
+    """The published mock test, with two published clips of one hazard each — ten hazard marks."""
+    from apps.learning import services
+
+    for order, slug in enumerate(("country-lane", "school-run"), start=1):
+        clip = make_clip(slug=slug, title=slug.replace("-", " ").title())
+        services.publish(actor=publisher, instance=clip)
+        live_exam.exam_clips.create(clip=clip, order=order)
+    return live_exam
 
 
 # --- The student side: a signed-in customer with a package -----------------------------------

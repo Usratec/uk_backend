@@ -173,6 +173,9 @@ def warnings_about(instance) -> list[str]:
     if isinstance(instance, Subchapter):
         if not live_content_of(instance).exists():
             return ["Nothing in this subchapter is published yet, so students will see it empty."]
+    if isinstance(instance, PracticeExam):
+        if instance.hazard_pass_mark is None and instance.hazard_clips.exists():
+            return ["This test has clips but no hazard pass mark, so students pass it on the questions alone."]
     return []
 
 
@@ -218,7 +221,15 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
     if exam.pass_mark > len(questions):
         problems.append(f"The pass mark is {exam.pass_mark} but there are only {len(questions)} questions.")
 
-    draft_clips = [clip for clip in exam.hazard_clips.all() if not clip.is_published]
+    clips = list(exam.hazard_clips.all())
+    hazard_marks = sum(clip.top_score for clip in clips)
+    if exam.hazard_pass_mark and exam.hazard_pass_mark > hazard_marks:
+        # Otherwise the clips could not be passed however early every hazard was spotted.
+        problems.append(
+            f"The hazard pass mark is {exam.hazard_pass_mark} but the clips are only worth {hazard_marks}."
+        )
+
+    draft_clips = [clip for clip in clips if not clip.is_published]
     if draft_clips:
         listed = ", ".join(clip.title for clip in draft_clips[:5])
         problems.append(f"Some hazard clips are not published yet: {listed}.")
@@ -538,6 +549,98 @@ def attempt_statistics(attempt: MockAttempt) -> dict:
     )
 
 
+# --- Sittings a student can look back at ---------------------------------------------------------
+#
+# A sitting is finished the moment it is marked, so every recorded attempt is a completed one and
+# there is no half-finished state to filter out. What the history is read from is the attempt rows
+# themselves, which are never edited, so the list cannot disagree with the results it links to.
+
+
+def attempts_of(student, exam: PracticeExam):
+    """This student's sittings of one exam, newest first."""
+    return MockAttempt.objects.filter(student=student, exam=exam).order_by("-created_at", "-id")
+
+
+def attempt_in_the_history(attempt: MockAttempt) -> dict:
+    """One sitting as the history lists it: the headline marks, and the id to open it by."""
+    return {
+        "id": attempt.pk,
+        "completedAt": attempt.created_at,
+        "score": attempt.score,
+        "total": attempt.total,
+        "passed": attempt.passed,
+        "percent": percent_of(attempt.score, attempt.total),
+        "hazardScore": attempt.hazard_score,
+        "hazardMaxScore": attempt.hazard_top_score,
+    }
+
+
+def percent_of(score: int, total: int) -> int:
+    """A score as a whole percentage. Nothing out of nothing is nothing rather than an error."""
+    return round(score * 100 / total) if total else 0
+
+
+def history_for(student, exams) -> dict[int, dict]:
+    """How each listed exam has gone for this student, in one query for the whole listing.
+
+    Per exam: how many times they have sat it, the best percentage they have managed and the id of
+    the latest sitting, so the listing can offer "retake" and "see last results" without asking
+    about every exam separately — the same arrangement as the hazard totals.
+    """
+    if not exams:
+        return {}
+
+    history: dict[int, dict] = {}
+    # Newest last, so the latest sitting is simply the one left in `lastAttemptId`.
+    rows = (
+        MockAttempt.objects.filter(student=student, exam__in=exams)
+        .order_by("created_at", "id")
+        .values_list("exam_id", "id", "score", "total")
+    )
+    for exam_id, attempt_id, score, total in rows:
+        seen = history.setdefault(exam_id, {"attempts": 0, "bestPercent": 0, "lastAttemptId": None})
+        seen["attempts"] += 1
+        seen["bestPercent"] = max(seen["bestPercent"], percent_of(score, total))
+        seen["lastAttemptId"] = attempt_id
+    return history
+
+
+def saved_result_of(attempt: MockAttempt) -> dict:
+    saved = dict(attempt.result or {})
+    if not saved:
+        saved = {
+            "score": attempt.score,
+            "total": attempt.total,
+            "passMark": attempt.exam.pass_mark,
+            "hazardPassMark": attempt.exam.hazard_pass_mark,
+            "passed": attempt.passed,
+            "questions": [],
+            "clips": [],
+            **attempt_statistics(attempt),
+        }
+
+    saved.setdefault("questionsPassed", saved.get("passed", attempt.passed))
+    saved.setdefault("hazardPassed", None)
+
+    return {
+        **saved,
+        "attemptId": attempt.pk,
+        "completedAt": attempt.created_at,
+        "exam": {"slug": attempt.exam.slug, "title": attempt.exam.title, "kind": attempt.exam.kind},
+    }
+
+
+def hazard_result_of(exam: PracticeExam, hazard_score: int, hazard_max: int) -> bool | None:
+    """Whether a sitting passed the clips.
+
+    None when there is nothing to judge: a question-only paper, or an exam whose hazard pass mark
+    has not been decided. A sitting that cannot be judged on the clips is not failed by them.
+    """
+    if not hazard_max or exam.hazard_pass_mark is None:
+        return None
+    return hazard_score >= exam.hazard_pass_mark
+
+
 def mark_exam(exam: PracticeExam, answers: dict[str, list[str]], clicks: dict[str, list[float]] | None = None) -> dict:
     """Score a whole sitting, which is the only place a pass or fail is decided.
 
@@ -568,11 +671,17 @@ def mark_exam(exam: PracticeExam, answers: dict[str, list[str]], clicks: dict[st
 
     clips, hazard_score, hazard_max = _mark_clips(exam, clicks or {})
 
+    questions_passed = score >= exam.pass_mark
+    hazard_passed = hazard_result_of(exam, hazard_score, hazard_max)
+
     return {
         "score": score,
         "total": len(results),
         "passMark": exam.pass_mark,
-        "passed": score >= exam.pass_mark,
+        "hazardPassMark": exam.hazard_pass_mark,
+        "questionsPassed": questions_passed,
+        "hazardPassed": hazard_passed,
+        "passed": questions_passed and hazard_passed is not False,
         "questions": results,
         "clips": clips,
         **statistics(
@@ -628,7 +737,7 @@ def record_answer(student, question: Question, was_correct: bool) -> None:
 
 
 @transaction.atomic
-def record_sitting(student, exam: PracticeExam, result: dict) -> None:
+def record_sitting(student, exam: PracticeExam, result: dict) -> MockAttempt:
     """Remember one exam sitting: the score, and every answer and clip that made it up.
 
     The answers are recorded too, so a question got wrong in a mock turns up under "mistakes"
@@ -639,7 +748,7 @@ def record_sitting(student, exam: PracticeExam, result: dict) -> None:
     Atomic, so a sitting is never half recorded: the attempt, its answers and its clips are one
     record of one event.
     """
-    MockAttempt.objects.create(
+    attempt = MockAttempt.objects.create(
         student=student,
         exam=exam,
         score=result["score"],
@@ -648,6 +757,7 @@ def record_sitting(student, exam: PracticeExam, result: dict) -> None:
         unanswered=result["unansweredQuestions"],
         hazard_score=result["hazardTotalScore"],
         hazard_top_score=result["hazardMaxScore"],
+        result=result,
     )
     QuestionAttempt.objects.bulk_create(
         QuestionAttempt(student=student, question_id=answer["id"], was_correct=answer["correct"])
@@ -663,6 +773,7 @@ def record_sitting(student, exam: PracticeExam, result: dict) -> None:
         )
         for clip in result["clips"]
     )
+    return attempt
 
 
 def mark_lesson_done(student, subchapter: Subchapter) -> None:

@@ -497,11 +497,11 @@ class PracticeExamAdmin(PublishableAdmin):
         (
             "Rules",
             {
-                "fields": ("pass_mark", "time_limit_seconds", "hazard_worth"),
+                "fields": ("pass_mark", "time_limit_seconds", "hazard_worth", "hazard_pass_mark"),
                 "description": (
-                    "How many answers must be right, and how long the student has. The pass mark "
-                    "covers the questions only — the hazard clips are scored and reported beside "
-                    "them, as in the real test."
+                    "Sets the pass marks and time limit. Questions and hazard clips are scored "
+                    "separately. Students must pass both to pass the test. If no hazard pass mark "
+                    "is set, only the questions determine whether they pass."
                 ),
             },
         ),
@@ -565,7 +565,7 @@ class QuestionAttemptAdmin(ReadOnlyAdmin):
 
 @admin.register(MockAttempt)
 class MockAttemptAdmin(ReadOnlyAdmin):
-    list_display = ["student", "exam", "result", "hazard_result", "passed", "created_at"]
+    list_display = ["student", "exam", "question_result", "hazard_result", "passed", "created_at"]
     list_filter = ["passed", "exam", "created_at"]
     search_fields = ["student__email", "exam__title"]
     list_select_related = ["student", "exam"]
@@ -575,22 +575,41 @@ class MockAttemptAdmin(ReadOnlyAdmin):
         (
             "Questions",
             {
-                "fields": ("result", "breakdown", "passed"),
-                "description": "The pass mark covers the questions only. A blank answer counts as a wrong one.",
+                "fields": ("question_result", "breakdown"),
+                "description": "The pass mark covers the questions. A blank answer counts as a wrong one.",
             },
         ),
         (
             "Hazard perception",
             {
-                "fields": ("hazard_result",),
+                "fields": ("hazard_result", "hazard_verdict"),
                 "description": "Scored separately from the questions, and never added to them.",
             },
         ),
+        (
+            "Outcome",
+            {
+                "fields": ("passed",),
+                "description": (
+                    "The test as a whole, as it was decided when the sitting was marked: both "
+                    "parts must be passed, and clips with no pass mark decide nothing."
+                ),
+            },
+        ),
     )
-    readonly_fields = ["student", "exam", "created_at", "result", "breakdown", "passed", "hazard_result"]
+    readonly_fields = [
+        "student",
+        "exam",
+        "created_at",
+        "question_result",
+        "breakdown",
+        "passed",
+        "hazard_result",
+        "hazard_verdict",
+    ]
 
     @admin.display(description="Questions")
-    def result(self, attempt: MockAttempt) -> str:
+    def question_result(self, attempt: MockAttempt) -> str:
         return f"{attempt.score}/{attempt.total}"
 
     @admin.display(description="Breakdown")
@@ -609,6 +628,14 @@ class MockAttemptAdmin(ReadOnlyAdmin):
         if not counts["hazardMaxScore"]:
             return "—"
         return f"{counts['hazardTotalScore']}/{counts['hazardMaxScore']}"
+
+    @admin.display(description="Hazard perception", boolean=False)
+    def hazard_verdict(self, attempt: MockAttempt) -> str:
+        """Read from the marking as it was reported, not judged again against today's pass mark."""
+        verdict = (attempt.result or {}).get("hazardPassed")
+        if verdict is None:
+            return "Not judged — no pass mark was set for the clips."
+        return "Passed" if verdict else "Failed"
 
 
 @admin.register(LessonProgress)
