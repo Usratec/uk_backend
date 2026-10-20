@@ -217,6 +217,18 @@ class HazardClipSerializer(serializers.Serializer):
     maxClicks = serializers.IntegerField(  # noqa: N815
         help_text="Clicking more often than this scores nothing, as in the real test."
     )
+    attempts = serializers.IntegerField(
+        required=False,
+        help_text=(
+            "How many times you have attempted this clip, 0 if never. Sent when practising the "
+            "clips, left out inside a lesson or a paper being sat."
+        ),
+    )
+    bestScore = serializers.IntegerField(  # noqa: N815
+        required=False,
+        allow_null=True,
+        help_text="Your highest score on this clip, or null if you have never attempted it.",
+    )
 
 
 class HazardResultSerializer(serializers.Serializer):

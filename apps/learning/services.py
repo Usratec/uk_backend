@@ -11,7 +11,7 @@ than in the admin screens.
 import logging
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.utils import timezone
 
 from apps.core import audit
@@ -1037,14 +1037,33 @@ def progress_summary(student) -> dict:
 # --- Hazard perception ---------------------------------------------------------------------------
 
 
-def student_view_of_clip(clip: HazardClip) -> dict:
+# A clip this student has never attempted, as their statistics read.
+NO_ATTEMPTS_YET = {"attempts": 0, "bestScore": None}
+
+
+def hazard_stats_for(student, clips) -> dict[int, dict]:
+    stats = {clip.pk: dict(NO_ATTEMPTS_YET) for clip in clips}
+    if not stats:
+        return stats
+
+    rows = (
+        HazardAttempt.objects.filter(student=student, clip__in=stats)
+        .values_list("clip_id")
+        .annotate(attempts=Count("id"), best=Max("score"))
+    )
+    for clip_id, attempts, best in rows:
+        stats[clip_id] = {"attempts": attempts, "bestScore": best}
+    return stats
+
+
+def student_view_of_clip(clip: HazardClip, stats: dict | None = None) -> dict:
     """A clip as a student is given it, before they watch.
 
     Deliberately without the hazard timings: sending them would tell the student exactly when to
     click, which is the entire thing being tested. Only the clip's own scoring happens here, and
     only after they have committed to their clicks.
     """
-    return {
+    view = {
         "slug": clip.slug,
         "title": clip.title,
         "description": clip.description,
@@ -1054,6 +1073,9 @@ def student_view_of_clip(clip: HazardClip) -> dict:
         "topScore": clip.top_score,
         "maxClicks": clip.max_clicks,
     }
+    if stats is not None:
+        view |= {"attempts": stats["attempts"], "bestScore": stats["bestScore"]}
+    return view
 
 
 def score_clip(clip: HazardClip, clicked_at: list[float]) -> dict:

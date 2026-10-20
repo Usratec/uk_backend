@@ -319,6 +319,64 @@ class TestAttemptsAreRemembered:
         assert response.data["bestHazardScore"] == 5
 
 
+class TestHowTheStudentHasDoneOnAClip:
+    def test_a_clip_never_attempted_has_no_score(self, api, student, live_clip):
+        response = sign_in(api, student()).get(CLIPS_URL)
+
+        clip = response.data["clips"][0]
+        assert clip["attempts"] == 0
+        assert clip["bestScore"] is None
+
+    def test_the_attempts_are_counted_and_the_best_score_kept(self, api, student, live_clip):
+        learner = sign_in(api, student())
+        for clicks in ([14.5], [10.5], [9.0]):
+            learner.post(attempt_url("country-lane"), {"clicks": clicks}, format="json")
+
+        clip = learner.get(CLIPS_URL).data["clips"][0]
+
+        assert clip["attempts"] == 3
+        assert clip["bestScore"] == 5
+
+    def test_clicking_through_still_counts_as_an_attempt(self, api, student, live_clip):
+        learner = sign_in(api, student())
+        learner.post(attempt_url("country-lane"), {"clicks": [float(n) / 10 for n in range(160)]}, format="json")
+
+        clip = learner.get(CLIPS_URL).data["clips"][0]
+
+        assert clip["attempts"] == 1
+        assert clip["bestScore"] == 0
+
+    def test_only_this_clip_counts_towards_its_statistics(self, api, student, live_clip, clip_video, publisher):
+        other = HazardClip.objects.create(slug="motorway", title="Motorway", media=clip_video)
+        HazardWindow.objects.create(clip=other, label="Lorry drifts", starts_at="5.00", ends_at="10.00", order=1)
+        services.publish(actor=publisher, instance=other)
+        learner = sign_in(api, student())
+        learner.post(attempt_url("motorway"), {"clicks": [5.0]}, format="json")
+
+        listed = {item["slug"]: item for item in learner.get(CLIPS_URL).data["clips"]}
+
+        assert (listed["motorway"]["attempts"], listed["motorway"]["bestScore"]) == (1, 5)
+        assert (listed["country-lane"]["attempts"], listed["country-lane"]["bestScore"]) == (0, None)
+
+    def test_opening_one_clip_carries_the_same_statistics(self, api, student, live_clip):
+        learner = sign_in(api, student())
+        learner.post(attempt_url("country-lane"), {"clicks": [11.5]}, format="json")
+
+        response = learner.get(clip_url("country-lane"))
+
+        assert response.data["attempts"] == 1
+        assert response.data["bestScore"] == 4
+
+    def test_the_statistics_do_not_give_the_timings_away(self, api, student, live_clip):
+        learner = sign_in(api, student())
+        learner.post(attempt_url("country-lane"), {"clicks": [10.5]}, format="json")
+
+        response = learner.get(CLIPS_URL)
+
+        assert "Cyclist" not in str(response.data)
+        assert "startsAt" not in str(response.data)
+
+
 class TestHazardMaterialInLessons:
     def test_a_hazard_item_is_served_as_a_hazard_block(self, subchapter, live_clip):
         item = LearningContent.objects.create(
