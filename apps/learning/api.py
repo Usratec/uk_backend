@@ -773,8 +773,10 @@ class HazardClipListView(APIView):
         if not entitlements.has_access(student):
             return plan_needed()
 
-        clips = services.live(HazardClip.objects.select_related("media")).order_by("order", "title")
-        return Response({"clips": [services.student_view_of_clip(clip) for clip in clips]})
+        listing = services.live(HazardClip.objects.select_related("media").prefetch_related("windows"))
+        clips = list(listing.order_by("order", "title"))
+        stats = services.hazard_stats_for(student, clips)
+        return Response({"clips": [services.student_view_of_clip(clip, stats[clip.pk]) for clip in clips]})
 
 
 class HazardClipView(APIView):
@@ -788,12 +790,14 @@ class HazardClipView(APIView):
         clip = self._find(student, slug)
         if clip is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(services.student_view_of_clip(clip))
+        stats = services.hazard_stats_for(student, [clip])
+        return Response(services.student_view_of_clip(clip, stats[clip.pk]))
 
     def _find(self, student, slug: str):
         if not entitlements.has_access(student):
             return None
-        return services.live(HazardClip.objects.select_related("media")).filter(slug=slug).first()
+        clips = HazardClip.objects.select_related("media").prefetch_related("windows")
+        return services.live(clips).filter(slug=slug).first()
 
 
 class HazardAttemptView(APIView):
