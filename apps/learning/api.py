@@ -626,9 +626,9 @@ class ExamSubmitView(APIView):
             submission.validated_data["answers"],
             submission.validated_data.get("hazardClicks"),
         )
-        attempt = services.record_sitting(student, exam, result)
+        attempt = services.record_sitting(student, exam, result, submission.validated_data.get("timeTakenSeconds"))
 
-        return Response({**result, "attemptId": attempt.pk})
+        return Response({**result, "attemptId": attempt.pk, "timeTakenSeconds": attempt.time_taken_seconds})
 
 
 class ExamAttemptListView(APIView):

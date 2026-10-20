@@ -457,6 +457,19 @@ class ExamDetailResponseSerializer(serializers.Serializer):
     )
 
 
+class TimeTakenField(serializers.IntegerField):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("required", False)
+        kwargs.setdefault("allow_null", True)
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data):
+        try:
+            return super().to_internal_value(data)
+        except serializers.ValidationError:
+            return None
+
+
 class ExamSubmissionSerializer(serializers.Serializer):
     """A finished sitting, posted to be marked."""
 
@@ -473,6 +486,7 @@ class ExamSubmissionSerializer(serializers.Serializer):
             "scores nothing, as an unanswered question does."
         ),
     )
+    timeTakenSeconds = TimeTakenField()  # noqa: N815
 
 
 class ExamQuestionResultSerializer(serializers.Serializer):
@@ -533,6 +547,13 @@ class ExamResultResponseSerializer(ExamStatisticsSerializer):
     attemptId = serializers.IntegerField(  # noqa: N815
         help_text="The sitting just recorded."
     )
+    timeTakenSeconds = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "How long the questions took, as it was recorded: seconds from starting the exam to "
+            "ending it, the clips excluded. Null when the sitting was not timed."
+        ),
+    )
 
 
 class ExamAttemptSummarySerializer(serializers.Serializer):
@@ -545,6 +566,10 @@ class ExamAttemptSummarySerializer(serializers.Serializer):
     hazardScore = serializers.IntegerField(help_text="Scored on the clips. 0 for a question-only paper.")  # noqa: N815
     hazardMaxScore = serializers.IntegerField(  # noqa: N815
         help_text="The most that sitting's clips could score. 0 for a question-only paper."
+    )
+    timeTakenSeconds = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text="How long that sitting's questions took, in seconds. Null when it was not timed.",
     )
 
 
