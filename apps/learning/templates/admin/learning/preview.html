@@ -58,9 +58,11 @@
                 </ol>
             {% elif ebook_sheet %}
                 {% comment %}
-                    An e-book is a file a student is handed, so there are no blocks to render and
-                    nothing to read on this page. What staff need to check is that the right
-                    document opens and the cover is the one they meant.
+                    An e-book is read two ways: a file a student is handed, and sections read
+                    online. Neither has blocks of its own to render here — a section is a
+                    subchapter, previewed on its own page like any lesson — so what staff check
+                    here is that the right document opens, the cover is the one they meant, and
+                    the running order is the one they intended.
                 {% endcomment %}
                 {% if ebook_sheet.cover_url %}
                     <img class="adm-preview__cover" src="{{ ebook_sheet.cover_url }}" alt="The cover of this e-book">
@@ -75,8 +77,18 @@
                         {% if ebook_sheet.size_bytes %} · {{ ebook_sheet.size_bytes|filesizeformat }}{% endif %}
                     </p>
                 {% else %}
-                    <p class="adm-preview__placeholder">No file has been chosen from the media library yet.</p>
+                    <p class="adm-preview__placeholder">No document has been chosen from the media library.</p>
                 {% endif %}
+                <p class="adm-preview__meta">Read online, a section at a time</p>
+                <ol class="adm-preview__answers">
+                    {% for section in ebook_sheet.sections %}
+                        <li>{{ section.title }}{% if section.summary %} — {{ section.summary }}{% endif %}</li>
+                    {% empty %}
+                        <li class="adm-preview__placeholder">
+                            No section of this book is published yet, so there is nothing to read online.
+                        </li>
+                    {% endfor %}
+                </ol>
             {% elif answer_sheet %}
                 {% comment %}
                     A question, so there is nothing to read: what staff need to check is the
@@ -111,6 +123,16 @@
                         <video class="adm-preview__video" controls preload="metadata" src="{{ block.url }}"></video>
                     {% elif block.type == "document" %}
                         <p><a class="adm-btn" href="{{ block.url }}" target="_blank">Open the document</a></p>
+                    {% elif block.type == "signs" %}
+                        {% comment %}
+                            A strip of road signs the text asked for. The frontend draws each one
+                            from its specification; here they are named, which is what staff need
+                            to check — that the codes they wrote are the signs they meant.
+                        {% endcomment %}
+                        <ul class="adm-preview__answers">
+                            {% for sign in block.signs %}<li>{{ sign.name }} ({{ sign.code }})</li>{% endfor %}
+                        </ul>
+                        {% if block.caption %}<p class="adm-preview__meta">{{ block.caption }}</p>{% endif %}
                     {% else %}
                         <div class="adm-preview__body">{{ block.html|safe }}</div>
                     {% endif %}

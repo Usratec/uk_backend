@@ -25,6 +25,7 @@ from apps.entitlements import services as entitlements
 from apps.learning import services
 from apps.learning.models import (
     Chapter,
+    EbookSection,
     ExamKind,
     HazardClip,
     MockAttempt,
@@ -35,10 +36,10 @@ from apps.learning.models import (
     Subchapter,
 )
 from apps.learning.serializers import (
-    EBOOK_DETAIL,
     AnswerRequestSerializer,
     AnswerResponseSerializer,
     DoneResponseSerializer,
+    EbookDetailResponseSerializer,
     EbookListResponseSerializer,
     ExamAttemptListResponseSerializer,
     ExamAttemptResultResponseSerializer,
@@ -53,13 +54,13 @@ from apps.learning.serializers import (
     LessonDetailResponseSerializer,
     PracticeSetResponseSerializer,
     ProgressSummaryResponseSerializer,
+    ReadResponseSerializer,
     SavedResponseSerializer,
     SignListResponseSerializer,
     TopicListResponseSerializer,
 )
 
 PLAN_NEEDED = "An active plan is needed for this"
-HIGHWAY_CODE_SLUG = "highway-code"
 # The modes the practice endpoint accepts. The ones that depend on past attempts are accepted
 # but practise everything, because progress is not recorded yet.
 MODES = ["random", "topic", "mistakes", "weak", "saved", "review"]
@@ -247,102 +248,108 @@ class EbookView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        operation_id="listChapters",
-        summary="List the e-books and the e-book chapters",
+        operation_id="listEbooks",
+        summary="List the e-books and their sections",
         responses={200: EbookListResponseSerializer},
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
-        shelf = [services.ebook_on_the_shelf(ebook) for ebook in services.live_ebooks()]
 
-        book = services.live(Chapter.objects.all()).filter(slug=HIGHWAY_CODE_SLUG).first()
-        if book is None:
-            return Response({"ebooks": shelf, "chapters": [], "current": None})
+        books = list(services.live_ebooks())
+        read = services.sections_read_by(student)
+        sections = self._sections_by_book(books)
 
-        sections = entitlements.visible_subchapters(student, services.live_subchapters_of(book)).order_by(
-            "order", "title"
-        )
+        shelf = []
+        for book in books:
+            contents = services.contents_of(sections.get(book.pk, []), read)
+            shelf.append(
+                {
+                    **services.ebook_on_the_shelf(book),
+                    "sections": contents,
+                    "current": _continue_from(contents),
+                }
+            )
 
-        read = services.completed_lesson_ids(student)
-        chapters = [
-            {
-                "slug": section.slug,
-                "title": section.title,
-                "summary": section.summary,
-                "number": number,
-                "read": section.pk in read,
-            }
-            for number, section in enumerate(sections, start=1)
-        ]
+        return Response({"ebooks": shelf})
 
-        return Response(
-            {
-                "ebooks": shelf,
-                "chapters": chapters,
-                # The first section not yet read, which is where "continue reading" goes. The
-                # last section once the book is finished, so the button always has a target.
-                "current": next(
-                    (item["slug"] for item in chapters if not item["read"]),
-                    chapters[-1]["slug"] if chapters else None,
-                ),
-            }
-        )
+    def _sections_by_book(self, books) -> dict[int, list]:
+        if not books:
+            return {}
+
+        grouped: dict[int, list] = {}
+        for section in services.live(EbookSection.objects.filter(ebook__in=books)).order_by(
+            "ebook_id", "order", "title"
+        ):
+            grouped.setdefault(section.ebook_id, []).append(section)
+        return grouped
 
 
-class EbookChapterView(APIView):
+def _continue_from(contents: list[dict]) -> str | None:
+    return next(
+        (item["slug"] for item in contents if not item["read"]),
+        contents[-1]["slug"] if contents else None,
+    )
+
+
+class EbookDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        operation_id="getChapter",
-        summary="Read an e-book, or an e-book chapter",
-        responses={200: EBOOK_DETAIL},
+        operation_id="getEbook",
+        summary="Read an e-book",
+        responses={200: EbookDetailResponseSerializer},
     )
     def get(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
 
         ebook = services.live_ebooks().filter(slug=slug).first()
-        if ebook is not None:
-            # The file's signed URL is the thing being asked for, so this is where a plan is
-            # needed — browsing the shelf is not.
-            if not entitlements.has_access(student):
-                return plan_needed()
-            return Response({"ebook": services.student_view_of_ebook(ebook)})
-
-        section = (
-            services.live(Subchapter.objects.select_related("chapter"))
-            .filter(slug=slug, chapter__slug=HIGHWAY_CODE_SLUG)
-            .first()
-        )
-        if section is None:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if not entitlements.can_view(student, section):
+        if ebook is None:
+            return _not_found()
+        if not entitlements.has_access(student):
             return plan_needed()
 
-        content = entitlements.visible_content(student, services.live_content_of(section)).order_by("order", "title")
-        siblings = list(services.live_subchapters_of(section.chapter).order_by("order", "title"))
-        position = next((i for i, item in enumerate(siblings) if item.pk == section.pk), None)
+        read = services.sections_read_by(student)
+        sections = list(services.ebook_sections(ebook))
+
+        pages = [
+            {**services.section_in_the_contents(section, number, read), "blocks": services.blocks_of_section(section)}
+            for number, section in enumerate(sections, start=1)
+        ]
 
         return Response(
             {
-                "chapter": {
-                    "slug": section.slug,
-                    "title": section.title,
-                    "summary": section.summary,
-                    "number": (position or 0) + 1,
-                    "blocks": [services.block_for(item) for item in content],
-                },
-                "toc": [
-                    {"slug": item.slug, "title": item.title, "number": number}
-                    for number, item in enumerate(siblings, start=1)
-                ],
-                "prev": _link(siblings, position, -1),
-                "next": _link(siblings, position, 1),
-                "signs": {},
-                "questions": {},
-                "clips": {},
+                "ebook": services.student_view_of_ebook(ebook),
+                "sections": pages,
+                "current": _continue_from(pages),
             }
         )
+
+
+class EbookSectionReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="readEbookSection",
+        summary="Mark an e-book section as read",
+        request=None,
+        responses={200: ReadResponseSerializer},
+    )
+    def post(self, request: Request, slug: str) -> Response:
+        student = cast(User, request.user)
+
+        if not entitlements.has_access(student):
+            return plan_needed() if services.ebook_section(slug) is not None else _not_found()
+
+        section = services.ebook_section(slug)
+        if section is None:
+            return _not_found()
+
+        services.mark_section_read(student, section)
+        return Response({"read": True})
+
+
+def _not_found() -> Response:
+    return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
 class SignListView(APIView):

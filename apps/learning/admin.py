@@ -22,12 +22,14 @@ from django_ckeditor_5.widgets import CKEditor5Widget  # type: ignore[import-unt
 
 from apps.accounts.models import User
 from apps.core.models import PublishStatus
-from apps.learning import services
+from apps.learning import html, services
 from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
     Chapter,
     ContentType,
     Ebook,
+    EbookSection,
+    EbookSectionProgress,
     ExamHazardClip,
     ExamQuestion,
     HazardAttempt,
@@ -810,9 +812,17 @@ class HazardAttemptAdmin(ReadOnlyAdmin):
         return f"{attempt.score}/{attempt.top_score}"
 
 
+class EbookSectionInline(ChildInline):
+    model = EbookSection
+    fields = ["title", "order", "state"]
+    readonly_fields = ["state"]
+    ordering = ["order"]
+    verbose_name_plural = "Sections"
+
+
 @admin.register(Ebook)
 class EbookAdmin(PreviewMixin, PublishableAdmin):
-    list_display = ["cover_thumbnail", "title", "slug", "file", "order", "state"]
+    list_display = ["cover_thumbnail", "title", "slug", "file", "section_count", "order", "state"]
     # The title, not the picture, is what staff click to open one.
     list_display_links = ["title"]
     list_editable = ["order"]
@@ -822,7 +832,9 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
     # published e-book's slug is a decision rather than something to regenerate.
     prepopulated_fields = {"slug": ("title",)}
     autocomplete_fields = ["file"]
+    list_select_related = ["file"]
     date_hierarchy = "created_at"
+    inlines = [EbookSectionInline]
     fieldsets = (
         (
             None,
@@ -834,10 +846,11 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
         (
             "The book",
             {
-                "fields": ("file", "cover", "cover_thumbnail"),
+                "fields": ("cover", "cover_thumbnail", "file"),
                 "description": (
-                    "The file is a document from the media library. The cover is uploaded here and "
-                    "is optional — tick 'Clear' beside it to remove one."
+                    "The cover is uploaded here and is optional — tick 'Clear' beside it to remove "
+                    "one. The file is a document from the media library, offered for download "
+                    "beside the sections, and is optional too."
                 ),
             },
         ),
@@ -845,7 +858,7 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
             "Publishing",
             {
                 "fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link"),
-                "description": "Students see this only once it is published.",
+                "description": "Students see this, and everything in it, only once it is published.",
             },
         ),
     )
@@ -863,3 +876,78 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
     @admin.display(description="")
     def cover_thumbnail(self, ebook: Ebook) -> SafeString:
         return _thumbnail(ebook.cover, width=90)
+
+    @admin.display(description="Sections")
+    def section_count(self, ebook: Ebook) -> str:
+        published = ebook.sections.filter(status=PublishStatus.PUBLISHED).count()
+        return f"{published} published / {ebook.sections.count()} total"
+
+
+class EbookSectionForm(forms.ModelForm):
+    body_html = forms.CharField(
+        label="Content",
+        required=False,
+        widget=CKEditor5Widget(config_name="default"),
+    )
+
+    class Meta:
+        model = EbookSection
+        # Listed rather than "__all__", so a field added later is not exposed by accident.
+        # Status is not here: publishing goes through the service, not the form.
+        fields = ["ebook", "title", "slug", "summary", "body_html", "media", "order", "publish_from"]
+
+
+@admin.register(EbookSection)
+class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
+    form = EbookSectionForm
+    list_display = ["title", "ebook", "order", "has_media", "sign_count", "state"]
+    list_editable = ["order"]
+    list_filter = ["status", "ebook"]
+    search_fields = ["title", "slug", "summary", "ebook__title"]
+    prepopulated_fields = {"slug": ("title",)}
+    list_select_related = ["ebook", "media"]
+    autocomplete_fields = ["ebook", "media"]
+    ordering = ["ebook", "order"]
+    fieldsets = (
+        (None, {"fields": ("ebook", "title", "slug", "summary", "order")}),
+        (
+            "Content",
+            {
+                "fields": ("body_html", "media"),
+                "description": format_html(
+                    "The text is shown first, then the file if there is one. To draw a strip of "
+                    "road signs in the middle of the text, write <code>{}</code> on a line of its "
+                    "own — the caption after the bar is optional, and the codes are the ones in "
+                    "the Signs library.",
+                    "[signs: give-way, stop | Common warning signs]",
+                ),
+            },
+        ),
+        (
+            "Publishing",
+            {"fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link")},
+        ),
+    )
+    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link"]
+
+    @admin.display(description="File", boolean=True)
+    def has_media(self, section: EbookSection) -> bool:
+        return section.media_id is not None
+
+    @admin.display(description="Signs")
+    def sign_count(self, section: EbookSection) -> int:
+        """How many signs the text draws, so staff can see at a glance which sections show them."""
+        return len(html.sign_codes_in(section.body_html))
+
+
+@admin.register(EbookSectionProgress)
+class EbookSectionProgressAdmin(ReadOnlyAdmin):
+    list_display = ["student", "section", "book", "read_at"]
+    list_filter = ["section__ebook", "read_at"]
+    search_fields = ["student__email", "section__title"]
+    list_select_related = ["student", "section", "section__ebook"]
+    date_hierarchy = "read_at"
+
+    @admin.display(description="Book", ordering="section__ebook__title")
+    def book(self, progress: EbookSectionProgress) -> str:
+        return progress.section.ebook.title

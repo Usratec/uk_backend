@@ -8,6 +8,8 @@ Cleaning is not only about attacks. Pasting from Word brings a mess of styling t
 the site's own design, so anything not on the list below is dropped and the text is kept.
 """
 
+import re
+
 import nh3
 
 # What a lesson or chapter may contain. Headings start at h2, because the page itself provides
@@ -57,6 +59,41 @@ ALLOWED_ATTRIBUTES = {
 
 # Only links that go somewhere safe. This is what stops `javascript:` links.
 ALLOWED_SCHEMES = {"http", "https", "mailto"}
+
+SIGN_MARKER = re.compile(
+    r"(?:<p>\s*)?\[signs:\s*(?P<codes>[^\]|]+?)\s*(?:\|\s*(?P<caption>[^\]]*?))?\s*\](?:\s*</p>)?",
+    re.IGNORECASE,
+)
+
+
+def split_on_signs(html: str | None) -> list[dict]:
+    if not html:
+        return []
+
+    pieces: list[dict] = []
+    position = 0
+
+    for marker in SIGN_MARKER.finditer(html):
+        _add_text(pieces, html[position : marker.start()])
+        pieces.append(
+            {
+                "codes": [code.strip() for code in marker.group("codes").split(",") if code.strip()],
+                "caption": (marker.group("caption") or "").strip(),
+            }
+        )
+        position = marker.end()
+
+    _add_text(pieces, html[position:])
+    return pieces
+
+
+def _add_text(pieces: list[dict], html: str) -> None:
+    if not is_empty(html):
+        pieces.append({"html": html.strip()})
+
+
+def sign_codes_in(html: str | None) -> list[str]:
+    return [code for piece in split_on_signs(html) for code in piece.get("codes", [])]
 
 
 def clean(html: str | None) -> str:

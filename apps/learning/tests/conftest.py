@@ -15,6 +15,7 @@ from apps.entitlements import services as entitlements
 from apps.learning.models import (
     Chapter,
     Ebook,
+    EbookSection,
     ExamKind,
     HazardClip,
     HazardWindow,
@@ -167,9 +168,10 @@ def make_clip(db):
 
 @pytest.fixture
 def make_ebook(db):
-    def build(slug="highway-code-workbook", title="Highway Code workbook", **fields):
+    def build(slug="pocket-guide", title="Pocket guide", **fields):
+        chosen = "file" in fields
         document = fields.pop("file", None)
-        if document is None:
+        if document is None and not chosen:
             # The file is passed to create() rather than saved afterwards, so the asset records
             # the upload's content type the way one uploaded through the admin does.
             document = MediaAsset.objects.create(
@@ -180,6 +182,29 @@ def make_ebook(db):
         return Ebook.objects.create(slug=slug, title=title, file=document, **fields)
 
     return build
+
+
+@pytest.fixture
+def make_section(db):
+    """A section of a book, with a line of text in it unless told otherwise."""
+
+    def build(ebook, slug="hierarchy", title="The hierarchy", order=1, **fields):
+        fields.setdefault("body_html", "<p>Rule H1.</p>")
+        return EbookSection.objects.create(ebook=ebook, slug=slug, title=title, order=order, **fields)
+
+    return build
+
+
+@pytest.fixture
+def read_online(make_ebook, make_section, publisher):
+    from apps.learning import services
+
+    book = make_ebook(slug="study-guide", title="Study guide", file=None)
+    services.publish(actor=publisher, instance=book)
+    services.publish(actor=publisher, instance=make_section(book))
+
+    book.refresh_from_db()
+    return book
 
 
 @pytest.fixture

@@ -21,6 +21,7 @@ from apps.learning.tests.conftest import sign_in
 pytestmark = pytest.mark.django_db
 
 TOPICS_URL = reverse("learn-topics")
+EBOOK_URL = reverse("learn-ebook")
 PROGRESS_URL = reverse("learn-progress")
 
 
@@ -108,6 +109,55 @@ class TestListingTheCourse:
         empty = next(topic for topic in topics if topic["slug"] == "empty")
         assert empty["mastery"] == 0
         assert empty["questions"] == 0
+
+
+class TestTheShelf:
+    def test_listing_the_shelf_does_not_grow_with_the_books(self, api, student):
+        learner = sign_in(api, student())
+
+        build_shelf(books=2)
+        small = queries_for(learner, EBOOK_URL)
+
+        build_shelf(books=10, offset=2)
+        large = queries_for(learner, EBOOK_URL)
+
+        assert large == small, f"{small} queries for 2 books but {large} for 12"
+
+    def test_reading_a_book_does_not_grow_with_its_sections(self, api, student):
+        """The whole book comes back at once, so a query per section would be a query per page."""
+        learner = sign_in(api, student())
+
+        build_shelf(books=1, sections=2)
+        small = queries_for(learner, reverse("learn-ebook-detail", args=["book-0"]))
+
+        build_shelf(books=1, sections=12, offset=1)
+        large = queries_for(learner, reverse("learn-ebook-detail", args=["book-1"]))
+
+        assert large == small, f"{small} queries for 2 sections but {large} for 12"
+
+    def test_every_section_still_comes_back_with_its_material(self, api, student):
+        build_shelf(books=1, sections=3)
+
+        response = sign_in(api, student()).get(reverse("learn-ebook-detail", args=["book-0"]))
+
+        assert [section["number"] for section in response.data["sections"]] == [1, 2, 3]
+        assert all(section["blocks"][0]["html"] == "<p>Material.</p>" for section in response.data["sections"])
+
+
+def build_shelf(books: int, sections: int = 3, offset: int = 0) -> None:
+    from apps.learning.models import Ebook, EbookSection
+
+    for b in range(offset, offset + books):
+        book = Ebook.objects.create(slug=f"book-{b}", title=f"Book {b}", order=b, status=PublishStatus.PUBLISHED)
+        for s in range(sections):
+            EbookSection.objects.create(
+                ebook=book,
+                slug=f"b{b}-s{s}",
+                title=f"Section {s}",
+                body_html="<p>Material.</p>",
+                order=s,
+                status=PublishStatus.PUBLISHED,
+            )
 
 
 class TestTheProgressSummary:

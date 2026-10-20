@@ -131,6 +131,14 @@ class MediaBlockSerializer(serializers.Serializer):
     url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
 
 
+class SignsBlockSerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=[("signs", "signs")])
+    caption = serializers.CharField(
+        allow_blank=True, help_text="Shown under the strip. Blank when the text gave none."
+    )
+    signs = SignSerializer(many=True)
+
+
 CONTENT_BLOCK = PolymorphicProxySerializer(
     component_name="ContentBlock",
     serializers={
@@ -144,15 +152,41 @@ CONTENT_BLOCK = PolymorphicProxySerializer(
 )
 
 
+EBOOK_BLOCK = PolymorphicProxySerializer(
+    component_name="EbookBlock",
+    serializers={
+        "html": HtmlBlockSerializer,
+        "signs": SignsBlockSerializer,
+        "video": MediaBlockSerializer,
+        "document": MediaBlockSerializer,
+    },
+    resource_type_field_name="type",
+)
+
+
 @extend_schema_field(CONTENT_BLOCK)
 class ContentBlockField(serializers.JSONField):
     """One block of a lesson, which the frontend renders according to its ``type``."""
+
+
+@extend_schema_field(EBOOK_BLOCK)
+class EbookBlockField(serializers.JSONField):
+    """One block of an e-book section. The same kinds as a lesson, minus checks and clips."""
 
 
 class BlockListField(serializers.ListField):
     def __init__(self, **kwargs):
         kwargs.setdefault("child", ContentBlockField())
         kwargs.setdefault("help_text", "The material, in reading order.")
+        super().__init__(**kwargs)
+
+
+class EbookBlockListField(serializers.ListField):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("child", EbookBlockField())
+        kwargs.setdefault(
+            "help_text", "The material, in reading order, with the sign strips where the text asked for them."
+        )
         super().__init__(**kwargs)
 
 
@@ -265,12 +299,12 @@ class LessonDetailResponseSerializer(serializers.Serializer):
 # --- The e-book ----------------------------------------------------------------------------------
 
 
-class EbookChapterSummarySerializer(serializers.Serializer):
+class EbookSectionSummarySerializer(serializers.Serializer):
     slug = serializers.SlugField()
     title = serializers.CharField()
     summary = serializers.CharField(allow_blank=True)
     number = serializers.IntegerField(help_text="Its position in the book, counted from 1.")
-    read = serializers.BooleanField(help_text="Always false until reading progress is recorded.")
+    read = serializers.BooleanField(help_text="Whether this student has marked it read.")
 
 
 class EbookSummarySerializer(serializers.Serializer):
@@ -283,62 +317,53 @@ class EbookSummarySerializer(serializers.Serializer):
     updatedAt = serializers.DateTimeField(help_text="When staff last changed it.")  # noqa: N815
 
 
+class EbookOnTheShelfSerializer(EbookSummarySerializer):
+    """A book as the shelf lists it, with its contents but not its material."""
+
+    hasDocument = serializers.BooleanField(  # noqa: N815
+        help_text=(
+            "Whether there is a file to download as well as, or instead of, sections. The shelf "
+            "gets no link, so this is how a card knows whether to offer one."
+        )
+    )
+    sections = EbookSectionSummarySerializer(
+        many=True, help_text="Its sections in reading order. Empty for a book that is only a document."
+    )
+    current = serializers.SlugField(
+        allow_null=True, help_text="Where this student left off in this book, by section slug."
+    )
+
+
 class EbookSerializer(EbookSummarySerializer):
-    url = serializers.URLField(help_text="A short-lived signed URL for the document. Do not cache it.")
-    contentType = serializers.CharField(allow_blank=True, help_text="For example application/pdf.")  # noqa: N815
-    sizeBytes = serializers.IntegerField(help_text="So the reader can warn before a large download.")  # noqa: N815
+    url = serializers.URLField(allow_null=True, help_text="A short-lived signed URL for the document.")
+    contentType = serializers.CharField(  # noqa: N815
+        allow_null=True, allow_blank=True, help_text="For example application/pdf."
+    )
+    sizeBytes = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="So the reader can warn before a large download."
+    )
 
 
 class EbookListResponseSerializer(serializers.Serializer):
-    ebooks = EbookSummarySerializer(
-        many=True, help_text="The documents managed in the Ebooks section of the back office."
-    )
-    chapters = EbookChapterSummarySerializer(
-        many=True, help_text="The Highway Code, read section by section out of the course hierarchy."
-    )
-    current = serializers.SlugField(
-        allow_null=True, help_text="Where the student left off in the Highway Code, by section slug."
+    ebooks = EbookOnTheShelfSerializer(
+        many=True, help_text="The books managed in the Ebooks section of the back office."
     )
 
 
-class EbookChapterSerializer(serializers.Serializer):
-    slug = serializers.SlugField()
-    title = serializers.CharField()
-    summary = serializers.CharField(allow_blank=True)
-    number = serializers.IntegerField()
-    blocks = BlockListField()
+class EbookSectionSerializer(EbookSectionSummarySerializer):
+    """A section as it is handed over to be read: its contents entry, plus the material itself."""
 
-
-class EbookTocEntrySerializer(serializers.Serializer):
-    slug = serializers.SlugField()
-    title = serializers.CharField()
-    number = serializers.IntegerField()
-
-
-class EbookChapterResponseSerializer(serializers.Serializer):
-    chapter = EbookChapterSerializer()
-    toc = EbookTocEntrySerializer(many=True, help_text="The whole book, so the reader can jump about.")
-    prev = LinkSerializer(allow_null=True)
-    next = LinkSerializer(allow_null=True)
-    signs = SignMapField(help_text="Empty today, as on a lesson. The key is always present.")
-    questions = QuestionMapField(
-        help_text="Empty today: the e-book is read straight through, and its sections carry no check blocks."
-    )
-    clips = ClipMapField()
+    blocks = EbookBlockListField()
 
 
 class EbookDetailResponseSerializer(serializers.Serializer):
+    """A whole book: its metadata, and every section the student may read, in order."""
+
     ebook = EbookSerializer()
-
-
-EBOOK_DETAIL = PolymorphicProxySerializer(
-    component_name="EbookDetail",
-    serializers={
-        "ebook": EbookDetailResponseSerializer,
-        "chapter": EbookChapterResponseSerializer,
-    },
-    resource_type_field_name=None,
-)
+    sections = EbookSectionSerializer(
+        many=True, help_text="In reading order, each with the blocks a lesson would carry."
+    )
+    current = serializers.SlugField(allow_null=True, help_text="Where this student left off, by section slug.")
 
 
 # --- Signs, practice and answering ---------------------------------------------------------------
@@ -553,6 +578,7 @@ class ProgressSummaryResponseSerializer(serializers.Serializer):
     questionsLearnt = serializers.IntegerField(help_text="Distinct questions answered correctly.")  # noqa: N815
     mastery = serializers.IntegerField(help_text="Questions learnt as a percentage of the whole bank.")
     lessonsCompleted = serializers.IntegerField()  # noqa: N815
+    sectionsRead = serializers.IntegerField(help_text="Sections of an e-book marked read.")  # noqa: N815
     mockAttempts = serializers.IntegerField(help_text="Mock tests sat. Practice exams are counted on their own.")  # noqa: N815
     mocksPassed = serializers.IntegerField()  # noqa: N815
     bestMockScore = serializers.IntegerField(allow_null=True)  # noqa: N815
@@ -567,6 +593,12 @@ class DoneResponseSerializer(serializers.Serializer):
     """The reply to marking something done. Marking it twice says the same thing."""
 
     done = serializers.BooleanField()
+
+
+class ReadResponseSerializer(serializers.Serializer):
+    """The reply to marking an e-book section read. Marking it twice says the same thing."""
+
+    read = serializers.BooleanField()
 
 
 class SavedResponseSerializer(serializers.Serializer):
