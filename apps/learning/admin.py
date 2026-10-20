@@ -577,7 +577,7 @@ class MockAttemptAdmin(ReadOnlyAdmin):
         (
             "Questions",
             {
-                "fields": ("question_result", "breakdown"),
+                "fields": ("question_result", "breakdown", "time_taken"),
                 "description": "The pass mark covers the questions. A blank answer counts as a wrong one.",
             },
         ),
@@ -605,6 +605,7 @@ class MockAttemptAdmin(ReadOnlyAdmin):
         "created_at",
         "question_result",
         "breakdown",
+        "time_taken",
         "passed",
         "hazard_result",
         "hazard_verdict",
@@ -623,6 +624,13 @@ class MockAttemptAdmin(ReadOnlyAdmin):
             f"{counts['unansweredQuestions']} left blank, "
             f"of {counts['totalQuestions']} asked"
         )
+
+    @admin.display(description="Time taken")
+    def time_taken(self, attempt: MockAttempt) -> str:
+        if attempt.time_taken_seconds is None:
+            return "—"
+        minutes, seconds = divmod(attempt.time_taken_seconds, 60)
+        return f"{minutes}m {seconds}s"
 
     @admin.display(description="Hazard score")
     def hazard_result(self, attempt: MockAttempt) -> str:

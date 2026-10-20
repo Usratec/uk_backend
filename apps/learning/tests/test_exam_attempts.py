@@ -39,10 +39,12 @@ def answers_for(exam, *, right=0) -> dict:
     return chosen
 
 
-def submit(api, student, exam, *, right=0, clicks=None):
+def submit(api, student, exam, *, right=0, clicks=None, seconds=None):
     body: dict = {"answers": answers_for(exam, right=right)}
     if clicks is not None:
         body["hazardClicks"] = clicks
+    if seconds is not None:
+        body["timeTakenSeconds"] = seconds
     return sign_in(api, student).post(submit_url(exam.slug), body, format="json")
 
 
@@ -293,6 +295,127 @@ class TestReadingAPastSitting:
         assert saved["questions"] == []
         assert saved["clips"] == []
         assert saved["exam"]["slug"] == "mock-1"
+
+
+class TestHowLongTheQuestionsTook:
+    def test_the_marking_says_back_what_was_recorded(self, api, student, live_exam):
+        marked = submit(api, student(), live_exam, right=2, seconds=1234).data
+
+        assert marked["timeTakenSeconds"] == 1234
+
+    def test_it_is_kept_with_the_sitting(self, api, student, live_exam):
+        submit(api, student(), live_exam, right=2, seconds=1234)
+
+        assert MockAttempt.objects.get().time_taken_seconds == 1234
+
+    def test_it_is_still_there_when_the_sitting_is_opened_again(self, api, student, live_exam):
+        learner = student()
+        attempt = submit(api, learner, live_exam, right=2, seconds=1234).data["attemptId"]
+
+        saved = sign_in(api, learner).get(attempt_url(attempt)).data
+
+        assert saved["timeTakenSeconds"] == 1234
+
+    def test_the_history_lists_it_for_each_sitting(self, api, student, live_exam):
+        learner = student()
+        submit(api, learner, live_exam, right=1, seconds=600)
+        submit(api, learner, live_exam, right=2, seconds=900)
+
+        attempts = sign_in(api, learner).get(attempts_url("mock-1")).data["attempts"]
+
+        assert [attempt["timeTakenSeconds"] for attempt in attempts] == [900, 600]
+
+    def test_each_sitting_keeps_its_own_timing(self, api, student, live_exam):
+        learner = student()
+        first = submit(api, learner, live_exam, right=2, seconds=1800).data["attemptId"]
+
+        submit(api, learner, live_exam, right=2, seconds=120)
+
+        assert sign_in(api, learner).get(attempt_url(first)).data["timeTakenSeconds"] == 1800
+
+    def test_a_sitting_sent_without_a_timing_is_untimed(self, api, student, live_exam):
+        learner = student()
+        marked = submit(api, learner, live_exam, right=2).data
+
+        assert marked["timeTakenSeconds"] is None
+        assert sign_in(api, learner).get(attempt_url(marked["attemptId"])).data["timeTakenSeconds"] is None
+
+    def test_an_explicit_null_is_untimed_too(self, api, student, live_exam):
+        response = sign_in(api, student()).post(
+            submit_url(live_exam.slug),
+            {"answers": answers_for(live_exam, right=2), "timeTakenSeconds": None},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert response.data["timeTakenSeconds"] is None
+
+    def test_a_timing_that_makes_no_sense_does_not_lose_the_marks(self, api, student, live_exam):
+        response = sign_in(api, student()).post(
+            submit_url(live_exam.slug),
+            {"answers": answers_for(live_exam, right=2), "timeTakenSeconds": "ages"},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert response.data["score"] == 2
+        assert response.data["timeTakenSeconds"] is None
+
+    def test_a_negative_timing_is_recorded_as_no_time_at_all(self, api, student, live_exam):
+        marked = submit(api, student(), live_exam, right=2, seconds=-30).data
+
+        assert marked["timeTakenSeconds"] == 0
+        assert MockAttempt.objects.get().time_taken_seconds == 0
+
+    def test_a_timing_past_the_limit_is_cut_back_to_it(self, api, student, live_exam):
+        marked = submit(api, student(), live_exam, right=2, seconds=999_999).data
+
+        assert marked["timeTakenSeconds"] == 3450
+
+    def test_running_to_the_timer_is_believed(self, api, student, live_exam):
+        marked = submit(api, student(), live_exam, right=2, seconds=3425).data
+
+        assert marked["timeTakenSeconds"] == 3425
+
+    def test_an_untimed_exam_has_nothing_to_clamp_against(self, api, student, live_exam):
+        live_exam.time_limit_seconds = None
+        live_exam.save(update_fields=["time_limit_seconds"])
+
+        marked = submit(api, student(), live_exam, right=2, seconds=9000).data
+
+        assert marked["timeTakenSeconds"] == 9000
+
+    def test_an_untimed_exam_still_has_a_ceiling(self, api, student, live_exam):
+        live_exam.time_limit_seconds = None
+        live_exam.save(update_fields=["time_limit_seconds"])
+
+        marked = submit(api, student(), live_exam, right=2, seconds=10**12)
+
+        assert marked.status_code == 200
+        assert marked.data["timeTakenSeconds"] == 86_400
+        assert MockAttempt.objects.get().time_taken_seconds == 86_400
+
+    def test_the_clips_are_not_part_of_it(self, api, student, mock_with_clips):
+        marked = submit(
+            api,
+            student(),
+            mock_with_clips,
+            right=2,
+            clicks={"country-lane": [10.0], "school-run": [10.0]},
+            seconds=600,
+        ).data
+
+        assert marked["timeTakenSeconds"] == 600
+        assert marked["hazardTotalScore"] == 10
+
+    def test_a_sitting_recorded_before_timings_were_kept_is_untimed(self, api, student, live_exam):
+        learner = student()
+        attempt = MockAttempt.objects.create(student=learner, exam=live_exam, score=1, total=2, passed=False)
+
+        reader = sign_in(api, learner)
+
+        assert reader.get(attempt_url(attempt.pk)).data["timeTakenSeconds"] is None
+        assert reader.get(attempts_url("mock-1")).data["attempts"][0]["timeTakenSeconds"] is None
 
 
 class TestTheHazardPassMark:

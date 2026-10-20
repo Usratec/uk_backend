@@ -617,6 +617,7 @@ def attempt_in_the_history(attempt: MockAttempt) -> dict:
         "percent": percent_of(attempt.score, attempt.total),
         "hazardScore": attempt.hazard_score,
         "hazardMaxScore": attempt.hazard_top_score,
+        "timeTakenSeconds": attempt.time_taken_seconds,
     }
 
 
@@ -670,6 +671,7 @@ def saved_result_of(attempt: MockAttempt) -> dict:
     return {
         **saved,
         "attemptId": attempt.pk,
+        "timeTakenSeconds": attempt.time_taken_seconds,
         "completedAt": attempt.created_at,
         "exam": {"slug": attempt.exam.slug, "title": attempt.exam.title, "kind": attempt.exam.kind},
     }
@@ -781,8 +783,35 @@ def record_answer(student, question: Question, was_correct: bool) -> None:
     QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
 
 
+TIME_TAKEN_GRACE_SECONDS = 30
+"""How far past the time limit a reported timing is still believed.
+
+The last question is answered and only then is the paper posted, so a sitting that ran the timer
+down can honestly report a few seconds more than the limit. Past this grace the figure is a clock
+that drifted or was tampered with, and it is cut back.
+"""
+
+
+TIME_TAKEN_CEILING_SECONDS = 24 * 60 * 60
+"""The most an untimed exam can be reported as having taken: a day.
+
+An exam with no time limit has nothing of its own to clamp against, and a figure wider than the
+column would fail the insert and lose the marks with it, so there is still a ceiling.
+"""
+
+
+def time_taken_for(exam: PracticeExam, seconds: int | None) -> int | None:
+    if seconds is None:
+        return None
+    if exam.time_limit_seconds is None:
+        ceiling = TIME_TAKEN_CEILING_SECONDS
+    else:
+        ceiling = exam.time_limit_seconds + TIME_TAKEN_GRACE_SECONDS
+    return min(max(seconds, 0), ceiling)
+
+
 @transaction.atomic
-def record_sitting(student, exam: PracticeExam, result: dict) -> MockAttempt:
+def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds: int | None = None) -> MockAttempt:
     """Remember one exam sitting: the score, and every answer and clip that made it up.
 
     The answers are recorded too, so a question got wrong in a mock turns up under "mistakes"
@@ -802,6 +831,7 @@ def record_sitting(student, exam: PracticeExam, result: dict) -> MockAttempt:
         unanswered=result["unansweredQuestions"],
         hazard_score=result["hazardTotalScore"],
         hazard_top_score=result["hazardMaxScore"],
+        time_taken_seconds=time_taken_for(exam, time_taken_seconds),
         result=result,
     )
     QuestionAttempt.objects.bulk_create(
