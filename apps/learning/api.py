@@ -27,6 +27,7 @@ from apps.learning.models import (
     Chapter,
     ExamKind,
     HazardClip,
+    MockAttempt,
     PracticeExam,
     Question,
     SavedQuestion,
@@ -39,6 +40,8 @@ from apps.learning.serializers import (
     AnswerResponseSerializer,
     DoneResponseSerializer,
     EbookListResponseSerializer,
+    ExamAttemptListResponseSerializer,
+    ExamAttemptResultResponseSerializer,
     ExamDetailResponseSerializer,
     ExamListResponseSerializer,
     ExamResultResponseSerializer,
@@ -470,8 +473,12 @@ class AnswerView(APIView):
         return Response(marked)
 
 
-def _exam_summary(exam: PracticeExam, question_count: int, hazards: dict | None = None) -> dict:
+def _exam_summary(
+    exam: PracticeExam, question_count: int, hazards: dict | None = None, history: dict | None = None
+) -> dict:
     hazards = hazards or {}
+    # An exam this student has never sat, which is every exam until they sit one.
+    history = history or {"attempts": 0, "bestPercent": 0, "lastAttemptId": None}
     return {
         "slug": exam.slug,
         "title": exam.title,
@@ -479,9 +486,11 @@ def _exam_summary(exam: PracticeExam, question_count: int, hazards: dict | None 
         "kind": exam.kind,
         "questionCount": question_count,
         "passMark": exam.pass_mark,
+        "hazardPassMark": exam.hazard_pass_mark,
         "timeLimitSeconds": exam.time_limit_seconds,
         "clipCount": hazards.get("clipCount", 0),
         "hazardMaxScore": hazards.get("hazardMaxScore", 0),
+        **history,
     }
 
 
@@ -524,12 +533,13 @@ class ExamListView(APIView):
 
         exams = list(exams)
         hazards = services.hazard_totals_for(exams)
+        history = services.history_for(student, exams)
 
         listed = []
         for exam in exams:
             included, asked = _wholly_included(student, exam)
             if included:
-                listed.append(_exam_summary(exam, len(asked), hazards.get(exam.pk)))
+                listed.append(_exam_summary(exam, len(asked), hazards.get(exam.pk), history.get(exam.pk)))
 
         return Response({"exams": listed})
 
@@ -565,6 +575,7 @@ class ExamDetailView(APIView):
                     exam,
                     len(asked),
                     {"clipCount": len(clips), "hazardMaxScore": sum(clip.top_score for clip in clips)},
+                    services.history_for(student, [exam]).get(exam.pk),
                 ),
                 "questions": [services.student_view_of_question(question) for question in asked],
                 "signs": sign_map(_sign_codes_in(asked)),
@@ -608,8 +619,55 @@ class ExamSubmitView(APIView):
             submission.validated_data["answers"],
             submission.validated_data.get("hazardClicks"),
         )
-        services.record_sitting(student, exam, result)
-        return Response(result)
+        attempt = services.record_sitting(student, exam, result)
+
+        return Response({**result, "attemptId": attempt.pk})
+
+
+class ExamAttemptListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="listExamAttempts",
+        summary="Your attempts at an exam",
+        responses={200: ExamAttemptListResponseSerializer},
+    )
+    def get(self, request: Request, slug: str) -> Response:
+        student = cast(User, request.user)
+        if not entitlements.has_access(student):
+            return plan_needed()
+
+        exam = services.live(PracticeExam.objects.all()).filter(slug=slug).first()
+        if exam is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        attempts = [services.attempt_in_the_history(attempt) for attempt in services.attempts_of(student, exam)]
+
+        return Response(
+            {
+                "attempts": attempts,
+                "bestPercent": max((attempt["percent"] for attempt in attempts), default=0),
+                "lastAttemptId": attempts[0]["id"] if attempts else None,
+            }
+        )
+
+
+class ExamAttemptView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="getExamAttempt",
+        summary="Read the results of a past attempt",
+        responses={200: ExamAttemptResultResponseSerializer},
+    )
+    def get(self, request: Request, attempt_id: int) -> Response:
+        student = cast(User, request.user)
+
+        attempt = MockAttempt.objects.select_related("exam").filter(pk=attempt_id, student=student).first()
+        if attempt is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(services.saved_result_of(attempt))
 
 
 class LessonCompleteView(APIView):

@@ -28,25 +28,6 @@ def submit_url(slug: str) -> str:
     return reverse("learn-exam-submit", args=[slug])
 
 
-@pytest.fixture
-def live_exam(chapter, make_question, publisher):
-    """A published mock test of two published questions, the first answer right in each."""
-    chapter.status = PublishStatus.PUBLISHED
-    chapter.save(update_fields=["status"])
-
-    exam = PracticeExam.objects.create(
-        slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=2, time_limit_seconds=3420
-    )
-    for order, key in enumerate(("first", "second"), start=1):
-        question = make_question(key=key)
-        services.publish(actor=publisher, instance=question)
-        exam.exam_questions.create(question=question, order=order)
-
-    services.publish(actor=publisher, instance=exam)
-    exam.refresh_from_db()
-    return exam
-
-
 class TestListing:
     def test_a_student_sees_the_exams_on_offer(self, api, student, live_exam):
         response = sign_in(api, student()).get(EXAMS_URL)
@@ -229,16 +210,6 @@ class TestMarking:
         response = sign_in(api, lapsed).post(submit_url("mock-1"), {"answers": {}}, format="json")
 
         assert response.status_code == 402
-
-
-@pytest.fixture
-def mock_with_clips(live_exam, make_clip, publisher):
-    """The published mock test, with two published clips of one hazard each — ten hazard marks."""
-    for order, slug in enumerate(("country-lane", "school-run"), start=1):
-        clip = make_clip(slug=slug, title=slug.replace("-", " ").title())
-        services.publish(actor=publisher, instance=clip)
-        live_exam.exam_clips.create(clip=clip, order=order)
-    return live_exam
 
 
 class TestPuttingClipsInAMockTest:
@@ -446,7 +417,8 @@ class TestMarkingTheClips:
         assert response.status_code == 400
 
     def test_the_clips_do_not_change_the_pass_mark(self, api, student, mock_with_clips):
-        """Two tests sat in one go: the pass mark is the questions', and the marks are never added."""
+        """Two tests sat in one go: the marks are never added, and clips with no pass mark of
+        their own cannot fail a sitting."""
         response = self.submit(api, student(), mock_with_clips, right=2, clicks={})
 
         assert response.data["passed"] is True
