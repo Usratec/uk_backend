@@ -35,6 +35,10 @@ def complete_url(slug: str) -> str:
     return reverse("learn-lesson-complete", args=[slug])
 
 
+def read_url(slug: str) -> str:
+    return reverse("learn-ebook-section-read", args=[slug])
+
+
 def saved_url(key: str) -> str:
     return reverse("learn-question-saved", args=[key])
 
@@ -539,52 +543,37 @@ class TestStreak:
 
 class TestTheEbook:
     @pytest.fixture
-    def book(self, publisher):
-        from apps.learning.models import Chapter, LearningContent, Subchapter
-
-        chapter = Chapter.objects.create(slug="highway-code", title="The Highway Code", order=9)
-        chapter.status = PublishStatus.PUBLISHED
-        chapter.save(update_fields=["status"])
-        sections = []
-        for order, slug in enumerate(("hierarchy", "signals"), start=1):
-            section = Subchapter.objects.create(chapter=chapter, slug=slug, title=slug.title(), order=order)
-            LearningContent.objects.create(
-                subchapter=section,
-                slug=f"{slug}-body",
-                title=slug.title(),
-                body_html="<p>Rule.</p>",
-                status=PublishStatus.PUBLISHED,
-            )
-            services.publish(actor=publisher, instance=section)
-            sections.append(section)
-        return sections
+    def book(self, read_online, make_section, publisher):
+        """A published book of two published sections."""
+        services.publish(actor=publisher, instance=make_section(read_online, slug="signals", title="Signals", order=2))
+        return read_online
 
     def test_continue_reading_points_at_the_first_unread_section(self, api, student, book):
         response = sign_in(api, student()).get(reverse("learn-ebook"))
 
-        assert response.data["current"] == "hierarchy"
+        assert response.data["ebooks"][0]["current"] == "hierarchy"
 
     def test_it_moves_on_once_a_section_is_read(self, api, student, book):
         learner = sign_in(api, student())
-        learner.post(complete_url("hierarchy"))
+        learner.post(read_url("hierarchy"))
 
-        response = learner.get(reverse("learn-ebook"))
+        shelf = learner.get(reverse("learn-ebook")).data["ebooks"][0]
 
-        assert response.data["chapters"][0]["read"] is True
-        assert response.data["current"] == "signals"
+        assert shelf["sections"][0]["read"] is True
+        assert shelf["current"] == "signals"
 
     def test_a_finished_book_points_at_its_last_section(self, api, student, book):
         """So "continue reading" always has somewhere to go."""
         learner = sign_in(api, student())
-        learner.post(complete_url("hierarchy"))
-        learner.post(complete_url("signals"))
+        learner.post(read_url("hierarchy"))
+        learner.post(read_url("signals"))
 
-        assert learner.get(reverse("learn-ebook")).data["current"] == "signals"
+        assert learner.get(reverse("learn-ebook")).data["ebooks"][0]["current"] == "signals"
 
-    def test_an_empty_shelf_has_nowhere_to_continue(self, api, student):
+    def test_an_empty_shelf_is_simply_empty(self, api, student):
         response = sign_in(api, student()).get(reverse("learn-ebook"))
 
-        assert response.data["current"] is None
+        assert response.data["ebooks"] == []
 
 
 class TestTheProgressSummary:

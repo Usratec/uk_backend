@@ -655,8 +655,10 @@ class Ebook(PublishableModel, TimestampedModel):
     file = models.ForeignKey(
         "learning.MediaAsset",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="ebooks",
-        help_text="The document from the media library.",
+        help_text="The document from the media library. Optional for a book that is read section by section.",
     )
     cover = models.ImageField(
         upload_to=ebook_cover_path,
@@ -683,6 +685,52 @@ class Ebook(PublishableModel, TimestampedModel):
         if not self.slug:
             self.slug = _unused_ebook_slug(slugify(self.title), exclude=self.pk)
         super().save(*args, **kwargs)
+
+
+class EbookSection(PublishableModel, TimestampedModel):
+    ebook = models.ForeignKey(Ebook, on_delete=models.PROTECT, related_name="sections")
+    slug = models.SlugField(unique=True, help_text="Used in links. Changing it breaks saved links.")
+    title = models.CharField(max_length=160)
+    summary = models.CharField(max_length=300, blank=True, help_text="A line shown in the contents.")
+    body_html = models.TextField("content", blank=True, help_text="The section's text.")
+    media = models.ForeignKey(
+        "learning.MediaAsset",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="ebook_sections",
+        help_text="A video or document from the media library, shown after the text. Optional.",
+    )
+    order = models.PositiveSmallIntegerField(default=0, help_text="Position within this book.")
+
+    class Meta:
+        ordering = ["ebook", "order", "title"]
+        indexes = [models.Index(fields=["ebook", "order"])]
+        verbose_name = "ebook section"
+        verbose_name_plural = "ebook sections"
+        permissions = [("publish_ebooksection", "Can publish and unpublish ebook sections")]
+
+    def __str__(self) -> str:
+        return self.title
+
+    def save(self, *args, **kwargs):
+        self.body_html = html.clean(self.body_html)
+        super().save(*args, **kwargs)
+
+
+class EbookSectionProgress(models.Model):
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ebook_progress")
+    section = models.ForeignKey(EbookSection, on_delete=models.CASCADE, related_name="progress")
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-read_at"]
+        verbose_name = "ebook reading progress"
+        verbose_name_plural = "ebook reading progress"
+        constraints = [models.UniqueConstraint(fields=["student", "section"], name="one_progress_row_per_section")]
+
+    def __str__(self) -> str:
+        return f"{self.student} · {self.section.title}"
 
 
 def _unused_ebook_slug(base: str, exclude=None) -> str:

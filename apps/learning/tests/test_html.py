@@ -6,6 +6,7 @@ wall of styling from Word. These tests pin what survives and what does not.
 
 import pytest
 
+from apps.learning import html
 from apps.learning.html import clean, is_empty
 from apps.learning.models import LearningContent
 
@@ -99,3 +100,43 @@ class TestCleaningOnSave:
 
         content.refresh_from_db()
         assert "onmouseover" not in content.body_html
+
+
+class TestSplittingOnSigns:
+    def test_text_with_no_marker_is_one_piece(self):
+        assert html.split_on_signs("<p>Just words.</p>") == [{"html": "<p>Just words.</p>"}]
+
+    def test_a_marker_splits_the_text_around_it(self):
+        pieces = html.split_on_signs("<p>Before.</p><p>[signs: give-way | Common signs]</p><p>After.</p>")
+
+        assert pieces == [
+            {"html": "<p>Before.</p>"},
+            {"codes": ["give-way"], "caption": "Common signs"},
+            {"html": "<p>After.</p>"},
+        ]
+
+    def test_the_caption_is_optional(self):
+        assert html.split_on_signs("<p>[signs: give-way]</p>") == [{"codes": ["give-way"], "caption": ""}]
+
+    def test_several_codes_are_kept_in_order(self):
+        pieces = html.split_on_signs("<p>[signs: stop, give-way , no-entry]</p>")
+
+        assert pieces[0]["codes"] == ["stop", "give-way", "no-entry"]
+
+    def test_the_paragraph_around_a_marker_is_taken_with_it(self):
+        pieces = html.split_on_signs("<p>Before.</p><p>[signs: give-way]</p>")
+
+        assert pieces == [{"html": "<p>Before.</p>"}, {"codes": ["give-way"], "caption": ""}]
+
+    def test_two_markers_in_a_row_leave_no_blank_text_between_them(self):
+        pieces = html.split_on_signs("<p>[signs: stop]</p><p>[signs: give-way]</p>")
+
+        assert [piece["codes"] for piece in pieces] == [["stop"], ["give-way"]]
+
+    def test_an_empty_body_has_no_pieces(self):
+        assert html.split_on_signs("") == []
+
+    def test_the_codes_it_asks_for_can_be_listed(self):
+        body = "<p>[signs: stop]</p><p>Words.</p><p>[signs: give-way, stop]</p>"
+
+        assert html.sign_codes_in(body) == ["stop", "give-way", "stop"]

@@ -195,39 +195,24 @@ class TestLesson:
 
 
 class TestEbook:
-    def test_the_highway_code_reads_from_the_same_hierarchy(self, api, student, publisher):
-        """No separate e-book structure: it is a chapter whose subchapters are its sections."""
-        from apps.learning import services
-
-        book = Chapter.objects.create(slug="highway-code", title="The Highway Code", order=9)
-        section = Subchapter.objects.create(
-            chapter=book, slug="hierarchy", title="The hierarchy of road users", order=1
-        )
-        LearningContent.objects.create(
-            subchapter=section,
-            slug="who",
-            title="Who",
-            body_html="<p>Rule H1.</p>",
-            status=PublishStatus.PUBLISHED,
-        )
-        book.status = PublishStatus.PUBLISHED
-        book.save(update_fields=["status"])
-        services.publish(actor=publisher, instance=section)
-
+    def test_a_book_is_read_in_its_own_sections(self, api, student, read_online):
+        """A book is not part of the course hierarchy: it owns its sections, and serves them all."""
         reader = sign_in(api, student())
         listing = reader.get(EBOOK_URL)
-        chapter_page = reader.get(reverse("learn-ebook-chapter", args=["hierarchy"]))
+        book = reader.get(reverse("learn-ebook-detail", args=["study-guide"]))
 
-        assert [item["title"] for item in listing.data["chapters"]] == ["The hierarchy of road users"]
-        assert listing.data["chapters"][0]["number"] == 1
-        assert chapter_page.data["chapter"]["blocks"][0]["html"] == "<p>Rule H1.</p>"
-        assert [item["slug"] for item in chapter_page.data["toc"]] == ["hierarchy"]
+        assert [item["title"] for item in listing.data["ebooks"][0]["sections"]] == ["The hierarchy"]
+        assert listing.data["ebooks"][0]["sections"][0]["number"] == 1
+        assert book.data["sections"][0]["blocks"][0]["html"] == "<p>Rule H1.</p>"
+
+    def test_a_section_is_not_served_as_a_lesson(self, api, student, read_online):
+        assert sign_in(api, student()).get(lesson_url("hierarchy")).status_code == 404
 
     def test_an_empty_shelf_is_not_an_error(self, api, student):
         response = sign_in(api, student()).get(EBOOK_URL)
 
         assert response.status_code == 200
-        assert response.data["chapters"] == []
+        assert response.data["ebooks"] == []
 
 
 class TestSigns:

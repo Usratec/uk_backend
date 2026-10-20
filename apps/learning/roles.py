@@ -21,6 +21,7 @@ CONTENT_MODELS = (
     "examquestion",
     "examhazardclip",
     "ebook",
+    "ebooksection",
 )
 
 # What students have done. Looked at, never edited, so only the view permission is granted —
@@ -31,12 +32,22 @@ PROGRESS_MODELS = (
     "lessonprogress",
     "savedquestion",
     "hazardattempt",
+    "ebooksectionprogress",
 )
 WATCHING = tuple(f"learning.view_{model}" for model in PROGRESS_MODELS)
 
 # Everything needed to write and change learning content, but not to release it.
 EDITING = tuple(f"learning.{action}_{model}" for model in CONTENT_MODELS for action in ("view", "add", "change"))
-PUBLISHABLE = ("chapter", "subchapter", "learningcontent", "question", "practiceexam", "hazardclip", "ebook")
+PUBLISHABLE = (
+    "chapter",
+    "subchapter",
+    "learningcontent",
+    "question",
+    "practiceexam",
+    "hazardclip",
+    "ebook",
+    "ebooksection",
+)
 PUBLISHING = tuple(f"learning.publish_{model}" for model in PUBLISHABLE)
 
 CONTENT_EDITOR = StaffRole(name="Content Editor", permissions=EDITING + WATCHING)

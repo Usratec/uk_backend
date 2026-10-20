@@ -22,6 +22,8 @@ from apps.learning.models import (
     Chapter,
     ContentType,
     Ebook,
+    EbookSection,
+    EbookSectionProgress,
     ExamKind,
     HazardAttempt,
     HazardClip,
@@ -35,6 +37,7 @@ from apps.learning.models import (
     QuestionAttempt,
     QuestionType,
     SavedQuestion,
+    Sign,
     Subchapter,
 )
 from apps.staff.authz import require_permission
@@ -98,21 +101,46 @@ def problems_with(instance) -> list[str]:
         return problems_with_clip(instance)
     if isinstance(instance, Ebook):
         return problems_with_ebook(instance)
+    if isinstance(instance, EbookSection):
+        return problems_with_ebook_section(instance)
     return []
 
 
 def problems_with_ebook(ebook: Ebook) -> list[str]:
-    """What would make an e-book unusable: nothing to open, or the wrong kind of file."""
     problems = []
+    document = ebook.file
 
-    if ebook.file_id is None:
-        problems.append("No file has been chosen from the media library.")
-    elif ebook.file.kind != MediaKind.DOCUMENT:
-        # Otherwise the reader is handed a video and asked to read it.
-        problems.append(f"'{ebook.file.title}' is {ebook.file.get_kind_display().lower()}, not a document.")
+    if document is not None and document.kind != MediaKind.DOCUMENT:
+        problems.append(f"'{document.title}' is {document.get_kind_display().lower()}, not a document.")
 
     if not ebook.slug:
         problems.append("There is no slug yet, so the e-book has no address to be read at.")
+
+    return problems
+
+
+def problems_with_ebook_section(section: EbookSection) -> list[str]:
+    """What would make a section of a book unreadable."""
+    problems = []
+
+    document = section.media
+
+    if html.is_empty(section.body_html) and document is None:
+        problems.append("There is nothing in this section yet: write something, or choose a file.")
+
+    if document is not None and MediaKind(document.kind) not in EBOOK_MEDIA_KINDS:
+        problems.append(
+            f"'{document.title}' is {document.get_kind_display().lower()}. "
+            "A section shows a video or a document; put pictures in the text itself."
+        )
+
+    unknown = unknown_sign_codes(section.body_html)
+    if unknown:
+        listed = ", ".join(unknown[:5])
+        problems.append(f"The text asks for signs that are not in the library: {listed}.")
+
+    if not section.ebook.is_published:
+        problems.append(f"Its book '{section.ebook.title}' is not published, so students cannot reach it.")
 
     return problems
 
@@ -176,6 +204,9 @@ def warnings_about(instance) -> list[str]:
     if isinstance(instance, PracticeExam):
         if instance.hazard_pass_mark is None and instance.hazard_clips.exists():
             return ["This test has clips but no hazard pass mark, so students pass it on the questions alone."]
+    if isinstance(instance, Ebook):
+        if instance.file_id is None and not ebook_sections(instance).exists():
+            return ["No section of this book is published yet and it has no document, so students will see it empty."]
     return []
 
 
@@ -387,6 +418,15 @@ def student_view_of(instance) -> dict:
             "blocks": [],
         }
 
+    if isinstance(instance, EbookSection):
+        return {
+            "slug": instance.slug,
+            "title": instance.title,
+            "summary": instance.summary,
+            "topic": {"slug": instance.ebook.slug, "title": instance.ebook.title},
+            "blocks": blocks_of_section(instance),
+        }
+
     if isinstance(instance, Question):
         # A question has no body to render, so the preview page shows the answer sheet instead.
         return {
@@ -426,6 +466,11 @@ def answer_sheet_for(question: Question) -> dict:
         ],
     }
 
+
+EBOOK_MEDIA_KINDS = {
+    MediaKind.VIDEO: "video",
+    MediaKind.DOCUMENT: "document",
+}
 
 #: Which kind of file each media content type expects, so one cannot be published with the other.
 MEDIA_CONTENT_TYPES = {
@@ -781,6 +826,16 @@ def mark_lesson_done(student, subchapter: Subchapter) -> None:
     LessonProgress.objects.get_or_create(student=student, subchapter=subchapter)
 
 
+def mark_section_read(student, section: EbookSection) -> None:
+    """Record that a student read a section of a book. Reading it twice changes nothing."""
+    EbookSectionProgress.objects.get_or_create(student=student, section=section)
+
+
+def sections_read_by(student) -> set[int]:
+    """Which e-book sections this student has read, for marking up a contents list in one query."""
+    return set(EbookSectionProgress.objects.filter(student=student).values_list("section_id", flat=True))
+
+
 def completed_lesson_ids(student) -> set[int]:
     """Which subchapters this student has finished, for marking up a listing in one query."""
     return set(LessonProgress.objects.filter(student=student).values_list("subchapter_id", flat=True))
@@ -848,11 +903,13 @@ def mastery_of(student, chapter: Chapter) -> dict:
 def study_days(student) -> list:
     """The distinct dates this student did something, newest first.
 
-    Both answering a question and finishing a lesson count, so a day spent reading is not lost.
+    Answering a question, finishing a lesson and reading a section of a book all count, so a day
+    spent reading is not lost.
     """
     answered = QuestionAttempt.objects.filter(student=student).dates("created_at", "day", order="DESC")
     read = LessonProgress.objects.filter(student=student).dates("completed_at", "day", order="DESC")
-    return sorted(set(answered) | set(read), reverse=True)
+    booked = EbookSectionProgress.objects.filter(student=student).dates("read_at", "day", order="DESC")
+    return sorted(set(answered) | set(read) | set(booked), reverse=True)
 
 
 def streak(student, today=None, days=None) -> int:
@@ -935,6 +992,7 @@ def progress_summary(student) -> dict:
         "questionsLearnt": learnt,
         "mastery": round(learnt * 100 / bank) if bank else 0,
         "lessonsCompleted": LessonProgress.objects.filter(student=student).count(),
+        "sectionsRead": EbookSectionProgress.objects.filter(student=student).count(),
         "mockAttempts": mocks.count(),
         "mocksPassed": mocks.filter(passed=True).count(),
         "bestMockScore": best_mock.score if best_mock else None,
@@ -1040,7 +1098,88 @@ def live_ebooks(at=None):
     return live(Ebook.objects.select_related("file"), at=at).order_by("order", "title")
 
 
-def ebook_on_the_shelf(ebook: Ebook) -> dict:
+def ebook_sections(ebook: Ebook, at=None):
+    """The book's live sections, in the order staff put them in."""
+    return live(ebook.sections.select_related("media"), at=at).order_by("order", "title")
+
+
+def ebook_section(slug: str, at=None):
+    return (
+        live(EbookSection.objects.select_related("ebook", "media"), at=at)
+        .filter(slug=slug, ebook__in=live_ebooks(at))
+        .first()
+    )
+
+
+def blocks_of_section(section: EbookSection) -> list[dict]:
+    blocks: list[dict] = []
+
+    for piece in html.split_on_signs(section.body_html):
+        if "html" in piece:
+            blocks.append({"type": "html", "title": section.title if not blocks else "", "html": piece["html"]})
+            continue
+
+        drawn = signs_by_code(piece["codes"])
+        if drawn:
+            blocks.append({"type": "signs", "caption": piece["caption"], "signs": drawn})
+
+    document = section.media
+    if document is not None and MediaKind(document.kind) in EBOOK_MEDIA_KINDS:
+        blocks.append(
+            {
+                "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
+                "title": section.title,
+                "url": document.file.url,
+            }
+        )
+
+    return blocks
+
+
+def signs_by_code(codes: list[str]) -> list[dict]:
+    if not codes:
+        return []
+
+    found = {
+        sign.code: {
+            "code": sign.code,
+            "name": sign.name,
+            "category": sign.category,
+            "meaning": sign.meaning,
+            "spec": sign.spec,
+        }
+        for sign in Sign.objects.filter(code__in=codes)
+    }
+    return [found[code] for code in codes if code in found]
+
+
+def unknown_sign_codes(body_html: str | None) -> list[str]:
+    """The codes in this text that name no sign, so staff are told before students are."""
+    asked = html.sign_codes_in(body_html)
+    if not asked:
+        return []
+
+    known = set(Sign.objects.filter(code__in=asked).values_list("code", flat=True))
+    return list(dict.fromkeys(code for code in asked if code not in known))
+
+
+def section_in_the_contents(section: EbookSection, number: int, read: set[int]) -> dict:
+    """One section as the contents list it: enough to show and choose it, not to read it."""
+    return {
+        "slug": section.slug,
+        "title": section.title,
+        "summary": section.summary,
+        "number": number,
+        "read": section.pk in read,
+    }
+
+
+def contents_of(sections, read: set[int]) -> list[dict]:
+    """A book's sections numbered from 1, each marked read or not for this student."""
+    return [section_in_the_contents(section, number, read) for number, section in enumerate(sections, start=1)]
+
+
+def _ebook_basics(ebook: Ebook) -> dict:
     return {
         "slug": ebook.slug,
         "title": ebook.title,
@@ -1048,6 +1187,10 @@ def ebook_on_the_shelf(ebook: Ebook) -> dict:
         "coverUrl": ebook.cover_url,
         "updatedAt": ebook.updated_at,
     }
+
+
+def ebook_on_the_shelf(ebook: Ebook) -> dict:
+    return {**_ebook_basics(ebook), "hasDocument": ebook.file_id is not None}
 
 
 def ebook_sheet_for(ebook: Ebook) -> dict:
@@ -1059,18 +1202,20 @@ def ebook_sheet_for(ebook: Ebook) -> dict:
         "content_type": document.content_type if document else "",
         "size_bytes": document.size_bytes if document else 0,
         "cover_url": ebook.cover_url,
+        "sections": contents_of(ebook_sections(ebook), read=set()),
     }
 
 
 def student_view_of_ebook(ebook: Ebook) -> dict:
-    """An e-book to read, with the link to its file.
+    """An e-book to read, with the link to its file when it has one.
 
     The URL is signed and expires, and is built at the moment of serving rather than stored, so a
     link cannot be kept or shared beyond its lifetime — the same arrangement as a lesson's video.
     """
+    document = ebook.file if ebook.file_id else None
     return {
-        **ebook_on_the_shelf(ebook),
-        "url": ebook.file.file.url,
-        "contentType": ebook.file.content_type,
-        "sizeBytes": ebook.file.size_bytes,
+        **_ebook_basics(ebook),
+        "url": document.file.url if document else None,
+        "contentType": document.content_type if document else None,
+        "sizeBytes": document.size_bytes if document else None,
     }
