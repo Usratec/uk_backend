@@ -229,6 +229,13 @@ def problems_with_question(question: Question) -> list[str]:
     if question.question_type == QuestionType.IMAGE and any(option.sign_id is None for option in options):
         problems.append("Every answer needs a road sign, because this question is answered with signs.")
 
+    # Word answers render as buttons. A sign question is answered with pictures, so its text
+    # may be empty; a word question with nothing in the button is not usable.
+    if question.question_type in {QuestionType.SINGLE, QuestionType.MULTI} and any(
+        not option.text.strip() for option in options
+    ):
+        problems.append("Every answer needs text.")
+
     if not question.prompt.strip():
         problems.append("There is no question text yet.")
 
