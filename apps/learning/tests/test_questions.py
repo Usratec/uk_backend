@@ -65,6 +65,41 @@ class TestWhatMakesAQuestionUsable:
 
         assert any("no question text" in problem for problem in services.problems_with_question(question))
 
+    def test_a_single_answer_with_blank_text_is_not_ready(self, make_question):
+        question = make_question()
+        question.options.filter(option_id="b").update(text="")
+
+        assert services.problems_with_question(question) == ["Every answer needs text."]
+
+    def test_several_answers_with_blank_text_are_not_ready(self, make_question):
+        question = make_question(key="several", question_type=QuestionType.MULTI, correct=("a", "c"))
+        question.options.filter(option_id="b").update(text="")
+
+        assert services.problems_with_question(question) == ["Every answer needs text."]
+
+    def test_answer_text_that_is_only_spaces_is_blank(self, make_question):
+        question = make_question(key="spaces")
+        question.options.filter(option_id="b").update(text="   ")
+
+        assert services.problems_with_question(question) == ["Every answer needs text."]
+
+    def test_a_sign_on_a_word_answer_does_not_replace_its_text(self, make_question, sign):
+        """One answer / Several answers are words. A sign beside an empty label is still blank."""
+        question = make_question(key="signed-blank")
+        option = question.options.get(option_id="b")
+        option.text = ""
+        option.sign = sign
+        option.save(update_fields=["text", "sign"])
+
+        assert services.problems_with_question(question) == ["Every answer needs text."]
+
+    def test_a_road_sign_question_with_signs_and_no_text_is_ready(self, make_question, sign):
+        """Its answers are pictures. Empty text is how those options are stored."""
+        question = make_question(key="signs", question_type=QuestionType.IMAGE)
+        question.options.update(text="", sign=sign)
+
+        assert services.problems_with_question(question) == []
+
     def test_how_many_answers_to_mark_follows_from_the_question(self, make_question):
         assert make_question(key="one", correct=("a",)).pick == 1
         assert make_question(key="three", question_type=QuestionType.MULTI, correct=("a", "b", "c")).pick == 3
@@ -86,6 +121,28 @@ class TestPublishing:
     def test_a_question_that_would_not_work_is_refused(self, publisher, make_question):
         with pytest.raises(services.NotReadyToPublishError, match="Exactly one answer"):
             services.publish(actor=publisher, instance=make_question(correct=()))
+
+    def test_a_blank_answer_cannot_be_published(self, publisher, make_question):
+        question = make_question(key="blank-publish")
+        question.options.filter(option_id="b").update(text="")
+
+        with pytest.raises(services.NotReadyToPublishError, match="Every answer needs text"):
+            services.publish(actor=publisher, instance=question)
+
+        question.refresh_from_db()
+        assert question.status == PublishStatus.DRAFT
+
+    def test_blanking_an_answer_on_a_published_question_is_still_reported(self, publisher, make_question):
+        """The check does not look at status. A later edit is caught; the row stays published."""
+        question = make_question(key="already-live")
+        services.publish(actor=publisher, instance=question)
+        question.options.filter(option_id="b").update(text="   ")
+
+        with pytest.raises(services.NotReadyToPublishError, match="Every answer needs text"):
+            services.publish(actor=publisher, instance=question)
+
+        question.refresh_from_db()
+        assert question.is_published
 
 
 class TestWhatTheStudentIsShown:
@@ -323,3 +380,44 @@ class TestTheAdmin:
 
         question.refresh_from_db()
         assert question.status == PublishStatus.PUBLISHED
+
+
+class TestBlankAnswerOnTheQuestionPage:
+    def test_the_change_page_says_not_yet(self, editor_client, make_question):
+        question = make_question(key="blank-page")
+        question.options.filter(option_id="b").update(text="")
+
+        page = editor_client.get(change_url(question)).content.decode()
+
+        assert "Not yet:" in page
+        assert "Every answer needs text." in page
+        assert 'adm-badge--success">Ready' not in page
+
+    def test_the_publish_action_refuses_a_blank_answer(self, publisher_client, make_question):
+        question = make_question(key="blank-action")
+        question.options.filter(option_id="b").update(text="")
+        url = reverse("admin:learning_question_changelist")
+
+        response = publisher_client.post(
+            url,
+            {"action": "publish_selected", "_selected_action": [question.pk]},
+            follow=True,
+        )
+
+        assert "Every answer needs text." in response.content.decode()
+        question.refresh_from_db()
+        assert question.status == PublishStatus.DRAFT
+
+    def test_editing_a_published_question_down_to_a_blank_answer_shows_not_yet(
+        self, publisher, editor_client, make_question
+    ):
+        question = make_question(key="live-blank")
+        services.publish(actor=publisher, instance=question)
+        question.options.filter(option_id="a").update(text="")
+
+        page = editor_client.get(change_url(question)).content.decode()
+
+        assert "Not yet:" in page
+        assert "Every answer needs text." in page
+        question.refresh_from_db()
+        assert question.is_published
