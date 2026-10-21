@@ -1,7 +1,8 @@
 """The /api/cabinet/ endpoints: profile, email change, password change, access status."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from django.core import mail
@@ -13,7 +14,7 @@ from apps.accounts.models import SecurityToken, TokenPurpose, User
 from apps.billing.models import Order, OrderStatus
 from apps.catalog.models import Package
 from apps.entitlements import services as entitlements
-from apps.entitlements.models import Subscription
+from apps.entitlements.models import RevocationReason, Subscription
 
 from .conftest import PASSWORD
 
@@ -56,14 +57,15 @@ def package(db):
 def with_access(user, package):
     """Give the signed-in customer live access, as a purchase would."""
 
-    def activate(paid_at=None):
+    def activate(paid_at=None, bought_package=None):
+        bought_package = bought_package or package
         order = Order.objects.create(
-            package=package,
+            package=bought_package,
             email=user.email,
             status=OrderStatus.PAID,
             paid_at=paid_at or timezone.now(),
-            original_price=package.price,
-            final_price=package.price,
+            original_price=bought_package.price,
+            final_price=bought_package.price,
         )
         subscription, _ = entitlements.activate(order, user)
         return subscription
@@ -369,7 +371,74 @@ class TestSubscriptionStatus:
             "online_platform_activated": False,
             "purchase_date": None,
             "days_remaining": None,
+            "periods": [],
         }
+
+    def test_lists_current_and_next_package_periods(self, authenticated_api, with_access):
+        current = with_access(paid_at=timezone.now() - timedelta(days=10))
+        weekly = Package.objects.create(name="Weekly", duration_days=7, price=Decimal("9.99"))
+        upcoming = with_access(bought_package=weekly)
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.status_code == 200
+        periods = response.json()["periods"]
+        assert len(periods) == 2
+        assert [period["package_name"] for period in periods] == ["30 day access", "Weekly"]
+        assert [period["status"] for period in periods] == ["active", "upcoming"]
+        for period, subscription in zip(periods, [current, upcoming], strict=True):
+            assert datetime.fromisoformat(period["starts_at"]) == subscription.starts_at
+            assert datetime.fromisoformat(period["ends_at"]) == subscription.package_expires_at
+        assert current.package_expires_at == upcoming.starts_at
+        assert upcoming.package_expires_at - upcoming.starts_at == timedelta(days=7)
+        assert response.data["package_expires_at"] == upcoming.package_expires_at
+
+    @pytest.mark.parametrize(
+        ("starts_in", "expected_status"),
+        [
+            (timedelta(days=5), "upcoming"),
+            (timedelta(), "active"),
+            (timedelta(days=-30), "expired"),
+        ],
+    )
+    def test_period_status_at_start_and_end_boundaries(
+        self, authenticated_api, with_period, starts_in, expected_status
+    ):
+        now = timezone.now()
+        with patch("apps.accounts.cabinet_views.timezone.now", return_value=now):
+            with_period(starts_in=starts_in)
+
+            response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.data["periods"][0]["status"] == expected_status
+
+    @pytest.mark.parametrize("keep_active", [False, True])
+    def test_periods_exclude_revoked_purchases(self, authenticated_api, with_access, keep_active):
+        active = with_access() if keep_active else None
+        revoked = with_access()
+        entitlements.revoke(revoked.order, RevocationReason.REFUND)
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        periods = response.json()["periods"]
+        assert len(periods) == int(keep_active)
+        if active is not None:
+            assert periods[0]["status"] == "active"
+            assert datetime.fromisoformat(periods[0]["ends_at"]) == active.package_expires_at
+        else:
+            assert response.data["has_subscription"] is False
+
+    def test_periods_belong_only_to_the_signed_in_customer(self, authenticated_api, with_access, google_user):
+        other = with_access()
+        other.user = google_user
+        other.save(update_fields=["user"])
+        own = with_access()
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        periods = response.json()["periods"]
+        assert len(periods) == 1
+        assert datetime.fromisoformat(periods[0]["starts_at"]) == own.starts_at
 
     def test_reports_live_access(self, authenticated_api, with_access):
         subscription = with_access()

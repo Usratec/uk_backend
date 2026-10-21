@@ -41,6 +41,11 @@ def current_subscription(user: User) -> Subscription | None:
     return granting().filter(user=user).select_related("package", "order").order_by("-package_expires_at").first()
 
 
+def subscription_periods(user: User) -> models.QuerySet[Subscription]:
+    """The customer's non-revoked access periods, from earliest to latest."""
+    return granting().filter(user=user).select_related("package").order_by("starts_at", "pk")
+
+
 def has_access(user: User, at=None) -> bool:
     """Whether this person may use the learning material."""
     if not user.is_authenticated or not user.is_active:

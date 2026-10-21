@@ -1,9 +1,11 @@
 import re
 
 from django.contrib.auth.password_validation import validate_password
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.models import User
+from apps.entitlements.models import Subscription
 
 
 def validate_password_policy(value: str) -> str:
@@ -118,8 +120,22 @@ class PasswordChangeSerializer(ConfirmedPasswordSerializer):
     confirm_password = serializers.CharField(write_only=True)
 
 
+class SubscriptionPeriodSerializer(serializers.Serializer):
+    package_name = serializers.CharField(source="package.name")
+    starts_at = serializers.DateTimeField()
+    ends_at = serializers.DateTimeField(source="package_expires_at")
+    status = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.ChoiceField(choices=["active", "upcoming", "expired"]))
+    def get_status(self, subscription: Subscription) -> str:
+        at = self.context["at"]
+        if at < subscription.starts_at:
+            return "upcoming"
+        return "active" if at < subscription.package_expires_at else "expired"
+
+
 class SubscriptionStatusSerializer(serializers.Serializer):
-    """Read by the cabinet. Every key is always present, null when there is nothing to report."""
+    """Cabinet access summary and chronological periods; periods is empty when nothing was bought."""
 
     has_subscription = serializers.BooleanField()
     package_name = serializers.CharField(allow_null=True)
@@ -129,6 +145,7 @@ class SubscriptionStatusSerializer(serializers.Serializer):
     online_platform_activated = serializers.BooleanField()
     purchase_date = serializers.DateTimeField(allow_null=True)
     days_remaining = serializers.IntegerField(allow_null=True)
+    periods = SubscriptionPeriodSerializer(many=True)
 
 
 class LearningUrlSerializer(serializers.Serializer):
