@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Check Dev deployment waiter
+        run: bash tests/deploy/test_wait_ecs_dev.sh
+
       - name: Lint
         run: uv run ruff check .
 

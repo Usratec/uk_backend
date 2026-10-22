@@ -43,5 +43,5 @@ new_revision=$(aws ecs register-task-definition --region "$region" \
 aws ecs update-service --region "$region" --cluster "$cluster" --service "$service" \
     --task-definition "$new_revision" \
     --query 'service.{name:serviceName,taskDefinition:taskDefinition}' --output json
-aws ecs wait services-stable --region "$region" --cluster "$cluster" --services "$service"
+bash scripts/wait_ecs_dev.sh "$new_revision"
 printf 'Dev backend deployed: %s\n' "$new_revision"

@@ -170,5 +170,17 @@ uv run mypy .
 uv run pytest                # needs PostgreSQL; set DATABASE_URL if not on localhost:5432
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly these four commands on every pull request and on
-pushes to `develop`, `stage` and `main`.
+CI (`.github/workflows/ci.yml`) runs these four commands and the deployment-waiter shell tests
+on every pull request and on pushes to `develop`, `stage` and `main`.
+
+### AWS Dev deployment
+
+Jenkins `uk-backend-dev` runs `scripts/deploy_aws_dev.sh` with `ENV_VARIABLE=dev`.
+It preserves the current Dev task settings and waits for the newly registered revision, not
+just any healthy revision. The wait allows 30 minutes for startup and old-task draining, logs
+progress every 15 seconds, and fails if ECS reports failure, rollback or a replacement deployment.
+It never marks a timed-out rollout successful. If it times out, check ECS before retrying.
+
+`ECS_DEPLOY_TIMEOUT_SECONDS` can override the limit (maximum 3600 seconds);
+`ECS_DEPLOY_POLL_SECONDS` controls polling (default 15, maximum 60). Neither changes AWS settings.
+Run the isolated AWS-stub regression checks with `bash tests/deploy/test_wait_ecs_dev.sh`.
