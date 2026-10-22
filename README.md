@@ -53,10 +53,14 @@ container start, so scaling out can't run them concurrently.
 | Authentication | `POST /api/auth/register/`, `login/`, `logout/`, `token/refresh/`, `password/reset/`, `password/reset/confirm/`; `GET /api/auth/email/verify/`, `POST /api/auth/email/verify/resend/` |
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
+| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
+
+The catalogue and site-content reads are public and unpaginated: the pages that show them show
+them all at once, and unpublished items are never returned. Everything else needs a token.
 
 Clients send `Authorization: Bearer <access token>`. Access tokens last 5 minutes; refresh tokens
 last 30 days with `remember_me`, otherwise 24 hours. Refreshing returns a new refresh token and
@@ -108,6 +112,11 @@ uv run python manage.py runserver
 ### Back office
 
 The Django admin at `/api/admin/` is the back office, themed with Jazzmin.
+
+Site content — the FAQs and the testimonials — is managed under **Site content**, on Django's own
+model permissions rather than a role, so a superuser can edit it without granting anything first.
+Each list edits the sort order and the published flag in place, and carries publish and unpublish
+actions for a selection.
 
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a
