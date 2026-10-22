@@ -2,8 +2,12 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [develop, stage, main]
+
+permissions:
+  contents: read
 
 jobs:
   checks:
@@ -49,15 +53,3 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
-  # Deploys the dev site. Render's own auto-deploy is turned off so that this job, which only
-  # runs once `checks` has passed, is the single way a merge reaches the deployed site.
-  deploy-dev:
-    needs: checks
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger the Render deploy
-        # The hook URL carries its own key, so it is the whole secret.
-        run: curl --fail --silent --show-error --request POST "$RENDER_DEPLOY_HOOK_URL"
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
