@@ -21,4 +21,4 @@ AWS account: `501588779980`, region `eu-west-2`. The Stage site is `https://stag
 
 Each job builds an image tagged with the source revision, pushes it to the matching Stage ECR repository, updates only its Stage ECS service, and waits for the new ECS revision to become healthy. Stage-only deployment scripts reject any environment other than `stage`.
 
-Stripe and Postmark credentials in the current Stage configuration are empty. Website and API checks can pass without them, but payments and outbound email need valid Stage test credentials before their flows can be verified.
+Stage email delivery is disabled until a Stage Postmark test token is available. Stripe keys are also empty, so payment flows need Stage test keys before they can be verified.
