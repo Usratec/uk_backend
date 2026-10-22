@@ -8,6 +8,7 @@ import logging
 from typing import cast
 
 from django.conf import settings
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -23,6 +24,7 @@ from apps.accounts.serializers import (
     LearningUrlSerializer,
     PasswordChangeSerializer,
     ProfileSerializer,
+    SubscriptionPeriodSerializer,
     SubscriptionStatusSerializer,
 )
 from apps.accounts.throttling import EmailResendThrottle
@@ -176,6 +178,7 @@ class SubscriptionStatusView(APIView):
                     "online_platform_activated": False,
                     "purchase_date": None,
                     "days_remaining": None,
+                    "periods": [],
                 }
             )
 
@@ -191,6 +194,9 @@ class SubscriptionStatusView(APIView):
                 "online_platform_activated": live,
                 "purchase_date": subscription.order.paid_at,
                 "days_remaining": subscription.days_remaining,
+                "periods": SubscriptionPeriodSerializer(
+                    entitlements.subscription_periods(user), many=True, context={"at": timezone.now()}
+                ).data,
             }
         )
 
