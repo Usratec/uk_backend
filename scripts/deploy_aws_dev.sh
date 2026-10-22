@@ -31,7 +31,7 @@ aws ecs describe-task-definition --region "$region" --task-definition "$current_
 
 # Keep the deployed environment and task roles in private files, never in shell traces or argv.
 jq --arg image "$image" --arg container "$service" '
-    .taskDefinition + {tags: (.tags // [])}
+    .taskDefinition + (if ((.tags // []) | length) > 0 then {tags: .tags} else {} end)
     | .containerDefinitions |= map(if .name == $container then .image = $image else . end)
     | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
           .registeredAt, .registeredBy, .deregisteredAt)
