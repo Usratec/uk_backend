@@ -1,0 +1,42 @@
+{% extends "admin/base_site.html" %}
+{% load static analytics %}
+
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'analytics/dashboard.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="bi">
+    <h1 class="bi-title">Business intelligence &amp; analytics</h1>
+
+    {% include "admin/analytics/_filters.html" %}
+
+    <p class="bi-note">
+        Showing <strong>{{ filters.start|date:"j M Y" }}</strong> to <strong>{{ filters.end|date:"j M Y" }}</strong>.
+        All figures come from the live database; nothing is estimated. The package filter applies to
+        payments, revenue, packages and access. Staff accounts are not counted as students.
+    </p>
+
+    <p class="bi-jump">
+        Jump to:
+        {% for anchor, label in sections %}<a href="#{{ anchor }}">{{ label }}</a>{% if not forloop.last %} {% endif %}{% endfor %}
+    </p>
+
+    {% include "admin/analytics/_overview.html" %}
+    {% include "admin/analytics/_revenue.html" %}
+    {% include "admin/analytics/_registrations.html" %}
+    {% include "admin/analytics/_funnel.html" %}
+    {% include "admin/analytics/_learning.html" %}
+    {% include "admin/analytics/_insights.html" %}
+    {% include "admin/analytics/_packages.html" %}
+    {% include "admin/analytics/_recommendations.html" %}
+    {% include "admin/analytics/_students.html" %}
+    {% include "admin/analytics/_exports.html" %}
+</div>
+
+{{ charts|json_script:"bi-charts" }}
+<script src="{% static 'analytics/vendor/chart.umd.min.js' %}"></script>
+<script src="{% static 'analytics/dashboard.js' %}" defer></script>
+{% endblock %}
