@@ -8,6 +8,37 @@ from apps.accounts.models import User
 STAFF_PASSWORD = "Riverbank42"
 
 
+@pytest.mark.parametrize("method", ["get", "head"])
+def test_load_balancer_probe_accepts_a_private_ip_host_without_https_redirect(client, settings, method):
+    settings.ALLOWED_HOSTS = ["dev.1theory.co.uk"]
+    settings.SECURE_SSL_REDIRECT = True
+    settings.SECURE_REDIRECT_EXEMPT = [r"^api/healthcheck/$"]
+
+    response = getattr(client, method)(
+        reverse("healthcheck"), HTTP_HOST="10.2.88.125:8000", HTTP_USER_AGENT="ELB-HealthChecker/2.0"
+    )
+
+    assert response.status_code == 200
+    assert response.content == (b"{}" if method == "get" else b"")
+
+
+@pytest.mark.parametrize("path", ["/api/auth/me/", "/api/healthcheck/other/"])
+def test_other_routes_still_reject_an_untrusted_host(client, settings, path):
+    settings.ALLOWED_HOSTS = ["dev.1theory.co.uk"]
+
+    response = client.get(path, secure=True, HTTP_HOST="untrusted.example")
+
+    assert response.status_code == 400
+
+
+def test_health_probe_does_not_bypass_host_validation_for_writes(client, settings):
+    settings.ALLOWED_HOSTS = ["dev.1theory.co.uk"]
+
+    response = client.post(reverse("healthcheck"), HTTP_HOST="untrusted.example")
+
+    assert response.status_code == 400
+
+
 @pytest.mark.django_db
 def test_healthcheck_returns_empty_object_without_touching_the_database(client, django_assert_num_queries):
     """Marked django_db only so queries can be counted; the assertion is that there are none."""
