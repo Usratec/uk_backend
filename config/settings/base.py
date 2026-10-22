@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     "apps.staff",
     "apps.crm",
     "apps.learning",
+    "apps.content",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -393,6 +394,7 @@ JAZZMIN_SETTINGS = {
         "support",
         "learning",
         "catalog",
+        "content",
         "billing",
         "entitlements",
         "accounts",
@@ -432,6 +434,10 @@ JAZZMIN_SETTINGS = {
         "learning.LessonProgress": "fas fa-chart-line",
         "learning.SavedQuestion": "fas fa-bookmark",
         "learning.EbookSectionProgress": "fas fa-bookmark",
+        # The copy on the public pages, as opposed to the material students work through.
+        "content": "fas fa-pen-nib",
+        "content.FAQ": "fas fa-circle-question",
+        "content.Testimonial": "fas fa-quote-right",
         "core.AuditEvent": "fas fa-clipboard-list",
         "auth": "fas fa-users-cog",
         "auth.Group": "fas fa-users-cog",
