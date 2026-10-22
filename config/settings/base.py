@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "apps.crm",
     "apps.learning",
     "apps.content",
+    "apps.landing",
     "apps.analytics",
 ]
 
@@ -397,6 +398,7 @@ JAZZMIN_SETTINGS = {
         "learning",
         "catalog",
         "content",
+        "landing",
         "billing",
         "entitlements",
         "accounts",
@@ -442,6 +444,9 @@ JAZZMIN_SETTINGS = {
         "content": "fas fa-pen-nib",
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
+        "landing": "fas fa-bullhorn",
+        "landing.LandingText": "fas fa-font",
+        "landing.LandingMedia": "fas fa-images",
         "core.AuditEvent": "fas fa-clipboard-list",
         "auth": "fas fa-users-cog",
         "auth.Group": "fas fa-users-cog",

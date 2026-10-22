@@ -54,6 +54,7 @@ container start, so scaling out can't run them concurrently.
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
+| Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
@@ -117,6 +118,15 @@ Site content — the FAQs and the testimonials — is managed under **Site conte
 model permissions rather than a role, so a superuser can edit it without granting anything first.
 Each list edits the sort order and the published flag in place, and carries publish and unpublish
 actions for a selection.
+
+The landing page is managed under **Landing page**, on the same model permissions. Its wording is
+a flat key → value store, so marketing can reword the page without a frontend deploy; the note
+beside each key says where the text appears and is never sent to the site. Its pictures and videos
+are a library with slots: a file only appears once staff assign it to a section and tick
+*Published / active*, so a replacement can be uploaded and reviewed while the old one is still
+live. Where a slot holds several active files the lowest display order wins, and the most recently
+updated breaks a tie — which is why the activate action saves each row rather than updating them
+in bulk.
 
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a

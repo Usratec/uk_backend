@@ -24,6 +24,7 @@ urlpatterns = [
     path("api/", include("apps.billing.urls")),
     path("api/", include("apps.learning.urls")),
     path("api/", include("apps.content.urls")),
+    path("api/", include("apps.landing.urls")),
 ]
 
 if settings.DEBUG and not settings.S3_BUCKET_NAME:
