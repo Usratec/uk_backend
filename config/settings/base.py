@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "apps.crm",
     "apps.learning",
     "apps.content",
+    "apps.analytics",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -390,6 +391,7 @@ JAZZMIN_SETTINGS = {
     "usermenu_links": [],
     # Customers first: it is what support staff open all day.
     "order_with_respect_to": [
+        "analytics",
         "crm",
         "support",
         "learning",
@@ -401,6 +403,8 @@ JAZZMIN_SETTINGS = {
         "auth",
     ],
     "icons": {
+        "analytics": "fas fa-chart-column",
+        "analytics.Dashboard": "fas fa-chart-column",
         "crm": "fas fa-address-book",
         "crm.Candidate": "fas fa-user-graduate",
         "accounts": "fas fa-users",
