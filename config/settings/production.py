@@ -42,13 +42,18 @@ STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET")
 # SMTP mail never leaves the service and dies in the worker with `TimeoutError: timed out`.
 
 EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="anymail.backends.postmark.EmailBackend")
+EMAIL_ENABLED = env.bool("EMAIL_ENABLED", default=True)
 
 ANYMAIL = {
     "POSTMARK_SERVER_TOKEN": env.str("POSTMARK_SERVER_TOKEN", default=env.str("EMAIL_HOST_PASSWORD", default="")),
     "REQUESTS_TIMEOUT": env.int("EMAIL_TIMEOUT", default=10),
 }
 
-if not ANYMAIL["POSTMARK_SERVER_TOKEN"]:
+if not EMAIL_ENABLED:
+    # Isolated Stage can run without a Postmark test server token. Django keeps those messages
+    # in memory for the lifetime of the process; no email is sent from this environment.
+    EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+elif not ANYMAIL["POSTMARK_SERVER_TOKEN"]:
     raise ImproperlyConfigured(
         "POSTMARK_SERVER_TOKEN must be set. A deployment that cannot send email cannot verify an "
         "address or reset a password, so it stops here rather than at a customer's registration."
