@@ -1,0 +1,18 @@
+<section id="learning" class="bi-section">
+    <h2>Learning &amp; engagement</h2>
+    <p class="bi-intro">
+        From what students have finished, read, answered and sat: completed lessons, e-book
+        reading, practice answers, hazard clips and mock tests.
+    </p>
+
+    {% include "admin/analytics/_boxes.html" with boxes=learning_boxes only %}
+
+    <div class="bi-grid">
+        {% include "admin/analytics/_chart.html" with title="Lesson completion by chapter (%)" id="lesson_completion_by_chapter" caption="Published lessons finished, averaged over the students who have completed any lesson." only %}
+        {% include "admin/analytics/_chart.html" with title="Practice accuracy by chapter (%)" id="accuracy_by_chapter" only %}
+    </div>
+    <div class="bi-grid">
+        {% include "admin/analytics/_chart.html" with title="Mock test scores in range" id="mock_scores" only %}
+        {% include "admin/analytics/_chart.html" with title="Course progress (students who have started)" id="course_progress" caption=course_progress_caption only %}
+    </div>
+</section>

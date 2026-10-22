@@ -1,0 +1,30 @@
+{% load analytics %}
+<section id="students" class="bi-section">
+    <h2>Student analytics</h2>
+
+    <form class="bi-search" method="get">
+        <input type="hidden" name="range" value="{{ filters.range_key }}">
+        <input type="hidden" name="start" value="{{ filters.start|date:'Y-m-d' }}">
+        <input type="hidden" name="end" value="{{ filters.end|date:'Y-m-d' }}">
+        <label for="bi-student">Find a student by email, name or ID</label>
+        <input id="bi-student" type="text" name="student" value="{{ search_term }}" placeholder="name@example.com">
+        <button type="submit" class="bi-apply">Open</button>
+    </form>
+
+    {% if search_term %}
+        {% if search_results %}
+            <ul class="bi-matches">
+                {% for student in search_results %}
+                    <li>
+                        <a href="{% url 'admin:analytics_student' student.pk %}?{% filter_query filters %}">
+                            Student {{ student.pk }}
+                        </a>
+                        <span class="bi-muted">{{ student.get_full_name }} · registered {{ student.date_joined|date:"j M Y" }}</span>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="bi-empty">No student matches “{{ search_term }}”.</p>
+        {% endif %}
+    {% endif %}
+</section>

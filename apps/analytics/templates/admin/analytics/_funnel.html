@@ -1,0 +1,32 @@
+{% load analytics %}
+<section id="funnel" class="bi-section">
+    <h2>Business conversion funnel</h2>
+    <p class="bi-intro">
+        Follows the {{ funnel_rows.1.count|default:0 }} students who registered in this range.
+        Stages that aren't recorded show what tracking would be needed instead of a number.
+    </p>
+
+    <div class="bi-funnel">
+        {% for row in funnel_rows %}
+            <div class="bi-funnel-row">
+                <p class="bi-funnel-label">{{ row.label }}</p>
+                <div class="bi-funnel-bar-cell">
+                    {% if row.tracking_required %}
+                        <p><span class="bi-untracked">{{ row.needed }}</span> {{ row.definition }}</p>
+                    {% else %}
+                        <div class="bi-funnel-bar" style="width: {{ row.width }}%">{{ row.count }}</div>
+                    {% endif %}
+                </div>
+                <div class="bi-funnel-meta">
+                    {% if not row.tracking_required %}
+                        <p>
+                            {% if row.of_previous is not None %}{{ row.of_previous|percent }} of previous stage · {% endif %}
+                            {{ row.of_registrations|percent }} of registrations
+                        </p>
+                        <p class="bi-muted">{{ row.definition }}</p>
+                    {% endif %}
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</section>

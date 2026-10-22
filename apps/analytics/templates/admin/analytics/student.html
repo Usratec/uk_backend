@@ -1,0 +1,125 @@
+{% extends "admin/base_site.html" %}
+{% load static analytics %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'analytics/dashboard.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="bi">
+    <p class="bi-back"><a href="{% url 'admin:analytics_dashboard_changelist' %}?{% filter_query filters %}">← Back to the dashboard</a></p>
+    <h1 class="bi-title">Student {{ student.pk }}</h1>
+    <p class="bi-note">
+        {{ student.get_full_name }} · {{ student.email }} · registered {{ student.date_joined|date:"j M Y" }}
+        {% if last_studied %}· last studied {{ last_studied|date:"j M Y" }}{% else %}· has never studied{% endif %}
+    </p>
+
+    <section class="bi-section">
+        <h2>Orders</h2>
+        <p class="bi-intro">{{ paid_total }} paid in total.</p>
+        <div class="bi-table">
+            <p class="bi-table-title">Every order</p>
+            <table>
+                <thead>
+                    <tr><th>Order</th><th>Created</th><th>Paid</th><th>Status</th><th>Package</th><th class="bi-right">Amount</th></tr>
+                </thead>
+                <tbody>
+                    {% for order in orders %}
+                        <tr>
+                            <td><a href="{% url 'admin:billing_order_change' order.pk %}">#{{ order.pk|truncatechars:10 }}</a></td>
+                            <td>{{ order.created_at|date:"j M Y H:i" }}</td>
+                            <td>{% if order.paid_at %}{{ order.paid_at|date:"j M Y H:i" }}{% else %}—{% endif %}</td>
+                            <td>{{ order.get_status_display }}</td>
+                            <td>{{ order.package.name }}</td>
+                            <td class="bi-right">£{{ order.final_price|floatformat:2 }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="6" class="bi-empty">No data available yet</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="bi-section">
+        <h2>Access periods</h2>
+        <div class="bi-table">
+            <p class="bi-table-title">Bought access</p>
+            <table>
+                <thead><tr><th>Package</th><th>Starts</th><th>Learning access ends</th><th>Status</th></tr></thead>
+                <tbody>
+                    {% for row in subscriptions %}
+                        <tr>
+                            <td>{{ row.subscription.package.name }}</td>
+                            <td>{{ row.subscription.starts_at|date:"j M Y" }}</td>
+                            <td>{{ row.subscription.package_expires_at|date:"j M Y" }}</td>
+                            <td>{{ row.status }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="4" class="bi-empty">No data available yet</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="bi-section">
+        <h2>Learning</h2>
+        <p class="bi-intro">
+            {{ lessons_completed }} of {{ lessons_published }} published lessons completed
+            ({{ lesson_share|percent }}) · {{ sections_read }} e-book sections read ·
+            {{ answers }} practice answers at {{ accuracy|percent }} accuracy ·
+            {{ hazard_attempts }} hazard attempts averaging {{ hazard_average|percent }} of the points available.
+        </p>
+
+        <div class="bi-table">
+            <p class="bi-table-title">By chapter</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chapter</th>
+                        <th class="bi-right">Lessons completed</th>
+                        <th class="bi-right">Of published</th>
+                        <th class="bi-right">Answers</th>
+                        <th class="bi-right">Accuracy</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in by_chapter %}
+                        <tr>
+                            <td>{{ row.title }}</td>
+                            <td class="bi-right">{{ row.completed }}</td>
+                            <td class="bi-right">{{ row.share|percent }} of {{ row.published }}</td>
+                            <td class="bi-right">{{ row.answers }}</td>
+                            <td class="bi-right">{{ row.accuracy|percent }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="5" class="bi-empty">No data available yet</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="bi-table">
+            <p class="bi-table-title">Mock tests</p>
+            <table>
+                <thead><tr><th>Exam</th><th>Sat</th><th class="bi-right">Score</th><th class="bi-right">Hazard</th><th>Result</th></tr></thead>
+                <tbody>
+                    {% for attempt in mocks %}
+                        <tr>
+                            <td>{{ attempt.exam.title }}</td>
+                            <td>{{ attempt.created_at|date:"j M Y H:i" }}</td>
+                            <td class="bi-right">{{ attempt.score }}/{{ attempt.total }}</td>
+                            <td class="bi-right">{{ attempt.hazard_score }}/{{ attempt.hazard_top_score }}</td>
+                            <td>{% if attempt.passed %}Passed{% else %}Not passed{% endif %}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="5" class="bi-empty">No data available yet</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

@@ -1,0 +1,23 @@
+<section id="recommendations" class="bi-section">
+    <h2>Business insights &amp; recommendations</h2>
+    <p class="bi-intro">
+        Simple, transparent rules applied to the figures above. Each one only appears once there's
+        enough data, and none of them claims a cause.
+    </p>
+
+    {% for card in recommendation_cards %}
+        <div class="bi-reco">
+            <h3>{{ card.title }}</h3>
+            <dl>
+                <dt>Observation</dt><dd>{{ card.observation }}</dd>
+                <dt>Supporting data</dt><dd>{{ card.supporting }}</dd>
+                <dt>Date range</dt><dd>{{ card.period }}</dd>
+                <dt>Why it may matter</dt><dd>{{ card.why }}</dd>
+                <dt>Suggested action</dt><dd>{{ card.action }}</dd>
+                <dt>Confidence</dt><dd>{{ card.confidence }}</dd>
+            </dl>
+        </div>
+    {% empty %}
+        <p class="bi-empty">No recommendations yet — there isn't enough data.</p>
+    {% endfor %}
+</section>
