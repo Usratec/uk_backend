@@ -995,14 +995,13 @@ def question_ids_answered_wrong(student):
     question put right and then got wrong again is a mistake once more, and one got wrong and
     then put right is no longer a mistake to go back over.
     """
-    latest = {}
-    for question_id, was_correct in (
+    latest = (
         QuestionAttempt.objects.filter(student=student)
-        .order_by("created_at", "id")
+        .order_by("question_id", "-created_at", "-id")
+        .distinct("question_id")
         .values_list("question_id", "was_correct")
-    ):
-        latest[question_id] = was_correct
-    return {question_id for question_id, was_correct in latest.items() if not was_correct}
+    )
+    return {question_id for question_id, was_correct in latest if not was_correct}
 
 
 def progress_summary(student) -> dict:

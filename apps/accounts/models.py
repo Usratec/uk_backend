@@ -48,7 +48,9 @@ class UserManager(BaseUserManager["User"]):
         return super().normalize_email(email).lower()
 
     def get_by_natural_key(self, email: str | None):
-        return self.get(email__iexact=email)
+        if email is None:
+            raise self.model.DoesNotExist
+        return self.get(email=email.lower())
 
 
 class User(AbstractBaseUser, PermissionsMixin, TimestampedModel):

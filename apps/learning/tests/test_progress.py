@@ -8,6 +8,8 @@ Nothing here is a stored counter, so the tests compare against the attempts them
 from datetime import timedelta
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -183,6 +185,67 @@ class TestSavingQuestions:
 
     def test_an_unknown_question_is_not_found(self, api, student, live_question):
         assert sign_in(api, student()).post(saved_url("no-such-question")).status_code == 404
+
+
+def record_attempt(student, question, was_correct, created_at=None) -> QuestionAttempt:
+    attempt = QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
+    if created_at is not None:
+        QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=created_at)
+    return attempt
+
+
+class TestWhichQuestionsCountAsMistakes:
+    def test_a_question_only_ever_got_wrong_is_a_mistake(self, student, live_question):
+        learner = student()
+        record_attempt(learner, live_question, was_correct=False)
+
+        assert services.question_ids_answered_wrong(learner) == {live_question.pk}
+
+    def test_a_mistake_since_put_right_is_no_longer_one(self, student, live_question):
+        learner = student()
+        now = timezone.now()
+        record_attempt(learner, live_question, was_correct=False, created_at=now)
+        record_attempt(learner, live_question, was_correct=True, created_at=now + timedelta(minutes=1))
+
+        assert services.question_ids_answered_wrong(learner) == set()
+
+    def test_a_question_got_wrong_after_being_got_right_is_a_mistake_again(self, student, live_question):
+        learner = student()
+        now = timezone.now()
+        record_attempt(learner, live_question, was_correct=True, created_at=now)
+        record_attempt(learner, live_question, was_correct=False, created_at=now + timedelta(minutes=1))
+
+        assert services.question_ids_answered_wrong(learner) == {live_question.pk}
+
+    def test_attempts_sharing_a_timestamp_are_decided_by_the_last_row_written(self, student, live_question):
+        same_moment = timezone.now()
+        learner = student()
+        record_attempt(learner, live_question, was_correct=False, created_at=same_moment)
+        record_attempt(learner, live_question, was_correct=True, created_at=same_moment)
+
+        assert services.question_ids_answered_wrong(learner) == set()
+
+    def test_the_latest_attempt_is_picked_without_reading_them_all(
+        self, student, live_question, make_question, publisher, django_assert_num_queries
+    ):
+        learner = student()
+        other = make_question(key="other")
+        services.publish(actor=publisher, instance=other)
+        for question in (live_question, other):
+            for _ in range(4):
+                record_attempt(learner, question, was_correct=False)
+
+        with django_assert_num_queries(1):
+            assert services.question_ids_answered_wrong(learner) == {live_question.pk, other.pk}
+
+    def test_the_query_leaves_the_grouping_to_postgres(self, student, live_question):
+        learner = student()
+        record_attempt(learner, live_question, was_correct=False)
+
+        with CaptureQueriesContext(connection) as queries:
+            services.question_ids_answered_wrong(learner)
+
+        assert "DISTINCT ON" in queries.captured_queries[-1]["sql"]
 
 
 class TestPracticeModes:
