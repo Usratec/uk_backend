@@ -141,6 +141,14 @@ def problems_with_ebook_section(section: EbookSection) -> list[str]:
         listed = ", ".join(unknown[:5])
         problems.append(f"The text asks for signs that are not in the library: {listed}.")
 
+    missing = missing_media_references(section.body_html)
+    if missing:
+        listed = ", ".join(str(asset_id) for asset_id in missing[:5])
+        problems.append(
+            f"The text shows pictures that are no longer in the media library (assets {listed}). "
+            "Remove them from the text, or upload them again."
+        )
+
     if not section.ebook.is_published:
         problems.append(f"Its book '{section.ebook.title}' is not published, so students cannot reach it.")
 
@@ -310,6 +318,14 @@ def _problems_with_content(content: LearningContent) -> list[str]:
     elif html.is_empty(content.body_html):
         problems.append("There is no content yet.")
 
+    missing = missing_media_references(content.body_html)
+    if missing:
+        listed = ", ".join(str(asset_id) for asset_id in missing[:5])
+        problems.append(
+            f"The text shows pictures that are no longer in the media library (assets {listed}). "
+            "Remove them from the text, or upload them again."
+        )
+
     if not content.subchapter.is_published:
         problems.append(f"Its subchapter '{content.subchapter.title}' is not published, so students cannot reach it.")
 
@@ -395,7 +411,7 @@ MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 class ImageUploadError(Exception):
-    """The file staff chose cannot be used as a question's picture."""
+    """The file staff chose cannot be used as a picture — beside a question, or inside content."""
 
 
 def check_image_upload(upload) -> None:
@@ -412,6 +428,25 @@ def check_image_upload(upload) -> None:
         raise ImageUploadError(f"The picture must be under {MAX_IMAGE_UPLOAD_BYTES // (1024 * 1024)} MB.")
 
 
+IMAGE_UPLOAD_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+
+
+def _verify_is_an_image(upload) -> None:
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(upload) as image:
+            image_format = image.format
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError) as error:
+        raise ImageUploadError("That file is not a picture this site can show.") from error
+    finally:
+        upload.seek(0)
+
+    if image_format not in IMAGE_UPLOAD_FORMATS:
+        raise ImageUploadError(f"{image_format or 'That file'} is not a picture this site can show.")
+
+
 def _checksum_of(upload) -> str:
     digest = hashlib.sha256()
     for chunk in upload.chunks():
@@ -422,6 +457,7 @@ def _checksum_of(upload) -> str:
 
 def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> MediaAsset:
     check_image_upload(upload)
+    _verify_is_an_image(upload)
 
     checksum = _checksum_of(upload)
     existing = MediaAsset.objects.filter(checksum=checksum, kind=MediaKind.IMAGE).order_by("pk").first()
@@ -429,7 +465,7 @@ def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> Med
         return existing
 
     asset = MediaAsset(
-        title=(title or upload.name or "Question image")[:160],
+        title=(title or upload.name or "Picture")[:160],
         kind=MediaKind.IMAGE,
         file=upload,
         uploaded_by=uploaded_by,
@@ -441,6 +477,28 @@ def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> Med
 
 def image_url_of(asset: MediaAsset | None) -> str | None:
     return asset.file.url if asset and asset.file else None
+
+
+def resolved_media_in(body_html: str | None) -> str:
+    asset_ids = html.media_ids_in(body_html)
+    if not asset_ids:
+        return body_html or ""
+
+    urls = {
+        asset.pk: url
+        for asset in MediaAsset.objects.filter(pk__in=asset_ids, kind=MediaKind.IMAGE)
+        if (url := image_url_of(asset))
+    }
+    return html.with_media_urls(body_html, urls)
+
+
+def missing_media_references(body_html: str | None) -> list[int]:
+    asset_ids = html.media_ids_in(body_html)
+    if not asset_ids:
+        return []
+
+    found = set(MediaAsset.objects.filter(pk__in=asset_ids, kind=MediaKind.IMAGE).values_list("pk", flat=True))
+    return [asset_id for asset_id in asset_ids if asset_id not in found]
 
 
 def question_media_of(question: Question) -> dict | None:
@@ -589,7 +647,7 @@ def block_for(content: LearningContent) -> dict:
             "url": content.media.file.url,
         }
 
-    return {"type": "html", "html": content.body_html, "title": content.title}
+    return {"type": "html", "html": resolved_media_in(content.body_html), "title": content.title}
 
 
 def student_view_of_question(question: Question) -> dict:
@@ -1253,7 +1311,13 @@ def blocks_of_section(section: EbookSection) -> list[dict]:
 
     for piece in html.split_on_signs(section.body_html):
         if "html" in piece:
-            blocks.append({"type": "html", "title": section.title if not blocks else "", "html": piece["html"]})
+            blocks.append(
+                {
+                    "type": "html",
+                    "title": "",
+                    "html": resolved_media_in(piece["html"]),
+                }
+            )
             continue
 
         drawn = signs_by_code(piece["codes"])
@@ -1265,7 +1329,7 @@ def blocks_of_section(section: EbookSection) -> list[dict]:
         blocks.append(
             {
                 "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
-                "title": section.title,
+                "title": "",
                 "url": document.file.url,
             }
         )

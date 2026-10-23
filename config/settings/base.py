@@ -335,6 +335,8 @@ SESSION_COOKIE_HTTPONLY = True
 
 # Only staff may reach the editor's upload endpoint.
 CKEDITOR_5_FILE_UPLOAD_PERMISSION = "staff"
+CK_EDITOR_5_UPLOAD_FILE_VIEW_NAME = "learning-media-upload"
+CKEDITOR_5_UPLOAD_FILE_TYPES = ["jpg", "jpeg", "png", "webp", "gif"]
 
 CKEDITOR_5_CONFIGS = {
     "default": {
@@ -349,6 +351,7 @@ CKEDITOR_5_CONFIGS = {
             "|",
             "blockQuote",
             "insertTable",
+            "insertImage",
             "|",
             "undo",
             "redo",
@@ -362,10 +365,7 @@ CKEDITOR_5_CONFIGS = {
             ]
         },
         "table": {"contentToolbar": ["tableColumn", "tableRow", "mergeTableCells"]},
-        # No image button yet, deliberately. The editor stores whatever URL its upload returns,
-        # and a bucket URL is signed and expires within the hour — so every picture in a lesson
-        # would break shortly after it was written. Images are in the media library, and serving
-        # them inline needs a stable URL that signs on demand; see the branch notes.
+        "removePlugins": ["ImageToolbar", "ImageResize"],
         "language": "en-gb",
     },
 }
