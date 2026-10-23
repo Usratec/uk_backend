@@ -8,6 +8,7 @@ The admin calls these functions. So will the student API, which is why the rules
 than in the admin screens.
 """
 
+import hashlib
 import logging
 
 from django.db import transaction
@@ -30,6 +31,7 @@ from apps.learning.models import (
     HazardWindow,
     LearningContent,
     LessonProgress,
+    MediaAsset,
     MediaKind,
     MockAttempt,
     PracticeExam,
@@ -226,10 +228,14 @@ def problems_with_question(question: Question) -> list[str]:
         # Without exactly one, the frontend cannot tell the student what the answer was.
         problems.append("Exactly one answer must be marked correct.")
 
-    if question.question_type == QuestionType.IMAGE and any(option.sign_id is None for option in options):
-        problems.append("Every answer needs a road sign, because this question is answered with signs.")
+    if question.question_type == QuestionType.IMAGE and any(
+        option.sign_id is None and option.image_id is None for option in options
+    ):
+        problems.append(
+            "Every answer needs a road sign or a picture, because this question is answered with pictures."
+        )
 
-    # Word answers render as buttons. A sign question is answered with pictures, so its text
+    # Word answers render as buttons. A picture question is answered with pictures, so its text
     # may be empty; a word question with nothing in the button is not usable.
     if question.question_type in {QuestionType.SINGLE, QuestionType.MULTI} and any(
         not option.text.strip() for option in options
@@ -377,6 +383,74 @@ def reorder(*, actor, model, ordered_ids: list[int]) -> None:
         model.objects.bulk_update(changed, ["order"])
 
 
+IMAGE_UPLOAD_TYPES = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+class ImageUploadError(Exception):
+    """The file staff chose cannot be used as a question's picture."""
+
+
+def check_image_upload(upload) -> None:
+    extension = (upload.name or "").rsplit(".", 1)[-1].lower() if "." in (upload.name or "") else ""
+    if extension not in IMAGE_UPLOAD_TYPES:
+        allowed = ", ".join(sorted({name.upper() for name in IMAGE_UPLOAD_TYPES}))
+        raise ImageUploadError(f"Only {allowed} files can be used as a picture.")
+
+    declared = (getattr(upload, "content_type", "") or "").lower()
+    if declared and declared not in set(IMAGE_UPLOAD_TYPES.values()):
+        raise ImageUploadError(f"'{declared}' is not a picture this site can show.")
+
+    if (upload.size or 0) > MAX_IMAGE_UPLOAD_BYTES:
+        raise ImageUploadError(f"The picture must be under {MAX_IMAGE_UPLOAD_BYTES // (1024 * 1024)} MB.")
+
+
+def _checksum_of(upload) -> str:
+    digest = hashlib.sha256()
+    for chunk in upload.chunks():
+        digest.update(chunk)
+    upload.seek(0)
+    return digest.hexdigest()
+
+
+def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> MediaAsset:
+    check_image_upload(upload)
+
+    checksum = _checksum_of(upload)
+    existing = MediaAsset.objects.filter(checksum=checksum, kind=MediaKind.IMAGE).order_by("pk").first()
+    if existing is not None:
+        return existing
+
+    asset = MediaAsset(
+        title=(title or upload.name or "Question image")[:160],
+        kind=MediaKind.IMAGE,
+        file=upload,
+        uploaded_by=uploaded_by,
+    )
+    asset.checksum = checksum
+    asset.save()
+    return asset
+
+
+def image_url_of(asset: MediaAsset | None) -> str | None:
+    return asset.file.url if asset and asset.file else None
+
+
+def question_media_of(question: Question) -> dict | None:
+    if question.media_sign:
+        return {"kind": "sign", "code": question.media_sign.code}
+    if question.media_image:
+        return {"kind": "image", "url": image_url_of(question.media_image)}
+    return None
+
+
 # --- What the API will serve ---------------------------------------------------------------------
 
 
@@ -460,6 +534,7 @@ def answer_sheet_for(question: Question) -> dict:
     return {
         "prompt": question.prompt,
         "sign": question.media_sign.code if question.media_sign else "",
+        "image": image_url_of(question.media_image),
         "explanation": question.explanation,
         "learn_more": question.learn_more.title if question.learn_more else "",
         "options": [
@@ -467,6 +542,7 @@ def answer_sheet_for(question: Question) -> dict:
                 "id": option.option_id,
                 "text": option.text,
                 "sign": option.sign.code if option.sign else "",
+                "image": image_url_of(option.image),
                 "is_correct": option.is_correct,
             }
             for option in question.options.all()
@@ -528,12 +604,13 @@ def student_view_of_question(question: Question) -> dict:
         "topic": question.chapter.slug,
         "type": question.question_type,
         "prompt": question.prompt,
-        "media": {"kind": "sign", "code": question.media_sign.code} if question.media_sign else None,
+        "media": question_media_of(question),
         "options": [
             {
                 "id": option.option_id,
                 **({"text": option.text} if option.text else {}),
                 **({"sign": option.sign.code} if option.sign else {}),
+                **({"image": image_url_of(option.image)} if option.image_id else {}),
             }
             for option in question.options.all()
         ],
@@ -548,7 +625,9 @@ def questions_in_exam(exam: PracticeExam, at=None):
     published while any of its questions is still a draft — see :func:`problems_with_exam`.
     """
     return live(
-        Question.objects.filter(exam_places__exam=exam).select_related("chapter").prefetch_related("options"),
+        Question.objects.filter(exam_places__exam=exam)
+        .select_related("chapter", "media_sign", "media_image")
+        .prefetch_related("options__sign", "options__image"),
         at=at,
     ).order_by("exam_places__order")
 

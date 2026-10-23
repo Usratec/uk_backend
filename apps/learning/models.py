@@ -204,6 +204,7 @@ class MediaAsset(TimestampedModel):
     # Recorded at upload because asking the bucket costs a request, and these are shown in a list.
     size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
     content_type = models.CharField(max_length=100, blank=True, editable=False)
+    checksum = models.CharField(max_length=64, blank=True, editable=False, db_index=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploads"
     )
@@ -253,8 +254,9 @@ class Sign(TimestampedModel):
 class QuestionType(models.TextChoices):
     """How a question is answered.
 
-    ``image`` is a single-answer question whose options are road signs rather than words, which
-    the frontend lays out as pictures.
+    ``image`` is a single-answer question whose options are pictures rather than words — either a
+    road sign the frontend draws from its specification or an uploaded image — which the frontend
+    lays out as a grid.
     """
 
     SINGLE = "single", "One answer"
@@ -290,6 +292,16 @@ class Question(PublishableModel, TimestampedModel):
         blank=True,
         related_name="questions",
         verbose_name="sign shown with the question",
+    )
+    media_image = models.ForeignKey(
+        "learning.MediaAsset",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="questions",
+        limit_choices_to={"kind": MediaKind.IMAGE},
+        verbose_name="image shown with the question",
+        help_text="A picture or GIF from the media library. Upload one below to add it to the library.",
     )
     learn_more = models.ForeignKey(
         Subchapter,
@@ -337,6 +349,15 @@ class QuestionOption(TimestampedModel):
         blank=True,
         related_name="answer_options",
         help_text="For questions answered with road signs.",
+    )
+    image = models.ForeignKey(
+        "learning.MediaAsset",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="answer_options",
+        limit_choices_to={"kind": MediaKind.IMAGE},
+        help_text="For answers that are a picture rather than a sign drawn from a specification.",
     )
     is_correct = models.BooleanField(default=False)
     order = models.PositiveSmallIntegerField(default=0)

@@ -119,6 +119,21 @@
     font-weight: 500;
 }
 
+.adm-preview__image {
+    max-width: 420px;
+    height: auto;
+    margin: 12px 0;
+    border-radius: 6px;
+}
+
+.adm-preview__answer-image {
+    max-width: 120px;
+    height: auto;
+    margin-right: 10px;
+    border-radius: 4px;
+    vertical-align: middle;
+}
+
 .adm-preview__block-title {
     margin-top: 32px;
     padding-top: 18px;

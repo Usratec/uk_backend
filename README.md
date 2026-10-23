@@ -128,6 +128,13 @@ live. Where a slot holds several active files the lowest display order wins, and
 updated breaks a tie — which is why the activate action saves each row rather than updating them
 in bulk.
 
+Questions take their pictures either way. The media library still holds every file, and a
+question or one of its answers can point at one already there, but the question form also carries
+an upload box — one for the question, one beside each answer in *Question options* — so a picture
+is attached in the same save that writes the question rather than in a trip to the library first.
+Anything uploaded that way becomes an ordinary library asset, and the same file uploaded twice
+finds the asset already there instead of making a second one. JPG, PNG, WebP and GIF, under 10 MB.
+
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a
 way in — a superuser must grant themselves the permission first. That is least privilege by
