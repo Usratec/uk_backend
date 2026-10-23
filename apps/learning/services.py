@@ -488,6 +488,55 @@ def image_url_of(asset: MediaAsset | None) -> str | None:
     return asset.file.url if asset and asset.file else None
 
 
+MAX_SUBTITLE_UPLOAD_BYTES = 2 * 1024 * 1024
+
+WEBVTT_SIGNATURE = "WEBVTT"
+
+
+class SubtitleUploadError(Exception):
+    """The file staff chose cannot be used as a subtitle track."""
+
+
+def check_subtitle_upload(upload) -> None:
+    name = upload.name or ""
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if extension != "vtt":
+        raise SubtitleUploadError("Subtitles must be a WebVTT (.vtt) file.")
+
+    if (upload.size or 0) > MAX_SUBTITLE_UPLOAD_BYTES:
+        raise SubtitleUploadError(f"The subtitle file must be under {MAX_SUBTITLE_UPLOAD_BYTES // (1024 * 1024)} MB.")
+
+    _verify_is_webvtt(upload)
+
+
+def _verify_is_webvtt(upload) -> None:
+    try:
+        head = upload.read(64)
+    finally:
+        upload.seek(0)
+
+    if isinstance(head, bytes):
+        head = head.decode("utf-8-sig", errors="replace")
+    head = head.lstrip("﻿")
+
+    signature, _, rest = head.partition("\n")
+    signature = signature.rstrip("\r")
+    if not signature.startswith(WEBVTT_SIGNATURE) or signature[len(WEBVTT_SIGNATURE) :][:1] not in ("", " ", "\t"):
+        raise SubtitleUploadError(
+            "That file is not WebVTT subtitles: a .vtt file starts with the word WEBVTT on its first line."
+        )
+
+
+def subtitles_of(asset: MediaAsset | None) -> list[dict]:
+    if asset is None:
+        return []
+    return [
+        {"language": track.language, "label": track.get_language_display(), "url": track.file.url}
+        for track in asset.subtitles.all()
+        if track.file
+    ]
+
+
 def resolved_media_in(body_html: str | None) -> str:
     asset_ids = html.media_ids_in(body_html)
     if not asset_ids:
@@ -650,11 +699,14 @@ def block_for(content: LearningContent) -> dict:
         }
 
     if content.content_type in MEDIA_CONTENT_TYPES and content.media:
-        return {
+        block: dict = {
             "type": content.content_type,
             "title": content.title,
             "url": content.media.file.url,
         }
+        if content.content_type == ContentType.VIDEO:
+            block["subtitles"] = subtitles_of(content.media)
+        return block
 
     return {"type": "html", "html": resolved_media_in(content.body_html), "title": content.title}
 
@@ -701,7 +753,9 @@ def questions_in_exam(exam: PracticeExam, at=None):
 
 def clips_in_exam(exam: PracticeExam, at=None):
     return live(
-        HazardClip.objects.filter(exam_places__exam=exam).select_related("media").prefetch_related("windows"),
+        HazardClip.objects.filter(exam_places__exam=exam)
+        .select_related("media")
+        .prefetch_related("windows", "media__subtitles"),
         at=at,
     ).order_by("exam_places__order")
 
@@ -1220,6 +1274,7 @@ def student_view_of_clip(clip: HazardClip, stats: dict | None = None) -> dict:
         "title": clip.title,
         "description": clip.description,
         "url": clip.media.file.url,
+        "subtitles": subtitles_of(clip.media),
         "thumbnailUrl": clip.thumbnail_url,
         "hazards": clip.windows.count(),
         "topScore": clip.top_score,
@@ -1304,12 +1359,14 @@ def live_ebooks(at=None):
 
 def ebook_sections(ebook: Ebook, at=None):
     """The book's live sections, in the order staff put them in."""
-    return live(ebook.sections.select_related("media"), at=at).order_by("order", "title")
+    return live(ebook.sections.select_related("media").prefetch_related("media__subtitles"), at=at).order_by(
+        "order", "title"
+    )
 
 
 def ebook_section(slug: str, at=None):
     return (
-        live(EbookSection.objects.select_related("ebook", "media"), at=at)
+        live(EbookSection.objects.select_related("ebook", "media").prefetch_related("media__subtitles"), at=at)
         .filter(slug=slug, ebook__in=live_ebooks(at))
         .first()
     )
@@ -1335,13 +1392,14 @@ def blocks_of_section(section: EbookSection) -> list[dict]:
 
     document = section.media
     if document is not None and MediaKind(document.kind) in EBOOK_MEDIA_KINDS:
-        blocks.append(
-            {
-                "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
-                "title": "",
-                "url": document.file.url,
-            }
-        )
+        block: dict = {
+            "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
+            "title": "",
+            "url": document.file.url,
+        }
+        if MediaKind(document.kind) == MediaKind.VIDEO:
+            block["subtitles"] = subtitles_of(document)
+        blocks.append(block)
 
     return blocks
 

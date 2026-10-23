@@ -194,6 +194,10 @@ class TestTheAdmin:
                 "title": "Uploaded in the admin",
                 "kind": MediaKind.DOCUMENT,
                 "file": SimpleUploadedFile("notes.pdf", b"pdf bytes", content_type="application/pdf"),
+                "subtitles-TOTAL_FORMS": "1",
+                "subtitles-INITIAL_FORMS": "0",
+                "subtitles-MIN_NUM_FORMS": "0",
+                "subtitles-MAX_NUM_FORMS": "1000",
             },
         )
 

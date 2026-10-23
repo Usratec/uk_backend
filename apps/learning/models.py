@@ -23,6 +23,8 @@ the public contract once published.
 """
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -221,6 +223,57 @@ class MediaAsset(TimestampedModel):
             self.size_bytes = getattr(self.file, "size", 0) or 0
             self.content_type = getattr(getattr(self.file, "file", None), "content_type", "") or self.content_type
         super().save(*args, **kwargs)
+
+
+class SubtitleLanguage(models.TextChoices):
+    EN_GB = "en-GB", "British English"
+    EN_US = "en-US", "American English"
+    FR_FR = "fr-FR", "French"
+    DE_DE = "de-DE", "German"
+    NL_NL = "nl-NL", "Dutch"
+
+
+def default_subtitle_language() -> str:
+    configured = (settings.LANGUAGE_CODE or "").lower()
+    return next((code for code in SubtitleLanguage.values if code.lower() == configured), "")
+
+
+def subtitle_path(instance, filename: str) -> str:
+    return f"learning/subtitle/{filename}"
+
+
+class Subtitle(TimestampedModel):
+    asset = models.ForeignKey(
+        MediaAsset,
+        on_delete=models.CASCADE,
+        related_name="subtitles",
+        help_text="The video this track belongs to.",
+    )
+    language = models.CharField(
+        max_length=16,
+        choices=SubtitleLanguage.choices,
+        help_text="The language of this track, as a BCP 47 tag.",
+    )
+    file = models.FileField(
+        upload_to=subtitle_path,
+        validators=[FileExtensionValidator(["vtt"])],
+        help_text="A WebVTT (.vtt) file. Its contents are checked on upload, not just its name.",
+    )
+
+    class Meta:
+        ordering = ["asset", "language"]
+        constraints = [
+            models.UniqueConstraint(fields=["asset", "language"], name="one_subtitle_per_language_per_asset")
+        ]
+        verbose_name = "subtitle track"
+
+    def __str__(self) -> str:
+        return f"{self.get_language_display()} subtitles for {self.asset_id and self.asset.title}"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.asset_id and self.asset.kind != MediaKind.VIDEO:
+            raise ValidationError(f"'{self.asset.title}' is not a video, so it has nothing to subtitle.")
 
 
 class SignCategory(models.TextChoices):

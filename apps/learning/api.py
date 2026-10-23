@@ -183,8 +183,11 @@ class LessonDetailView(APIView):
             # endpoint cannot be used to map out what other packages contain.
             return plan_needed()
 
-        content = entitlements.visible_content(student, services.live_content_of(subchapter)).order_by(
-            "order", "title"
+        content = (
+            entitlements.visible_content(student, services.live_content_of(subchapter))
+            .select_related("media", "hazard_clip__media")
+            .prefetch_related("media__subtitles", "hazard_clip__media__subtitles", "hazard_clip__windows")
+            .order_by("order", "title")
         )
 
         neighbours = list(services.live_subchapters_of(subchapter.chapter).order_by("order", "title"))
@@ -777,7 +780,9 @@ class HazardClipListView(APIView):
         if not entitlements.has_access(student):
             return plan_needed()
 
-        listing = services.live(HazardClip.objects.select_related("media").prefetch_related("windows"))
+        listing = services.live(
+            HazardClip.objects.select_related("media").prefetch_related("windows", "media__subtitles")
+        )
         clips = list(listing.order_by("order", "title"))
         stats = services.hazard_stats_for(student, clips)
         return Response({"clips": [services.student_view_of_clip(clip, stats[clip.pk]) for clip in clips]})
@@ -800,7 +805,7 @@ class HazardClipView(APIView):
     def _find(self, student, slug: str):
         if not entitlements.has_access(student):
             return None
-        clips = HazardClip.objects.select_related("media").prefetch_related("windows")
+        clips = HazardClip.objects.select_related("media").prefetch_related("windows", "media__subtitles")
         return services.live(clips).filter(slug=slug).first()
 
 

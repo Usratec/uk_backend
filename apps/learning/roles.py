@@ -13,6 +13,7 @@ CONTENT_MODELS = (
     "learningcontent",
     "sign",
     "mediaasset",
+    "subtitle",
     "hazardclip",
     "hazardwindow",
     "question",
