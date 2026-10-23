@@ -434,7 +434,10 @@ class ExamSummarySerializer(serializers.Serializer):
     description = serializers.CharField(allow_blank=True)
     kind = serializers.ChoiceField(choices=ExamKind.choices)
     questionCount = serializers.IntegerField(help_text="How many questions will be asked.")  # noqa: N815
-    passMark = serializers.IntegerField(help_text="How many must be right to pass.")  # noqa: N815
+    passMark = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text="How many must be right to pass. Null on a paper of hazard clips alone, which asks none.",
+    )
     hazardPassMark = serializers.IntegerField(  # noqa: N815
         allow_null=True,
         help_text=(
@@ -544,11 +547,18 @@ class ExamStatisticsSerializer(serializers.Serializer):
 class ExamResultResponseSerializer(ExamStatisticsSerializer):
     score = serializers.IntegerField(help_text="Questions right. The same as `correctQuestions`.")
     total = serializers.IntegerField(help_text="Questions asked. The same as `totalQuestions`.")
-    passMark = serializers.IntegerField()  # noqa: N815
+    passMark = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="Null on a paper of hazard clips alone, which asks no questions."
+    )
     hazardPassMark = serializers.IntegerField(  # noqa: N815
         allow_null=True, help_text="The clips' own pass mark, or null when none is configured."
     )
-    questionsPassed = serializers.BooleanField(help_text="Whether the question score reached `passMark`.")  # noqa: N815
+    questionsPassed = serializers.BooleanField(  # noqa: N815
+        help_text=(
+            "Whether the question score reached `passMark`. Always true on a paper with no "
+            "questions, which has no question half to fail on — the clips decide it."
+        )
+    )
     hazardPassed = serializers.BooleanField(  # noqa: N815
         allow_null=True,
         help_text=(

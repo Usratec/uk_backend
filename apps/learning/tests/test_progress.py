@@ -338,7 +338,7 @@ class TestPracticeModes:
 
 class TestMockAttempts:
     @pytest.fixture
-    def live_exam(self, chapter, make_question, publisher):
+    def live_exam(self, chapter, make_question, make_clip, publisher):
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
         exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=2)
@@ -346,6 +346,9 @@ class TestMockAttempts:
             question = make_question(key=key)
             services.publish(actor=publisher, instance=question)
             exam.exam_questions.create(question=question, order=order)
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
         services.publish(actor=publisher, instance=exam)
         return exam
 
@@ -396,7 +399,7 @@ class TestMockAttempts:
 
 class TestEachExamKindIsCountedOnItsOwn:
     @pytest.fixture
-    def make_exam(self, chapter, make_question, publisher):
+    def make_exam(self, chapter, make_question, make_clip, publisher):
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
 
@@ -406,6 +409,10 @@ class TestEachExamKindIsCountedOnItsOwn:
                 question = make_question(key=key)
                 services.publish(actor=publisher, instance=question)
                 exam.exam_questions.create(question=question, order=order)
+            if kind == ExamKind.MOCK:
+                clip = make_clip(slug=f"{slug}-clip", title=f"{slug} clip")
+                services.publish(actor=publisher, instance=clip)
+                exam.exam_clips.create(clip=clip, order=1)
             services.publish(actor=publisher, instance=exam)
             return exam
 
