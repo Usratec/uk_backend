@@ -19,7 +19,7 @@ pytestmark = pytest.mark.django_db
 
 #: The models with a screen of their own. ``CONTENT_MODELS`` also names inlines, which have no
 #: changelist to open, so they are excluded rather than listed again by hand.
-INLINES = {"hazardwindow", "questionoption", "examquestion", "examhazardclip"}
+INLINES = {"hazardwindow", "questionoption", "examquestion", "examhazardclip", "subtitle"}
 EDITABLE = tuple(model for model in CONTENT_MODELS if model not in INLINES)
 LISTED = EDITABLE + PROGRESS_MODELS
 

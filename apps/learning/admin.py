@@ -13,6 +13,7 @@ from typing import cast
 
 from django import forms
 from django.contrib import admin, messages
+from django.core.files.uploadedfile import UploadedFile
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import URLPattern, path, reverse
@@ -48,6 +49,8 @@ from apps.learning.models import (
     SavedQuestion,
     Sign,
     Subchapter,
+    Subtitle,
+    default_subtitle_language,
 )
 from apps.staff.admin import PermissionRequiredAdminMixin, badge, placeholder
 
@@ -859,6 +862,59 @@ class SavedQuestionAdmin(ReadOnlyAdmin):
     list_select_related = ["student", "question"]
 
 
+class SubtitleForm(forms.ModelForm):
+    class Meta:
+        model = Subtitle
+        fields = ["language", "file"]
+        widgets = {"file": forms.ClearableFileInput(attrs={"accept": ".vtt,text/vtt"})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.instance.pk:
+            self.fields["language"].initial = default_subtitle_language()
+
+    def has_changed(self) -> bool:
+        if not self.instance.pk and self.add_prefix("file") not in self.files:
+            chosen = self.data.get(self.add_prefix("language"))
+            return bool(chosen) and chosen != default_subtitle_language()
+        return super().has_changed()
+
+    def clean_file(self):
+        upload = self.cleaned_data.get("file")
+        if isinstance(upload, UploadedFile):
+            try:
+                services.check_subtitle_upload(upload)
+            except services.SubtitleUploadError as error:
+                raise forms.ValidationError(str(error)) from error
+        return upload
+
+
+class SubtitleInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if self.instance.kind in ("", MediaKind.VIDEO):
+            return
+        if any(form.cleaned_data and not form.cleaned_data.get("DELETE") for form in self.forms):
+            raise forms.ValidationError(
+                "Only a video can have subtitles. Set Kind to Video, or clear the subtitle tracks below."
+            )
+
+
+class SubtitleInline(admin.TabularInline):
+    model = Subtitle
+    form = SubtitleForm
+    formset = SubtitleInlineFormSet
+    extra = 1
+    fields = ["language", "file", "current_file"]
+    readonly_fields = ["current_file"]
+
+    @admin.display(description="Uploaded file")
+    def current_file(self, track: Subtitle) -> SafeString:
+        if track.pk is None or not track.file:
+            return placeholder()
+        return format_html('<a class="adm-btn" href="{}" target="_blank">Open the .vtt</a>', track.file.url)
+
+
 @admin.register(MediaAsset)
 class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     """The media library: files staff have uploaded, used by reference from content.
@@ -867,7 +923,8 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     credentials stay on the server and nothing arrives in it that staff did not put there.
     """
 
-    list_display = ["title", "kind", "readable_size", "created_at"]
+    inlines = [SubtitleInline]
+    list_display = ["title", "kind", "readable_size", "subtitle_languages", "created_at"]
     list_filter = ["kind", "created_at"]
     search_fields = ["title", "file"]
     readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link", "content_reference"]
@@ -898,6 +955,19 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
         if asset.pk is None or asset.kind != MediaKind.IMAGE:
             return placeholder()
         return format_html("<code>{}</code>", html.reference_for(asset.pk))
+
+    def get_queryset(self, request: HttpRequest):
+        return super().get_queryset(request).prefetch_related("subtitles")
+
+    def get_inline_instances(self, request: HttpRequest, obj=None):
+        if obj is not None and obj.kind != MediaKind.VIDEO:
+            return []
+        return super().get_inline_instances(request, obj)
+
+    @admin.display(description="Subtitles")
+    def subtitle_languages(self, asset: MediaAsset) -> SafeString:
+        languages = [track.language for track in asset.subtitles.all()]
+        return format_html("{}", ", ".join(languages)) if languages else placeholder()
 
     @admin.display(description="Size", ordering="size_bytes")
     def readable_size(self, asset: MediaAsset) -> str:

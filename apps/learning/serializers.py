@@ -16,7 +16,7 @@ already implements, not Python conventions.
 from drf_spectacular.utils import PolymorphicProxySerializer, extend_schema_field
 from rest_framework import serializers
 
-from apps.learning.models import ExamKind, QuestionType, SignCategory
+from apps.learning.models import ExamKind, QuestionType, SignCategory, SubtitleLanguage
 
 
 class SignSerializer(serializers.Serializer):
@@ -127,6 +127,25 @@ class CheckBlockSerializer(serializers.Serializer):
     )
 
 
+class SubtitleSerializer(serializers.Serializer):
+    language = serializers.ChoiceField(
+        choices=SubtitleLanguage.choices,
+        help_text="A BCP 47 tag, for `srclang` — `en-GB`, `fr-FR`. More languages may be added later.",
+    )
+    label = serializers.CharField(help_text="The language's name in English, for the player's menu.")  # type: ignore[assignment]
+    url = serializers.URLField(help_text="A short-lived signed URL for the WebVTT file.")
+
+
+class SubtitleListField(serializers.ListField):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("child", SubtitleSerializer())
+        kwargs.setdefault(
+            "help_text",
+            "The video's subtitle tracks, one per language, empty when it has none. Only videos carry it.",
+        )
+        super().__init__(**kwargs)
+
+
 class MediaBlockSerializer(serializers.Serializer):
     """A video to watch or a document to read.
 
@@ -137,6 +156,7 @@ class MediaBlockSerializer(serializers.Serializer):
     type = serializers.ChoiceField(choices=[("video", "video"), ("document", "document")])
     title = serializers.CharField()
     url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
+    subtitles = SubtitleListField(required=False)
 
 
 class SignsBlockSerializer(serializers.Serializer):
@@ -216,6 +236,7 @@ class HazardClipSerializer(serializers.Serializer):
     title = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
     url = serializers.URLField(help_text="A short-lived signed URL for the video. Do not cache it.")
+    subtitles = SubtitleListField()
     thumbnailUrl = serializers.URLField(  # noqa: N815
         allow_null=True,
         help_text="A short-lived signed URL for the still, or null when the clip has none.",

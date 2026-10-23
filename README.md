@@ -135,6 +135,14 @@ is attached in the same save that writes the question rather than in a trip to t
 Anything uploaded that way becomes an ordinary library asset, and the same file uploaded twice
 finds the asset already there instead of making a second one. JPG, PNG, WebP and GIF, under 10 MB.
 
+Videos carry subtitles. A video in the media library has a *Subtitle tracks* table on its page
+where staff upload a WebVTT (`.vtt`) file and say which language it is in — British English is
+offered first, and the other languages on the list are picked from the same selector. The tracks
+hang off the library asset rather than off a lesson, so one upload covers every lesson, e-book
+section and hazard clip that plays the file, and the API hands them out with the video's own URL.
+Only videos show the table, only `.vtt` files whose contents really are WebVTT are accepted, and a
+video with no tracks is served exactly as it was before.
+
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a
 way in — a superuser must grant themselves the permission first. That is least privilege by
