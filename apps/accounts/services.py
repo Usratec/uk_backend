@@ -103,7 +103,7 @@ def uses_google_sign_in_only(user: User) -> bool:
 def _normalised(email: str) -> str:
     """The form an email takes in a cache key.
 
-    Accounts are found with ``email__iexact``, so two spellings that differ only in case are one
+    Accounts are found by their lowercased address, so two spellings that differ only in case are one
     account and must share one counter — otherwise varying the case is a way past the lock. The
     endpoints lowercase what they are given, but ``clear_failed_logins`` is called with the
     address as it is stored, which is whatever case the account was created with.
@@ -177,7 +177,7 @@ def clear_failed_logins(email: str) -> None:
 
 
 def find_by_email(email: str) -> User | None:
-    return User.objects.filter(email__iexact=email).first()
+    return User.objects.filter(email=email.lower()).first()
 
 
 class EmailAlreadyRegisteredError(Exception):

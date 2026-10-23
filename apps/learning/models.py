@@ -439,7 +439,7 @@ class QuestionAttempt(TimestampedModel):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["student", "question"])]
+        indexes = [models.Index(fields=["student", "question", "-created_at"])]
 
     def __str__(self) -> str:
         return f"{self.student} · {self.question.key} · {'right' if self.was_correct else 'wrong'}"

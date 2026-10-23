@@ -54,6 +54,30 @@ class TestSuccessfulLogin:
         assert user.last_login is not None
 
 
+class TestFindingTheAccount:
+    def test_a_mixed_case_address_finds_the_stored_lowercase_account(self, db):
+        from apps.accounts import services
+        from apps.accounts.models import User
+
+        User.objects.create_user(email="user@example.com", password=PASSWORD, first_name="Ursula")
+
+        found = services.find_by_email("User@Example.com")
+
+        assert found is not None
+        assert found.email == "user@example.com"
+        assert User.objects.filter(email="user@example.com").count() == 1
+
+    def test_an_uppercase_address_finds_the_account(self, user):
+        from apps.accounts import services
+
+        assert services.find_by_email(user.email.upper()) == user
+
+    def test_an_unknown_address_returns_none(self, db):
+        from apps.accounts import services
+
+        assert services.find_by_email("Nobody@Example.com") is None
+
+
 class TestRejectedLogin:
     def test_unknown_email_returns_401(self, api, db):
         response = login(api, "nobody@example.com", PASSWORD)
