@@ -1,13 +1,3 @@
-"""Cleaning the HTML staff write.
-
-Content is written in a rich-text editor, so what arrives is HTML. It is cleaned before it is
-stored, never on the way out, so what is in the database is exactly what students will be served
-and nothing dangerous can sit there waiting for a page that forgets to escape it.
-
-Cleaning is not only about attacks. Pasting from Word brings a mess of styling that would fight
-the site's own design, so anything not on the list below is dropped and the text is kept.
-"""
-
 import re
 
 import nh3
@@ -60,6 +50,11 @@ ALLOWED_ATTRIBUTES = {
 # Only links that go somewhere safe. This is what stops `javascript:` links.
 ALLOWED_SCHEMES = {"http", "https", "mailto"}
 
+MEDIA_REFERENCE = "/api/learning/media/{pk}/"
+MEDIA_REFERENCE_PATTERN = re.compile(r'src="/api/learning/media/(?P<pk>\d+)/"')
+
+EMBEDDED_MEDIA = re.compile(r"<(?:img|figure|video|audio|iframe)\b", re.IGNORECASE)
+
 SIGN_MARKER = re.compile(
     r"(?:<p>\s*)?\[signs:\s*(?P<codes>[^\]|]+?)\s*(?:\|\s*(?P<caption>[^\]]*?))?\s*\](?:\s*</p>)?",
     re.IGNORECASE,
@@ -96,6 +91,28 @@ def sign_codes_in(html: str | None) -> list[str]:
     return [code for piece in split_on_signs(html) for code in piece.get("codes", [])]
 
 
+def reference_for(asset_id: int) -> str:
+    return MEDIA_REFERENCE.format(pk=asset_id)
+
+
+def media_ids_in(html: str | None) -> list[int]:
+    if not html:
+        return []
+
+    return list(dict.fromkeys(int(match.group("pk")) for match in MEDIA_REFERENCE_PATTERN.finditer(html)))
+
+
+def with_media_urls(html: str | None, urls: dict[int, str]) -> str:
+    if not html:
+        return ""
+
+    def swap(match: re.Match) -> str:
+        url = urls.get(int(match.group("pk")), "")
+        return f'src="{url}"'
+
+    return MEDIA_REFERENCE_PATTERN.sub(swap, html)
+
+
 def clean(html: str | None) -> str:
     """Return the HTML with anything we do not allow removed."""
     if not html:
@@ -118,6 +135,9 @@ def is_empty(html: str | None) -> bool:
     """
     if not html:
         return True
+
+    if EMBEDDED_MEDIA.search(html):
+        return False
 
     text = nh3.clean(html, tags=set()).replace("&nbsp;", " ")
     return not text.strip()

@@ -38,6 +38,7 @@ from apps.learning.models import (
     LearningContent,
     LessonProgress,
     MediaAsset,
+    MediaKind,
     MockAttempt,
     PracticeExam,
     Question,
@@ -774,7 +775,7 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     list_display = ["title", "kind", "readable_size", "created_at"]
     list_filter = ["kind", "created_at"]
     search_fields = ["title", "file"]
-    readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link"]
+    readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link", "content_reference"]
     fieldsets = (
         (None, {"fields": ("title", "kind", "file")}),
         (
@@ -784,7 +785,24 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
                 "description": "Taken from the upload itself. The link is signed and expires.",
             },
         ),
+        (
+            "Using it in content",
+            {
+                "fields": ("content_reference",),
+                "description": (
+                    "Pictures only. Paste this into the editor's Insert image → via URL "
+                    "to show this picture in a lesson or an e-book section. It is a reference to "
+                    "this library entry rather than a link to the file."
+                ),
+            },
+        ),
     )
+
+    @admin.display(description="Reference for the editor")
+    def content_reference(self, asset: MediaAsset) -> SafeString:
+        if asset.pk is None or asset.kind != MediaKind.IMAGE:
+            return placeholder()
+        return format_html("<code>{}</code>", html.reference_for(asset.pk))
 
     @admin.display(description="Size", ordering="size_bytes")
     def readable_size(self, asset: MediaAsset) -> str:
@@ -1022,10 +1040,13 @@ class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
             {
                 "fields": ("body_html", "media"),
                 "description": format_html(
-                    "The text is shown first, then the file if there is one. To draw a strip of "
-                    "road signs in the middle of the text, write <code>{}</code> on a line of its "
-                    "own — the caption after the bar is optional, and the codes are the ones in "
-                    "the Signs library.",
+                    "The text is shown first, then the file if there is one. Pictures and GIFs go "
+                    "in the text itself, where they stay in the place you put them: use "
+                    "Insert image to upload one, or paste a picture's reference from the "
+                    "Media assets library into the same button's via URL box. JPG, PNG, "
+                    "WebP and GIF. To draw a strip of road signs in the middle of the text, write "
+                    "<code>{}</code> on a line of its own — the caption after the bar is optional, "
+                    "and the codes are the ones in the Signs library.",
                     "[signs: give-way, stop | Common warning signs]",
                 ),
             },

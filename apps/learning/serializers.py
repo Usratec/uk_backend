@@ -113,7 +113,7 @@ class HtmlBlockSerializer(serializers.Serializer):
 
     type = serializers.ChoiceField(choices=[("html", "html")])
     title = serializers.CharField(help_text="Shown as a heading when the lesson has more than one block.")
-    html = serializers.CharField()
+    html = serializers.CharField(help_text="Cleaned HTML. Any picture's src is a short-lived signed URL.")
 
 
 class CheckBlockSerializer(serializers.Serializer):
