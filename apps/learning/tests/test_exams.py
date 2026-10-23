@@ -42,13 +42,13 @@ class TestListing:
         assert exam["questionCount"] == 2
         assert exam["passMark"] == 2
         assert exam["timeLimitSeconds"] == 3420
-        assert exam["kind"] == "mock"
+        assert exam["kind"] == "practice"
 
-    def test_mock_tests_can_be_asked_for_on_their_own(self, api, student, live_exam, publisher):
+    def test_mock_tests_can_be_asked_for_on_their_own(self, api, student, mock_with_clips, publisher):
         practice = PracticeExam.objects.create(
             slug="signs-drill", title="Signs drill", kind=ExamKind.PRACTICE, pass_mark=1
         )
-        practice.exam_questions.create(question=live_exam.questions.first(), order=1)
+        practice.exam_questions.create(question=mock_with_clips.questions.first(), order=1)
         services.publish(actor=publisher, instance=practice)
 
         listed = sign_in(api, student()).get(EXAMS_URL, {"kind": "mock"}).data["exams"]
@@ -339,6 +339,75 @@ class TestSittingAMockTestWithClips:
 
         assert response.data["exams"][0]["hazardMaxScore"] == 50
         assert len(six_clips.captured_queries) == len(two_clips.captured_queries)
+
+
+class TestSittingAClipOnlyPracticeExam:
+    @pytest.fixture
+    def hazard_drill(self, chapter, make_clip, publisher):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        exam = PracticeExam.objects.create(
+            slug="hazard-drill",
+            title="Hazard drill",
+            kind=ExamKind.PRACTICE,
+            pass_mark=None,
+            hazard_pass_mark=5,
+        )
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
+        services.publish(actor=publisher, instance=exam)
+        exam.refresh_from_db()
+        return exam
+
+    def test_it_is_offered_in_the_listing(self, api, student, hazard_drill):
+        listed = sign_in(api, student()).get(EXAMS_URL, {"kind": "practice"}).data["exams"]
+
+        assert [exam["slug"] for exam in listed] == ["hazard-drill"]
+        assert listed[0]["questionCount"] == 0
+        assert listed[0]["clipCount"] == 1
+        assert listed[0]["hazardMaxScore"] == 5
+
+    def test_the_paper_is_served_with_no_question_half(self, api, student, hazard_drill):
+        response = sign_in(api, student()).get(exam_url("hazard-drill"))
+
+        assert response.status_code == 200
+        assert response.data["questions"] == []
+        assert response.data["signs"] == {}
+        assert [clip["slug"] for clip in response.data["clips"]] == ["country-lane"]
+
+    def test_spotting_the_hazard_passes_it(self, api, student, hazard_drill):
+        response = sign_in(api, student()).post(
+            submit_url("hazard-drill"), {"answers": {}, "hazardClicks": {"country-lane": [10.0]}}, format="json"
+        )
+
+        assert response.status_code == 200
+        assert response.data["total"] == 0
+        assert response.data["hazardTotalScore"] == 5
+        assert response.data["hazardPassed"] is True
+        assert response.data["passed"] is True
+
+    def test_missing_the_hazard_fails_it(self, api, student, hazard_drill):
+        response = sign_in(api, student()).post(
+            submit_url("hazard-drill"), {"answers": {}, "hazardClicks": {}}, format="json"
+        )
+
+        assert response.data["hazardPassed"] is False
+        assert response.data["passed"] is False
+
+    def test_the_sitting_is_in_the_history_without_a_question_score(self, api, student, hazard_drill):
+        learner = sign_in(api, student())
+        learner.post(
+            submit_url("hazard-drill"), {"answers": {}, "hazardClicks": {"country-lane": [10.0]}}, format="json"
+        )
+
+        history = learner.get(reverse("learn-exam-attempts", args=["hazard-drill"]))
+
+        assert history.status_code == 200
+        assert history.data["attempts"][0]["percent"] == 0
+        assert history.data["attempts"][0]["total"] == 0
+        assert history.data["attempts"][0]["hazardScore"] == 5
 
 
 class TestMarkingTheClips:

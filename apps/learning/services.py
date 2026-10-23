@@ -213,6 +213,8 @@ def warnings_about(instance) -> list[str]:
             return ["Nothing in this subchapter is published yet, so students will see it empty."]
     if isinstance(instance, PracticeExam):
         if instance.hazard_pass_mark is None and instance.hazard_clips.exists():
+            if not instance.questions.exists():
+                return ["This test is clips only and has no hazard pass mark, so every student will pass it."]
             return ["This test has clips but no hazard pass mark, so students pass it on the questions alone."]
     if isinstance(instance, Ebook):
         if instance.file_id is None and not ebook_sections(instance).exists():
@@ -260,9 +262,15 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
     """What would make an exam unusable."""
     problems = []
     questions = list(exam.questions.all())
+    clips = list(exam.hazard_clips.all())
 
-    if not questions:
-        problems.append("This exam has no questions yet.")
+    if exam.kind == ExamKind.MOCK:
+        if not questions:
+            problems.append("A mock test stands in for the real test, so it needs questions as well as clips.")
+        if not clips:
+            problems.append("A mock test stands in for the real test, so it needs hazard clips as well as questions.")
+    elif not questions and not clips:
+        problems.append("This exam has no questions or hazard clips yet. Add at least one of either.")
 
     drafts = [question for question in questions if not question.is_published]
     if drafts:
@@ -270,10 +278,11 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
         listed = ", ".join(question.key for question in drafts[:5])
         problems.append(f"Some questions are not published yet: {listed}.")
 
-    if exam.pass_mark > len(questions):
+    if questions and exam.pass_mark is None:
+        problems.append("This paper asks questions, so it needs a pass mark.")
+    elif exam.pass_mark and exam.pass_mark > len(questions):
         problems.append(f"The pass mark is {exam.pass_mark} but there are only {len(questions)} questions.")
 
-    clips = list(exam.hazard_clips.all())
     hazard_marks = sum(clip.top_score for clip in clips)
     if exam.hazard_pass_mark and exam.hazard_pass_mark > hazard_marks:
         # Otherwise the clips could not be passed however early every hazard was spotted.
@@ -862,7 +871,7 @@ def mark_exam(exam: PracticeExam, answers: dict[str, list[str]], clicks: dict[st
 
     clips, hazard_score, hazard_max = _mark_clips(exam, clicks or {})
 
-    questions_passed = score >= exam.pass_mark
+    questions_passed = score >= (exam.pass_mark or 0)
     hazard_passed = hazard_result_of(exam, hazard_score, hazard_max)
 
     return {

@@ -230,11 +230,11 @@ class TestMockTestComposition:
         assert "exam_clips-TOTAL_FORMS" in page
         assert "Hazard clips" in page
 
-    def test_an_editor_can_add_a_clip_to_one(self, editor_client, make_clip, db):
+    def test_an_editor_can_add_a_clip_to_one(self, editor_client, make_question, make_clip, db):
         from apps.learning.models import ExamKind, PracticeExam
 
         exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=1)
-        clip = make_clip()
+        question, clip = make_question(), make_clip()
 
         editor_client.post(
             change_url(exam),
@@ -246,11 +246,14 @@ class TestMockTestComposition:
                 "order": exam.order,
                 "pass_mark": exam.pass_mark,
                 "time_limit_seconds": "",
+                "hazard_pass_mark": "",
                 "publish_from": "",
-                "exam_questions-TOTAL_FORMS": "0",
+                "exam_questions-TOTAL_FORMS": "1",
                 "exam_questions-INITIAL_FORMS": "0",
                 "exam_questions-MIN_NUM_FORMS": "0",
                 "exam_questions-MAX_NUM_FORMS": "1000",
+                "exam_questions-0-question": question.pk,
+                "exam_questions-0-order": "1",
                 "exam_clips-TOTAL_FORMS": "1",
                 "exam_clips-INITIAL_FORMS": "0",
                 "exam_clips-MIN_NUM_FORMS": "0",

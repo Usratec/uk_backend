@@ -382,7 +382,11 @@ class PracticeExam(PublishableModel, TimestampedModel):
     kind = models.CharField(max_length=10, choices=ExamKind.choices, default=ExamKind.PRACTICE)
 
     time_limit_seconds = models.PositiveIntegerField(null=True, blank=True, help_text="Leave empty for no time limit.")
-    pass_mark = models.PositiveSmallIntegerField(help_text="How many questions must be right to pass.")
+    pass_mark = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="How many questions must be right to pass. Leave empty on a paper of clips alone.",
+    )
     hazard_pass_mark = models.PositiveSmallIntegerField(
         null=True,
         blank=True,

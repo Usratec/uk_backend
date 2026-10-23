@@ -31,6 +31,7 @@ from apps.learning.models import (
     EbookSection,
     EbookSectionProgress,
     ExamHazardClip,
+    ExamKind,
     ExamQuestion,
     HazardAttempt,
     HazardClip,
@@ -554,6 +555,41 @@ class QuestionAdmin(PreviewMixin, PublishableAdmin):
         return f"{len(options)} options, {correct} correct"
 
 
+def _kept(formset, field: str) -> list:
+    kept = []
+    for form in formset.forms:
+        if not form.cleaned_data or form.cleaned_data.get("DELETE"):
+            continue
+        chosen = form.cleaned_data.get(field)
+        if chosen is not None:
+            kept.append(chosen)
+    return kept
+
+
+def _rows_submitted(data, prefix: str, field: str) -> int:
+    rows = 0
+    for index in range(int(data.get(f"{prefix}-TOTAL_FORMS") or 0)):
+        if data.get(f"{prefix}-{index}-DELETE"):
+            continue
+        if data.get(f"{prefix}-{index}-{field}"):
+            rows += 1
+    return rows
+
+
+QUESTIONS_PREFIX = "exam_questions"
+CLIPS_PREFIX = "exam_clips"
+
+
+class ExamQuestionInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self) -> None:
+        super().clean()
+        if self.instance.pass_mark is None and _kept(self, "question"):
+            raise forms.ValidationError(
+                "This paper asks questions, so it needs a pass mark. "
+                "Leave the pass mark empty only on a paper of hazard clips alone."
+            )
+
+
 class ExamQuestionInline(admin.TabularInline):
     """Which questions an exam asks, and in what order.
 
@@ -562,14 +598,32 @@ class ExamQuestionInline(admin.TabularInline):
     """
 
     model = ExamQuestion
+    formset = ExamQuestionInlineFormSet
     extra = 1
     fields = ["order", "question"]
     ordering = ["order"]
     autocomplete_fields = ["question"]
 
 
+class ExamHazardClipInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self) -> None:
+        super().clean()
+        wanted = self.instance.hazard_pass_mark
+        if not wanted:
+            return
+
+        clips = _kept(self, "clip")
+        available = sum(clip.top_score for clip in clips)
+        if wanted > available:
+            raise forms.ValidationError(
+                f"The hazard perception pass mark is {wanted}, but these clips are only worth "
+                f"{available} marks, so nobody could pass them however early every hazard was spotted."
+            )
+
+
 class ExamHazardClipInline(admin.TabularInline):
     model = ExamHazardClip
+    formset = ExamHazardClipInlineFormSet
     extra = 1
     fields = ["order", "clip", "worth"]
     readonly_fields = ["worth"]
@@ -586,6 +640,44 @@ class ExamHazardClipInline(admin.TabularInline):
         return f"{place.clip.top_score} marks"
 
 
+class PracticeExamForm(forms.ModelForm):
+    class Meta:
+        model = PracticeExam
+        fields = [
+            "title",
+            "slug",
+            "description",
+            "kind",
+            "order",
+            "pass_mark",
+            "time_limit_seconds",
+            "hazard_pass_mark",
+            "publish_from",
+        ]
+
+    def clean(self) -> dict:
+        super().clean()
+        cleaned = self.cleaned_data
+
+        if f"{QUESTIONS_PREFIX}-TOTAL_FORMS" not in self.data:
+            return cleaned
+
+        questions = _rows_submitted(self.data, QUESTIONS_PREFIX, "question")
+        clips = _rows_submitted(self.data, CLIPS_PREFIX, "clip")
+
+        if cleaned.get("kind") == ExamKind.MOCK:
+            if not questions:
+                self.add_error("kind", "A mock test stands in for the real test, so it needs questions too.")
+            if not clips:
+                self.add_error("kind", "A mock test stands in for the real test, so it needs hazard clips too.")
+        elif not questions and not clips:
+            raise forms.ValidationError(
+                "A practice exam needs something to sit: add at least one question or one hazard clip."
+            )
+
+        return cleaned
+
+
 @admin.register(PracticeExam)
 class PracticeExamAdmin(PublishableAdmin):
     list_display = ["title", "kind", "question_count", "clip_count", "pass_mark", "order", "state"]
@@ -593,6 +685,7 @@ class PracticeExamAdmin(PublishableAdmin):
     list_filter = ["status", "kind"]
     search_fields = ["title", "slug", "description"]
     prepopulated_fields = {"slug": ("title",)}
+    form = PracticeExamForm
     inlines = [ExamQuestionInline, ExamHazardClipInline]
     fieldsets = (
         (None, {"fields": ("title", "slug", "description", "kind", "order")}),
@@ -603,7 +696,9 @@ class PracticeExamAdmin(PublishableAdmin):
                 "description": (
                     "Sets the pass marks and time limit. Questions and hazard clips are scored "
                     "separately. Students must pass both to pass the test. If no hazard pass mark "
-                    "is set, only the questions determine whether they pass."
+                    "is set, only the questions determine whether they pass. A practice exam may "
+                    "be questions alone or clips alone — leave the pass mark empty on a paper of "
+                    "clips alone. A mock test stands in for the real test, so it needs both."
                 ),
             },
         ),
