@@ -48,8 +48,12 @@ class SignMapField(serializers.DictField):
 class QuestionMediaSerializer(serializers.Serializer):
     """What is shown alongside a question. Only road signs so far."""
 
-    kind = serializers.ChoiceField(choices=[("sign", "sign")])
-    code = serializers.SlugField(help_text="Look this up in the response's `signs` map.")
+    kind = serializers.ChoiceField(choices=[("sign", "sign"), ("image", "image")])
+    code = serializers.SlugField(required=False, help_text="With a sign: look it up in the response's `signs` map.")
+    url = serializers.URLField(
+        required=False,
+        help_text="With a picture: a short-lived signed URL for the image or GIF.",
+    )
 
 
 class QuestionOptionSerializer(serializers.Serializer):
@@ -60,8 +64,12 @@ class QuestionOptionSerializer(serializers.Serializer):
     """
 
     id = serializers.CharField(help_text="Send this back to answer, e.g. 'a'.")
-    text = serializers.CharField(required=False, help_text="Absent on answers that are a sign rather than words.")
+    text = serializers.CharField(required=False, help_text="Absent on answers that are a picture rather than words.")
     sign = serializers.SlugField(required=False, help_text="Present when the answer is a road sign.")
+    image = serializers.URLField(
+        required=False,
+        help_text="Present when the answer is an uploaded picture: a short-lived signed URL.",
+    )
 
 
 class StudentQuestionSerializer(serializers.Serializer):

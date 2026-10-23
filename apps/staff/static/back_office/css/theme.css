@@ -1066,6 +1066,27 @@ table#result_list,
     overflow-x: auto;
 }
 
+.inline-group td .related-widget-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    white-space: nowrap;
+}
+
+.inline-group td .select2-container {
+    flex: 1 1 auto;
+    min-width: 220px;
+}
+
+.inline-group td .related-widget-wrapper-link {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.select2-container--open .select2-dropdown {
+    min-width: 220px;
+}
+
 .adm-badge {
     display: inline-flex;
     align-items: center;

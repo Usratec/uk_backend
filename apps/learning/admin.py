@@ -402,14 +402,80 @@ class SignAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     prepopulated_fields = {"code": ("name",)}
 
 
+class ImageUploadForm(forms.ModelForm):
+    image_field: str
+
+    upload_image = forms.ImageField(
+        label="Upload a picture",
+        required=False,
+        widget=forms.ClearableFileInput(attrs={"accept": "image/jpeg,image/png,image/webp,image/gif"}),
+        help_text="JPG, PNG, WebP or GIF. It is added to the media library and chosen here.",
+    )
+
+    def clean_upload_image(self):
+        upload = self.cleaned_data.get("upload_image")
+        if upload:
+            try:
+                services.check_image_upload(upload)
+            except services.ImageUploadError as error:
+                raise forms.ValidationError(str(error)) from error
+        return upload
+
+
+def _attach_uploaded_image(request: HttpRequest, form: ImageUploadForm) -> None:
+    upload = getattr(form, "cleaned_data", {}).get("upload_image")
+    if not upload:
+        return
+    asset = services.image_asset_from_upload(upload=upload, uploaded_by=cast(User, request.user))
+    setattr(form.instance, form.image_field, asset)
+
+
+class QuestionOptionForm(ImageUploadForm):
+    image_field = "image"
+
+    class Meta:
+        model = QuestionOption
+        fields = ["order", "option_id", "text", "sign", "image", "is_correct"]
+
+
 class QuestionOptionInline(admin.TabularInline):
-    """The answers to choose between, edited beside the question they belong to."""
+    """The answers to choose between, edited beside the question they belong to.
+
+    Each answer carries its own picture and its own upload box, so the four pictures of an image
+    question are four uploads in one save rather than four trips to the media library.
+    """
 
     model = QuestionOption
+    form = QuestionOptionForm
     extra = 2
-    fields = ["order", "option_id", "text", "sign", "is_correct"]
+    fields = ["order", "option_id", "text", "sign", "image", "upload_image", "thumbnail", "is_correct"]
+    readonly_fields = ["thumbnail"]
     ordering = ["order"]
-    autocomplete_fields = ["sign"]
+    autocomplete_fields = ["sign", "image"]
+
+    @admin.display(description="Picture")
+    def thumbnail(self, option: QuestionOption) -> SafeString:
+        if option.pk is None or option.image is None:
+            return placeholder()
+        return _thumbnail(option.image.file, width=90)
+
+
+class QuestionForm(ImageUploadForm):
+    image_field = "media_image"
+
+    class Meta:
+        model = Question
+        fields = [
+            "chapter",
+            "key",
+            "question_type",
+            "prompt",
+            "media_sign",
+            "media_image",
+            "explanation",
+            "learn_more",
+            "publish_from",
+        ]
 
 
 @admin.register(Question)
@@ -425,10 +491,25 @@ class QuestionAdmin(PreviewMixin, PublishableAdmin):
     search_fields = ["key", "prompt", "explanation"]
     prepopulated_fields = {"key": ("prompt",)}
     list_select_related = ["chapter"]
-    autocomplete_fields = ["chapter", "media_sign", "learn_more"]
+    autocomplete_fields = ["chapter", "media_sign", "media_image", "learn_more"]
+    form = QuestionForm
     inlines = [QuestionOptionInline]
     fieldsets = (
-        (None, {"fields": ("chapter", "key", "question_type", "prompt", "media_sign")}),
+        (
+            None,
+            {
+                "fields": (
+                    "chapter",
+                    "key",
+                    "question_type",
+                    "prompt",
+                    "media_sign",
+                    "media_image",
+                    "upload_image",
+                    "thumbnail",
+                )
+            },
+        ),
         (
             "After answering",
             {
@@ -441,7 +522,25 @@ class QuestionAdmin(PreviewMixin, PublishableAdmin):
             {"fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link")},
         ),
     )
-    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link"]
+    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link", "thumbnail"]
+
+    @admin.display(description="Picture shown now")
+    def thumbnail(self, question: Question) -> SafeString:
+        if question.pk is None or question.media_image is None:
+            return placeholder()
+        return _thumbnail(question.media_image.file, width=240)
+
+    def save_model(self, request: HttpRequest, obj: Question, form, change: bool) -> None:
+        _attach_uploaded_image(request, form)
+        super().save_model(request, obj, form, change)
+
+    def save_formset(self, request: HttpRequest, form, formset, change: bool) -> None:
+        if formset.model is QuestionOption:
+            for option_form in formset.forms:
+                if getattr(option_form, "cleaned_data", {}).get("DELETE"):
+                    continue
+                _attach_uploaded_image(request, option_form)
+        super().save_formset(request, form, formset, change)
 
     @admin.display(description="Question", ordering="prompt")
     def prompt_preview(self, question: Question) -> str:

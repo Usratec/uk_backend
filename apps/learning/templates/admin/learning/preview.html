@@ -97,9 +97,16 @@
                 {% if answer_sheet.sign %}
                     <p class="adm-preview__meta">Shown with the sign: {{ answer_sheet.sign }}</p>
                 {% endif %}
+                {% if answer_sheet.image %}
+                    <img class="adm-preview__image" src="{{ answer_sheet.image }}" alt="Shown with the question">
+                {% endif %}
                 <ol class="adm-preview__answers">
                     {% for option in answer_sheet.options %}
                         <li class="{% if option.is_correct %}adm-preview__answer--correct{% endif %}">
+                            {% if option.image %}
+                                <img class="adm-preview__answer-image" src="{{ option.image }}"
+                                     alt="Answer {{ option.id }}">
+                            {% endif %}
                             {{ option.text|default:option.sign|default:"(empty)" }}
                             {% if option.is_correct %}<span>correct</span>{% endif %}
                         </li>

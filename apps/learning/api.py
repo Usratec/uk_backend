@@ -396,7 +396,11 @@ class PracticeSetView(APIView):
         mode = request.query_params.get("mode", "random")
         count = _count_from(request.query_params.get("count"))
 
-        questions = services.live(Question.objects.select_related("chapter").prefetch_related("options"))
+        questions = services.live(
+            Question.objects.select_related("chapter", "media_sign", "media_image").prefetch_related(
+                "options__sign", "options__image"
+            )
+        )
         questions = entitlements.visible_questions(student, questions)
 
         if mode == "topic":
@@ -463,7 +467,7 @@ class AnswerView(APIView):
             return plan_needed()
 
         question = (
-            services.live(Question.objects.prefetch_related("options"))
+            services.live(Question.objects.prefetch_related("options__sign", "options__image"))
             .filter(pk=request.data.get("questionId"))
             .first()
         )
