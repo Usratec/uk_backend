@@ -12,6 +12,7 @@ from apps.core import email
 
 logger = logging.getLogger(__name__)
 
+
 class _Message(TypedDict, total=False):
     subject: str
     path: str
