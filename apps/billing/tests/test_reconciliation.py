@@ -18,6 +18,7 @@ from apps.billing import webhooks
 from apps.billing.models import Order, OrderStatus, PromoCode, StripeEvent
 from apps.billing.tasks import fulfil_unfulfilled_orders
 from apps.entitlements.models import Subscription
+from apps.integrations.stripe_client import CHECKOUT_CURRENCY, to_pence
 
 pytestmark = pytest.mark.django_db
 
@@ -34,6 +35,7 @@ def make_order(package, *, status=OrderStatus.PAID, paid_ago=LONG_ENOUGH_AGO, **
     """An order of any age and status. Paid long enough ago to be swept, unless told otherwise."""
     fields.setdefault("email", "buyer@example.com")
     fields.setdefault("first_name", "Bea")
+    fields.setdefault("stripe_session_id", "cs_test")
     return Order.objects.create(
         package=package,
         status=status,
@@ -60,9 +62,13 @@ def paid_event(order, event_id="evt_1", payment_intent="pi_1"):
         "type": webhooks.PAID_EVENT,
         "data": {
             "object": {
+                "id": order.stripe_session_id,
                 "metadata": {"order_id": str(order.id)},
+                "client_reference_id": str(order.id),
                 "payment_status": "paid",
                 "payment_intent": payment_intent,
+                "amount_total": to_pence(order.final_price),
+                "currency": CHECKOUT_CURRENCY,
             }
         },
     }
