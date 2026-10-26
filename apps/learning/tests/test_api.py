@@ -395,6 +395,22 @@ class TestAnswering:
 
         assert response.status_code == 400
 
+    def test_a_question_id_that_is_not_a_number_is_refused(self, api, student):
+        response = sign_in(api, student()).post(
+            ANSWER_URL, {"questionId": "nope", "selected": ["a"]}, format="json"
+        )
+
+        assert response.status_code == 400
+        assert "questionId" in response.data
+
+    def test_an_option_that_is_not_an_id_is_refused(self, api, student, live_question):
+        response = sign_in(api, student()).post(
+            ANSWER_URL, {"questionId": live_question.pk, "selected": [{"id": "a"}]}, format="json"
+        )
+
+        assert response.status_code == 400
+        assert "selected" in response.data
+
 
 class TestQuestionsInsideALesson:
     def test_a_lesson_sends_its_check_questions_with_the_blocks(
