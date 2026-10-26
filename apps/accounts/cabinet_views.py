@@ -11,6 +11,7 @@ from django.conf import settings
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -23,11 +24,12 @@ from apps.accounts.serializers import (
     EmailChangeSerializer,
     LearningUrlSerializer,
     PasswordChangeSerializer,
+    ProfilePhotoSerializer,
     ProfileSerializer,
     SubscriptionPeriodSerializer,
     SubscriptionStatusSerializer,
 )
-from apps.accounts.throttling import EmailResendThrottle
+from apps.accounts.throttling import EmailResendThrottle, ProfilePhotoThrottle
 from apps.entitlements import services as entitlements
 from apps.entitlements.permissions import EXPIRED, NO_SUBSCRIPTION
 
@@ -41,14 +43,44 @@ class ProfileView(APIView):
 
     @extend_schema(responses={200: ProfileSerializer}, summary="Read your profile")
     def get(self, request: Request) -> Response:
-        return Response(ProfileSerializer(request.user).data)
+        return Response(ProfileSerializer(request.user, context={"request": request}).data)
 
     @extend_schema(request=ProfileSerializer, responses={200: ProfileSerializer}, summary="Update your profile")
     def patch(self, request: Request) -> Response:
-        profile = ProfileSerializer(request.user, data=request.data, partial=True)
+        user = cast(User, request.user)
+        profile = ProfileSerializer(user, data=request.data, partial=True, context={"request": request})
         profile.is_valid(raise_exception=True)
-        profile.save()
-        return Response(profile.data)
+        cabinet_services.update_profile(user, dict(profile.validated_data))
+        return Response(ProfileSerializer(user, context={"request": request}).data)
+
+
+class ProfilePhotoView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    throttle_classes = [ProfilePhotoThrottle]
+
+    @extend_schema(
+        request=ProfilePhotoSerializer,
+        responses={200: ProfileSerializer, 400: DetailSerializer, 429: DetailSerializer},
+        summary="Upload or replace your profile photo",
+    )
+    def post(self, request: Request) -> Response:
+        user = cast(User, request.user)
+        upload = ProfilePhotoSerializer(data=request.data)
+        upload.is_valid(raise_exception=True)
+
+        try:
+            cabinet_services.set_profile_photo(user, upload.validated_data["photo"])
+        except cabinet_services.ProfilePhotoError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(ProfileSerializer(user, context={"request": request}).data)
+
+    @extend_schema(responses={200: ProfileSerializer}, summary="Remove your profile photo")
+    def delete(self, request: Request) -> Response:
+        user = cast(User, request.user)
+        cabinet_services.remove_profile_photo(user)
+        return Response(ProfileSerializer(user, context={"request": request}).data)
 
 
 class EmailChangeRequestView(APIView):

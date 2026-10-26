@@ -24,11 +24,32 @@ class UserAdmin(DjangoUserAdmin):
     list_filter = ["auth_method", "email_verified", "is_active", "is_staff"]
     search_fields = ["email", "first_name", "last_name"]
     ordering = ["-date_joined"]
-    readonly_fields = ["date_joined", "last_login", "google_id", "created_at", "updated_at"]
+    readonly_fields = [
+        "date_joined",
+        "last_login",
+        "google_id",
+        "marketing_email_opt_in_at",
+        "created_at",
+        "updated_at",
+    ]
 
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        ("Personal details", {"fields": ("first_name", "last_name", "phone")}),
+        ("Personal details", {"fields": ("first_name", "last_name", "phone", "postcode", "photo")}),
+        (
+            "Learning profile",
+            {
+                "fields": ("theory_test_date", "confidence_level"),
+                "description": "What the learner told us about their test. They fill this in themselves.",
+            },
+        ),
+        (
+            "Marketing",
+            {
+                "fields": ("marketing_email_opt_in", "marketing_email_opt_in_at"),
+                "description": "Consent the learner gave themselves. Do not tick it on their behalf.",
+            },
+        ),
         ("Sign-in", {"fields": ("auth_method", "google_id", "email_verified")}),
         ("Access", {"fields": ("is_active", "account_expires_at")}),
         ("Staff permissions", {"fields": PRIVILEGE_FIELDS}),

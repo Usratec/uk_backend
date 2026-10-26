@@ -4,7 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from apps.accounts.models import User
+from apps.accounts.models import User, normalise_postcode
 from apps.entitlements.models import Subscription
 
 
@@ -90,14 +90,50 @@ class PasswordResetConfirmSerializer(ConfirmedPasswordSerializer):
 
 
 class ProfileSerializer(serializers.ModelSerializer):
-    """The customer's own details. The email address is changed through its own flow, not here."""
+    """The customer's own details. The email address is changed through its own flow, not here.
+
+    The photo is read here and written through ``/api/cabinet/profile/photo/``, which takes a
+    multipart upload and checks what the file really is.
+    """
 
     has_google_auth = serializers.BooleanField(read_only=True)
+    photo_url = serializers.SerializerMethodField(help_text="Absolute URL of the profile photo, or null.")
 
     class Meta:
         model = User
-        fields = ["email", "first_name", "last_name", "phone", "has_google_auth", "email_verified"]
+        fields = [
+            "email",
+            "first_name",
+            "last_name",
+            "phone",
+            "postcode",
+            "theory_test_date",
+            "confidence_level",
+            "marketing_email_opt_in",
+            "photo_url",
+            "has_google_auth",
+            "email_verified",
+        ]
         read_only_fields = ["email", "email_verified"]
+        extra_kwargs = {
+            "confidence_level": {"allow_blank": True},
+            "postcode": {"allow_blank": True},
+            "theory_test_date": {"allow_null": True},
+        }
+
+    @extend_schema_field(serializers.URLField(allow_null=True))
+    def get_photo_url(self, user: User) -> str | None:
+        if not user.photo:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(user.photo.url) if request is not None else user.photo.url
+
+    def validate_postcode(self, value: str) -> str:
+        return normalise_postcode(value)
+
+
+class ProfilePhotoSerializer(serializers.Serializer):
+    photo = serializers.FileField(help_text="JPG, JPEG, PNG or WebP, up to 10 MB.")
 
 
 class EmailChangeSerializer(serializers.Serializer):

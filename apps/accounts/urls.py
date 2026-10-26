@@ -19,6 +19,7 @@ urlpatterns = [
     ),
     # The customer's own account area.
     path("cabinet/profile/", cabinet_views.ProfileView.as_view(), name="cabinet-profile"),
+    path("cabinet/profile/photo/", cabinet_views.ProfilePhotoView.as_view(), name="cabinet-profile-photo"),
     path("cabinet/email/change/", cabinet_views.EmailChangeRequestView.as_view(), name="cabinet-email-change"),
     path(
         "cabinet/email/change/confirm/",
