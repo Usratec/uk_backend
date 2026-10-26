@@ -162,6 +162,7 @@ SPECTACULAR_SETTINGS = {
     # Using the exam's own type to name its components keeps the names consistent and predictable.
     "ENUM_NAME_OVERRIDES": {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
+        "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
     },
 }
 

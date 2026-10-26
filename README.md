@@ -56,7 +56,7 @@ container start, so scaling out can't run them concurrently.
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
-| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
+| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
@@ -137,6 +137,42 @@ on the account is left alone. Uploads are throttled at 20 an hour per account, b
 gunicorn worker serves the whole site and each one may be 10 MB. The file is stored through the configured storage backend (the
 bucket in production, where URLs are signed and short-lived), under a random name in a directory
 per account, and the file behind a replaced or removed photo is deleted so nothing is orphaned.
+
+### Learner order history
+
+`GET /api/cabinet/orders/` returns the signed-in learner's own orders, newest first, as
+`{"results": [...]}`. It needs a token and nothing else: access that has expired, been refunded or
+never existed still reads its own history, because a receipt outlives what it bought.
+
+```json
+{
+  "results": [
+    {
+      "id": "6f0b1b6e-6a1a-4a7e-9c5e-6f4a2b0d9c11",
+      "created_at": "2026-10-26T10:00:00Z",
+      "status": "paid",
+      "package_name": "30 day access",
+      "package_duration_days": 30,
+      "original_price": "29.99",
+      "discount_amount": "5.00",
+      "final_price": "24.99",
+      "currency": "GBP",
+      "paid_at": "2026-10-26T10:00:42Z",
+      "refunded_at": null
+    }
+  ]
+}
+```
+
+`status` is the order's own status — `pending`, `paid`, `failed` or `refunded`. The amounts are the
+ones copied onto the order at checkout, so a later price change or a deleted promo code cannot
+rewrite what somebody was charged; `discount_amount` is what the promo code took off at the time.
+Nothing about the payment itself is exposed: the Stripe session, payment intent and transaction ids
+stay server-side, as does the email captured at checkout.
+
+The list is capped at the newest 50, like notifications, because nothing in this API is paginated.
+One query serves it: the package is joined in, so a long history costs no more than a short one.
+
 
 ### Learner notifications
 

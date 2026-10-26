@@ -11,4 +11,5 @@ urlpatterns = [
     ),
     path("payments/orders/<uuid:order_id>/", views.OrderStatusView.as_view(), name="order-status"),
     path("payments/webhook/stripe/", views.StripeWebhookView.as_view(), name="stripe-webhook"),
+    path("cabinet/orders/", views.OrderHistoryView.as_view(), name="cabinet-orders"),
 ]
