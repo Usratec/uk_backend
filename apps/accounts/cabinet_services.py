@@ -1,7 +1,11 @@
-"""Managing your own account: changing your email address and your password."""
+"""Managing your own account: your profile, your email address and your password."""
 
 import logging
 from datetime import timedelta
+from typing import Any
+
+from django.core.files.uploadedfile import UploadedFile
+from django.utils import timezone
 
 from apps.accounts import emails, services
 from apps.accounts.models import SecurityToken, TokenPurpose, User
@@ -13,6 +17,102 @@ EMAIL_CHANGE_VALID_FOR = timedelta(hours=24)
 
 class EmailAlreadyTakenError(Exception):
     """Another account already uses that address."""
+
+
+class ProfilePhotoError(Exception):
+    """The file the learner chose cannot be used as a profile photo."""
+
+
+def update_profile(user: User, changes: dict[str, Any]) -> User:
+    if not changes:
+        return user
+
+    fields = list(changes)
+
+    if "marketing_email_opt_in" in changes and changes["marketing_email_opt_in"] != user.marketing_email_opt_in:
+        user.marketing_email_opt_in_at = timezone.now()
+        fields.append("marketing_email_opt_in_at")
+
+    for field, value in changes.items():
+        setattr(user, field, value)
+
+    user.save(update_fields=[*fields, "updated_at"])
+    return user
+
+
+PHOTO_UPLOAD_TYPES = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+}
+
+PHOTO_UPLOAD_FORMATS = {"JPEG", "PNG", "WEBP"}
+
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+def _check_photo_name_and_size(upload: UploadedFile) -> None:
+    name = upload.name or ""
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if extension not in PHOTO_UPLOAD_TYPES:
+        allowed = ", ".join(sorted({label.upper() for label in PHOTO_UPLOAD_TYPES}))
+        raise ProfilePhotoError(f"A profile photo must be a {allowed} file.")
+
+    declared = (getattr(upload, "content_type", "") or "").lower()
+    if declared and declared not in set(PHOTO_UPLOAD_TYPES.values()):
+        raise ProfilePhotoError(f"'{declared}' is not a picture this site can show.")
+
+    if (upload.size or 0) > MAX_PHOTO_BYTES:
+        raise ProfilePhotoError(f"A profile photo must be under {MAX_PHOTO_BYTES // (1024 * 1024)} MB.")
+
+
+def _verify_is_a_photo(upload: UploadedFile) -> None:
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(upload) as image:
+            image_format = image.format
+            image.verify()
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:
+        raise ProfilePhotoError("That file is not a picture this site can show.") from error
+    finally:
+        upload.seek(0)
+
+    if image_format not in PHOTO_UPLOAD_FORMATS:
+        raise ProfilePhotoError(f"{image_format or 'That file'} is not a picture this site can show.")
+
+
+def set_profile_photo(user: User, upload: UploadedFile) -> User:
+    _check_photo_name_and_size(upload)
+    _verify_is_a_photo(upload)
+
+    previous = user.photo.name or ""
+    user.photo = upload
+    user.save(update_fields=["photo", "updated_at"])
+
+    if previous:
+        _delete_stored_photo(user, previous)
+
+    return user
+
+
+def remove_profile_photo(user: User) -> User:
+    previous = user.photo.name or ""
+    if not previous:
+        return user
+
+    user.photo = ""
+    user.save(update_fields=["photo", "updated_at"])
+    _delete_stored_photo(user, previous)
+    return user
+
+
+def _delete_stored_photo(user: User, name: str) -> None:
+    try:
+        user.photo.storage.delete(name)
+    except Exception:
+        logger.exception("Could not delete the replaced profile photo %s of account %s", name, user.pk)
 
 
 def request_email_change(user: User, new_email: str) -> None:

@@ -138,6 +138,7 @@ REST_FRAMEWORK = {
         "auth_user": "30/minute",
         "password_reset": "5/hour",
         "email_resend": "5/hour",
+        "profile_photo": "20/hour",
         "checkout": "30/hour",
         "promo_code": "60/hour",
     },

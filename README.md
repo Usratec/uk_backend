@@ -56,7 +56,7 @@ container start, so scaling out can't run them concurrently.
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
-| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
+| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
@@ -101,6 +101,43 @@ lost orders every ten minutes, and telling the CRM about access it was never tol
 There is deliberately no job to revoke learning access, because access is derived from the dates
 every time it is checked.
 
+### Learner profile
+
+`GET /api/cabinet/profile/` returns the signed-in learner's own details and `PATCH` updates them.
+Both act on `request.user`: there is no account id in the URL or in the body, and `id`, `pk` and
+`email` sent in a PATCH are ignored (the address has its own confirmation flow). A PATCH is
+partial, so a request that mentions one field leaves every other one — including the marketing
+preference and the photo — exactly as it was, and the response is the whole profile as it now
+stands.
+
+| Field | Accepts |
+|---|---|
+| `first_name`, `last_name`, `phone` | strings, as before |
+| `postcode` | a UK postcode in any spacing or case; stored as `SW1A 1AA`. `""` clears it |
+| `theory_test_date` | `YYYY-MM-DD`, or `null` when no test is booked |
+| `confidence_level` | `not_confident`, `somewhat_confident`, `confident`, `very_confident`, or `""` for no answer |
+| `marketing_email_opt_in` | `true` or `false` |
+| `photo_url` | read-only; absolute URL of the photo, or `null` |
+| `email`, `email_verified`, `has_google_auth` | read-only |
+
+A rejected value answers 400 with DRF's field errors, for example
+`{"postcode": ["Enter a valid UK postcode, for example SW1A 1AA."]}`.
+
+`marketing_email_opt_in` defaults to false and is only ever true because the learner set it
+themselves — registering, buying and editing the profile are none of them consent. Changing it
+stamps `marketing_email_opt_in_at`, which is the record of when they chose and is read-only in the
+admin so it cannot be backdated. Nothing sends marketing email yet; this only stores the choice.
+
+`POST /api/cabinet/profile/photo/` takes a multipart body with one `photo` field and replaces any
+photo already there; `DELETE` removes it. Both answer with the full profile. JPG, JPEG, PNG and
+WebP up to 10 MB are accepted, and every upload is opened with Pillow — the filename and the
+browser's content type are supplied by the client, so a renamed script or a truncated file is
+refused with `{"detail": "That file is not a picture this site can show."}` and the photo already
+on the account is left alone. Uploads are throttled at 20 an hour per account, because one
+gunicorn worker serves the whole site and each one may be 10 MB. The file is stored through the configured storage backend (the
+bucket in production, where URLs are signed and short-lived), under a random name in a directory
+per account, and the file behind a replaced or removed photo is deleted so nothing is orphaned.
+
 ### Learner notifications
 
 `GET /api/notifications/` returns the signed-in learner's notifications, newest first, as
@@ -128,7 +165,8 @@ Notification writing never fails the thing that triggered it — a purchase that
 the bell has still granted access, and a reminder whose notification failed is still marked as
 sent so the customer is not emailed twice.
 
-There is no theory-test-date reminder: nothing in the platform records a learner's test date yet.
+There is no theory-test-date reminder. The profile now records `theory_test_date`, but nothing
+reads it to schedule a notification; that is a decision for whoever adds the reminder.
 
 ### Running without Docker
 

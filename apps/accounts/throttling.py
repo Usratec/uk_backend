@@ -25,3 +25,7 @@ class EmailResendThrottle(UserRateThrottle):
     """Verification resends, per user."""
 
     scope = "email_resend"
+
+
+class ProfilePhotoThrottle(UserRateThrottle):
+    scope = "profile_photo"
