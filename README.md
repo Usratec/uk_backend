@@ -58,6 +58,7 @@ container start, so scaling out can't run them concurrently.
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
+| Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/` (and the rest of `/api/learn/`) |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
@@ -173,6 +174,34 @@ stay server-side, as does the email captured at checkout.
 The list is capped at the newest 50, like notifications, because nothing in this API is paginated.
 One query serves it: the package is joined in, so a long history costs no more than a short one.
 
+
+### Learner video position
+
+`POST /api/learn/videos/<slug>/progress/` saves where the signed-in learner is up to in a lesson
+video, so playback can be resumed on any device. The slug is the **video block's** slug, not the
+lesson's: one lesson can hold several videos, and each keeps its own position.
+
+```json
+{ "positionSeconds": 205, "durationSeconds": 620 }
+```
+
+```json
+{
+  "slug": "braking-distances",
+  "positionSeconds": 205.0,
+  "durationSeconds": 620.0,
+  "resumeAt": "03:25",
+  "hasProgress": true,
+  "finished": false,
+  "updatedAt": "2026-10-26T10:00:42Z"
+}
+```
+
+`positionSeconds` is required, `durationSeconds` optional — omitting it keeps the duration saved
+earlier, and `position_seconds`/`duration_seconds` are accepted as aliases. A negative, non-numeric
+or missing position answers 400, so an incomplete request cannot zero a real one; a position past
+the end is clamped. Repeated calls update one row (learner and video are unique together, written
+by `update_or_create` in a transaction), so posting every few seconds costs one UPDATE.
 
 ### Learner notifications
 

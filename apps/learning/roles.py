@@ -31,6 +31,7 @@ PROGRESS_MODELS = (
     "questionattempt",
     "mockattempt",
     "lessonprogress",
+    "videoprogress",
     "savedquestion",
     "hazardattempt",
     "ebooksectionprogress",

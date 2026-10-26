@@ -445,6 +445,7 @@ JAZZMIN_SETTINGS = {
         "learning.QuestionAttempt": "fas fa-pen-to-square",
         "learning.MockAttempt": "fas fa-clipboard-check",
         "learning.LessonProgress": "fas fa-chart-line",
+        "learning.VideoProgress": "fas fa-circle-play",
         "learning.SavedQuestion": "fas fa-bookmark",
         "learning.EbookSectionProgress": "fas fa-bookmark",
         # The copy on the public pages, as opposed to the material students work through.

@@ -10,6 +10,7 @@ than in the admin screens.
 
 import hashlib
 import logging
+from decimal import ROUND_DOWN, Decimal
 
 from django.db import transaction
 from django.db.models import Count, Max, Q
@@ -41,6 +42,7 @@ from apps.learning.models import (
     SavedQuestion,
     Sign,
     Subchapter,
+    VideoProgress,
 )
 from apps.notifications import services as notifications
 from apps.staff.authz import require_permission
@@ -679,7 +681,7 @@ MEDIA_CONTENT_TYPES = {
 }
 
 
-def block_for(content: LearningContent) -> dict:
+def block_for(content: LearningContent, progress: dict | None = None) -> dict:
     """One content item as the frontend reads it.
 
     The frontend takes content as a list of blocks: theory is one HTML block, a question is a
@@ -707,6 +709,7 @@ def block_for(content: LearningContent) -> dict:
         }
         if content.content_type == ContentType.VIDEO:
             block["subtitles"] = subtitles_of(content.media)
+            block["progress"] = progress if progress is not None else video_position_of(None)
         return block
 
     return {"type": "html", "html": resolved_media_in(content.body_html), "title": content.title}
@@ -1071,6 +1074,115 @@ def mark_section_read(student, section: EbookSection) -> None:
     """Record that a student read a section of a book. Reading it twice changes nothing."""
     EbookSectionProgress.objects.get_or_create(student=student, section=section)
     notifications.queue_streak_check(student)
+
+
+FINISHED_WITHIN_SECONDS = Decimal("1.5")
+MAX_VIDEO_SECONDS = Decimal("999999.99")
+SECONDS = Decimal("0.01")
+
+
+def _seconds(value) -> Decimal | None:
+    if value is None:
+        return None
+    seconds = min(max(Decimal(str(value)), Decimal("0.00")), MAX_VIDEO_SECONDS)
+    return seconds.quantize(SECONDS, rounding=ROUND_DOWN)
+
+
+def live_video(slug: str, at=None):
+    at = at or timezone.now()
+    contents = live(LearningContent.objects.select_related("subchapter__chapter", "media"), at).filter(
+        subchapter__in=live(Subchapter.objects.all(), at),
+        subchapter__chapter__in=live(Chapter.objects.all(), at),
+    )
+    return contents.filter(slug=slug, content_type=ContentType.VIDEO, media__isnull=False).first()
+
+
+def save_video_position(*, student, content: LearningContent, position_seconds, duration_seconds=None):
+    position = _seconds(position_seconds) or Decimal("0.00")
+
+    with transaction.atomic():
+        known = (
+            VideoProgress.objects.filter(student=student, content=content)
+            .values_list("duration_seconds", flat=True)
+            .first()
+        )
+        duration = _seconds(duration_seconds) or known
+        if duration:
+            position = min(position, duration)
+
+        progress, _ = VideoProgress.objects.update_or_create(
+            student=student,
+            content=content,
+            defaults={"position_seconds": position, "duration_seconds": duration},
+        )
+    return progress
+
+
+def timecode(seconds) -> str:
+    total = int(Decimal(str(seconds or 0)))
+    hours, remainder = divmod(total, 3600)
+    minutes, rest = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{rest:02d}"
+    return f"{minutes:02d}:{rest:02d}"
+
+
+def video_position_of(progress) -> dict:
+    if progress is None:
+        return {
+            "positionSeconds": 0.0,
+            "durationSeconds": None,
+            "resumeAt": timecode(0),
+            "hasProgress": False,
+            "finished": False,
+            "updatedAt": None,
+        }
+
+    duration = progress.duration_seconds
+    finished = (
+        duration is not None
+        and progress.position_seconds > 0
+        and progress.position_seconds >= duration - FINISHED_WITHIN_SECONDS
+    )
+    return {
+        "positionSeconds": float(progress.position_seconds),
+        "durationSeconds": float(duration) if duration is not None else None,
+        "resumeAt": timecode(progress.position_seconds),
+        "hasProgress": True,
+        "finished": bool(finished),
+        "updatedAt": progress.updated_at,
+    }
+
+
+def video_positions_for(student, contents) -> dict[int, dict]:
+    ids = [content.pk for content in contents if content.content_type == ContentType.VIDEO]
+    if not ids:
+        return {}
+
+    saved = VideoProgress.objects.filter(student=student, content_id__in=ids)
+    return {progress.content_id: video_position_of(progress) for progress in saved}
+
+
+def resumable_videos_by_lesson(student, subchapters) -> dict[int, dict]:
+    if not subchapters:
+        return {}
+
+    saved = (
+        VideoProgress.objects.filter(
+            student=student,
+            content__in=live(LearningContent.objects.filter(content_type=ContentType.VIDEO)),
+            content__subchapter__in=subchapters,
+        )
+        .select_related("content")
+        .order_by("-updated_at", "-pk")
+    )
+
+    resumable: dict[int, dict] = {}
+    for progress in saved:
+        resumable.setdefault(
+            progress.content.subchapter_id, {"slug": progress.content.slug, **video_position_of(progress)}
+        )
+    return resumable
 
 
 def sections_read_by(student) -> set[int]:
