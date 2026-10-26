@@ -7,6 +7,7 @@ from celery import shared_task
 from django.utils import timezone
 
 from apps.billing import fulfilment
+from apps.billing.checkout import UNPAID_ORDER_RETENTION
 from apps.billing.models import Order, OrderStatus
 
 logger = logging.getLogger(__name__)
@@ -68,3 +69,23 @@ def fulfil_unfulfilled_orders() -> None:
             fulfilment.fulfil(order)
         except Exception:
             logger.exception("Could not fulfil order %s; will try again on the next run", order.id)
+
+
+@shared_task
+def delete_unfinished_orders() -> int:
+    """Remove orders that were never paid and can no longer be paid.
+
+    Pending and failed orders are kept for ``UNPAID_ORDER_RETENTION``, which covers the Checkout
+    Session plus the longest delayed payment Stripe documents. Paid and refunded orders are left
+    alone, and so is anything that already granted access.
+    """
+    cutoff = timezone.now() - UNPAID_ORDER_RETENTION
+    stale = Order.objects.filter(
+        status__in=(OrderStatus.PENDING, OrderStatus.FAILED),
+        created_at__lt=cutoff,
+        subscription__isnull=True,
+    )
+    count = stale.count()
+    stale.delete()
+    logger.info("Deleted %d unfinished orders created before %s", count, cutoff)
+    return count
