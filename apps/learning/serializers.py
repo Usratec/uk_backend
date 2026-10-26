@@ -146,6 +146,60 @@ class SubtitleListField(serializers.ListField):
         super().__init__(**kwargs)
 
 
+class VideoProgressSerializer(serializers.Serializer):
+    slug = serializers.SlugField(
+        required=False, help_text="The video block's slug, required when progress is not linked to a block."
+    )
+    positionSeconds = serializers.FloatField(  # noqa: N815
+        help_text="Seconds into the video to resume from. 0 when nothing has been saved."
+    )
+    durationSeconds = serializers.FloatField(  # noqa: N815
+        allow_null=True, help_text="How long the video is, as the player last reported it. Null when it never did."
+    )
+    resumeAt = serializers.CharField(  # noqa: N815
+        help_text="`positionSeconds` as a timecode for the player's label — `03:25`, or `1:02:03` past an hour."
+    )
+    hasProgress = serializers.BooleanField(  # noqa: N815
+        help_text="False when this learner has no saved position for the video, so start from the beginning."
+    )
+    finished = serializers.BooleanField(
+        help_text=(
+            "True if the saved position is within 1.5 seconds of the end. Does not mark the lesson as complete."
+        )
+    )
+    updatedAt = serializers.DateTimeField(  # noqa: N815
+        allow_null=True, help_text="When the position was last saved. Null when there is none."
+    )
+
+
+class VideoProgressRequestSerializer(serializers.Serializer):
+    ALIASES = {"position_seconds": "positionSeconds", "duration_seconds": "durationSeconds"}
+
+    positionSeconds = serializers.DecimalField(  # noqa: N815
+        max_digits=9,
+        decimal_places=2,
+        min_value=0,
+        help_text="Seconds into the video. Clamped to the duration, and a negative value is refused.",
+    )
+    durationSeconds = serializers.DecimalField(  # noqa: N815
+        max_digits=9,
+        decimal_places=2,
+        min_value=0,
+        required=False,
+        allow_null=True,
+        help_text="How long the video is. Optional, and a duration saved earlier is kept when it is left out.",
+    )
+
+    def to_internal_value(self, data):
+        if hasattr(data, "items"):
+            renamed = data.dict() if hasattr(data, "dict") else dict(data)
+            for alias, key in self.ALIASES.items():
+                if alias in renamed and key not in renamed:
+                    renamed[key] = renamed.pop(alias)
+            data = renamed
+        return super().to_internal_value(data)
+
+
 class MediaBlockSerializer(serializers.Serializer):
     """A video to watch or a document to read.
 
@@ -157,6 +211,9 @@ class MediaBlockSerializer(serializers.Serializer):
     title = serializers.CharField()
     url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
     subtitles = SubtitleListField(required=False)
+    progress = VideoProgressSerializer(
+        required=False, help_text="The signed-in learner's own saved position. Only videos carry it."
+    )
 
 
 class SignsBlockSerializer(serializers.Serializer):
@@ -288,6 +345,13 @@ class LessonSummarySerializer(serializers.Serializer):
     summary = serializers.CharField(allow_blank=True)
     minutes = serializers.IntegerField(help_text="Rough study time.")
     done = serializers.BooleanField(help_text="Always false until progress is recorded.")
+    videoProgress = VideoProgressSerializer(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "The video in this lesson the learner last watched, with their saved position, so the "
+            "card can offer to resume it. Null when they have saved none."
+        ),
+    )
 
 
 class TopicSerializer(serializers.Serializer):

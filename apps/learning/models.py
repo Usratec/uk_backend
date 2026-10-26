@@ -24,7 +24,7 @@ the public contract once published.
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator
+from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -582,6 +582,41 @@ class LessonProgress(models.Model):
 
     def __str__(self) -> str:
         return f"{self.student} · {self.subchapter.title}"
+
+
+class VideoProgress(TimestampedModel):
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="video_progress")
+    content = models.ForeignKey(LearningContent, on_delete=models.CASCADE, related_name="video_progress")
+    position_seconds = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="How far into the video the student had watched.",
+    )
+    duration_seconds = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text="How long the video is, as the player reported it. Empty when it never said.",
+    )
+
+    class Meta:
+        ordering = ["-updated_at"]
+        verbose_name = "video progress"
+        verbose_name_plural = "video progress"
+        constraints = [
+            models.UniqueConstraint(fields=["student", "content"], name="one_video_position_per_lesson_video"),
+            models.CheckConstraint(condition=models.Q(position_seconds__gte=0), name="video_position_is_not_negative"),
+            models.CheckConstraint(
+                condition=models.Q(duration_seconds__isnull=True) | models.Q(duration_seconds__gte=0),
+                name="video_duration_is_not_negative",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.student} · {self.content.title} · {self.position_seconds}s"
 
 
 class SavedQuestion(models.Model):

@@ -58,6 +58,8 @@ from apps.learning.serializers import (
     SavedResponseSerializer,
     SignListResponseSerializer,
     TopicListResponseSerializer,
+    VideoProgressRequestSerializer,
+    VideoProgressSerializer,
 )
 
 PLAN_NEEDED = "An active plan is needed for this"
@@ -115,6 +117,9 @@ class TopicListView(APIView):
         done = services.completed_lesson_ids(student)
         mastery = services.mastery_by_chapter(student, chapters)
         lessons = self._lessons_by_chapter(student, chapters, has_access, package_id)
+        resumable = services.resumable_videos_by_lesson(
+            student, [subchapter for group in lessons.values() for subchapter in group]
+        )
 
         return Response(
             {
@@ -132,6 +137,7 @@ class TopicListView(APIView):
                                 "summary": subchapter.summary,
                                 "minutes": subchapter.minutes,
                                 "done": subchapter.pk in done,
+                                "videoProgress": resumable.get(subchapter.pk),
                             }
                             for subchapter in lessons.get(chapter.pk, [])
                         ],
@@ -192,6 +198,8 @@ class LessonDetailView(APIView):
 
         neighbours = list(services.live_subchapters_of(subchapter.chapter).order_by("order", "title"))
         position = next((i for i, item in enumerate(neighbours) if item.pk == subchapter.pk), None)
+        content = list(content)
+        positions = services.video_positions_for(student, content)
 
         return Response(
             {
@@ -200,7 +208,7 @@ class LessonDetailView(APIView):
                     "title": subchapter.title,
                     "summary": subchapter.summary,
                     "minutes": subchapter.minutes,
-                    "blocks": [services.block_for(item) for item in content],
+                    "blocks": [services.block_for(item, positions.get(item.pk)) for item in content],
                 },
                 "topic": {
                     "slug": subchapter.chapter.slug,
@@ -710,6 +718,36 @@ class LessonCompleteView(APIView):
 
         services.mark_lesson_done(student, subchapter)
         return Response({"done": True})
+
+
+class VideoProgressView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="saveVideoProgress",
+        summary="Save where a learner is up to in a lesson video",
+        request=VideoProgressRequestSerializer,
+        responses={200: VideoProgressSerializer},
+    )
+    def post(self, request: Request, slug: str) -> Response:
+        student = cast(User, request.user)
+        video = services.live_video(slug)
+        if video is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not entitlements.can_view(student, video):
+            return plan_needed()
+
+        sent = VideoProgressRequestSerializer(data=request.data)
+        sent.is_valid(raise_exception=True)
+
+        progress = services.save_video_position(
+            student=student,
+            content=video,
+            position_seconds=sent.validated_data["positionSeconds"],
+            duration_seconds=sent.validated_data.get("durationSeconds"),
+        )
+        return Response({"slug": video.slug, **services.video_position_of(progress)})
 
 
 class SavedQuestionView(APIView):

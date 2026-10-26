@@ -50,6 +50,7 @@ from apps.learning.models import (
     Sign,
     Subchapter,
     Subtitle,
+    VideoProgress,
     default_subtitle_language,
 )
 from apps.staff.admin import PermissionRequiredAdminMixin, badge, placeholder
@@ -853,6 +854,19 @@ class LessonProgressAdmin(ReadOnlyAdmin):
     search_fields = ["student__email", "subchapter__title"]
     list_select_related = ["student", "subchapter"]
     date_hierarchy = "completed_at"
+
+
+@admin.register(VideoProgress)
+class VideoProgressAdmin(ReadOnlyAdmin):
+    list_display = ["student", "content", "lesson", "position_seconds", "duration_seconds", "updated_at"]
+    list_filter = ["content__subchapter__chapter", "updated_at"]
+    search_fields = ["student__email", "content__title", "content__slug"]
+    list_select_related = ["student", "content", "content__subchapter"]
+    date_hierarchy = "updated_at"
+
+    @admin.display(description="Lesson", ordering="content__subchapter__title")
+    def lesson(self, progress: VideoProgress) -> str:
+        return progress.content.subchapter.title
 
 
 @admin.register(SavedQuestion)
