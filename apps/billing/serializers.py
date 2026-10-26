@@ -1,7 +1,10 @@
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.serializers import EmailField
 from apps.billing.models import Order
+
+CURRENCY = "GBP"
 
 
 class CheckoutSerializer(serializers.Serializer):
@@ -39,6 +42,33 @@ class OrderStatusSerializer(serializers.ModelSerializer):
         ]
 
 
+class OrderHistoryItemSerializer(serializers.ModelSerializer):
+    package_name = serializers.CharField(source="package.name", read_only=True)
+    package_duration_days = serializers.IntegerField(source="package.duration_days", read_only=True)
+    currency = serializers.SerializerMethodField(help_text="Always GBP; the site sells in pounds only.")
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "created_at",
+            "status",
+            "package_name",
+            "package_duration_days",
+            "original_price",
+            "discount_amount",
+            "final_price",
+            "currency",
+            "paid_at",
+            "refunded_at",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField())
+    def get_currency(self, order: Order) -> str:
+        return CURRENCY
+
+
 # --- Response shapes, declared so the OpenAPI schema documents them ------------------------------
 
 
@@ -54,6 +84,10 @@ class PromoCodeValidSerializer(serializers.Serializer):
     discount_amount = serializers.DecimalField(max_digits=8, decimal_places=2)
     original_price = serializers.DecimalField(max_digits=8, decimal_places=2)
     final_price = serializers.DecimalField(max_digits=8, decimal_places=2)
+
+
+class OrderHistorySerializer(serializers.Serializer):
+    results = OrderHistoryItemSerializer(many=True)
 
 
 class PromoCodeInvalidSerializer(serializers.Serializer):
