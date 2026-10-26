@@ -7,6 +7,7 @@ die halfway through. Every step therefore checks whether it has already been don
 """
 
 import logging
+from functools import partial
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -16,6 +17,7 @@ from apps.billing import emails
 from apps.billing.models import Order, OrderStatus
 from apps.crm import notifications
 from apps.entitlements import services as entitlements
+from apps.notifications import services as learner_notifications
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,11 @@ def fulfil(order: Order) -> None:
         return
 
     user = provision_account(order)
-    entitlements.activate(order, user)
+    subscription, _ = entitlements.activate(order, user)
+    learner_notifications.notify_quietly(
+        partial(learner_notifications.package_activated, subscription),
+        f"package activation for order {order.id}",
+    )
 
     order.refresh_from_db()
     send_welcome(order, user)

@@ -57,6 +57,7 @@ container start, so scaling out can't run them concurrently.
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
+| Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
@@ -94,10 +95,40 @@ Access is two dates. `package_expires_at` ends learning access; `account_expires
 in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
 for is lost.
 
-Scheduled jobs run from the `beat` service: expiry reminders at 09:00, closing expired accounts at
-00:30 (never staff accounts), fulfilling lost orders every ten minutes, and telling the CRM about
-access it was never told about, hourly. There is deliberately no job to revoke learning access,
-because access is derived from the dates every time it is checked.
+Scheduled jobs run from the `beat` service: expiry reminders at 09:00, telling learners their
+access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
+lost orders every ten minutes, and telling the CRM about access it was never told about, hourly.
+There is deliberately no job to revoke learning access, because access is derived from the dates
+every time it is checked.
+
+### Learner notifications
+
+`GET /api/notifications/` returns the signed-in learner's notifications, newest first, as
+`{"unread_count": n, "results": [...]}`. Each row carries `id`, `kind`, `title`, `text`, `link`
+(a frontend route, or `null`), `created_at` and `is_read`. The count covers the whole account; the
+list is capped at the newest 50, because nothing in this API is paginated.
+`POST /api/notifications/<id>/read/` marks one as read and answers 404 for an id that does not
+exist *or* belongs to somebody else; `POST /api/notifications/read-all/` marks the rest in one
+UPDATE and answers `{"updated": n}`. Both are safe to repeat. All three need a token, and every
+query is scoped to `request.user` — no learner id is ever read from a request.
+
+What creates them:
+
+| `kind` | Written by |
+|---|---|
+| `package_activated` | fulfilment, after a paid order is turned into access |
+| `package_ending_soon` | the 09:00 expiry-reminder job, alongside the email |
+| `package_expired` | the 09:30 job, for access that ended in the last two days and was not replaced or refunded |
+| `streak_milestone` | a worker, after a day of study is recorded — at 3, 7, 14, 30, 60 and 100 days |
+
+Each one carries an `event_key` that names the event rather than the message, unique per learner
+in the database. That is what makes every trigger safe to reprocess: a redelivered Stripe webhook,
+a reminder job rerun, or a retried Celery task finds the row already there and writes nothing.
+Notification writing never fails the thing that triggered it — a purchase that could not write to
+the bell has still granted access, and a reminder whose notification failed is still marked as
+sent so the customer is not emailed twice.
+
+There is no theory-test-date reminder: nothing in the platform records a learner's test date yet.
 
 ### Running without Docker
 

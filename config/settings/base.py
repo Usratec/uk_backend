@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "apps.content",
     "apps.landing",
     "apps.analytics",
+    "apps.notifications",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -211,6 +212,10 @@ CELERY_BEAT_SCHEDULE = {
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),
+    },
+    "notify-expired-packages": {
+        "task": "apps.notifications.tasks.notify_expired_packages",
+        "schedule": crontab(hour="9", minute="30"),
     },
 }
 
