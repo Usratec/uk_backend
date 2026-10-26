@@ -16,6 +16,7 @@ from django.utils import timezone
 from apps.core.models import PublishStatus
 from apps.learning import services
 from apps.learning.models import (
+    Chapter,
     ExamKind,
     LessonProgress,
     MockAttempt,
@@ -558,6 +559,156 @@ class TestMastery:
         topic = next(item for item in response.data["topics"] if item["slug"] == chapter.slug)
         assert topic["mastery"] == 0
         assert topic["questions"] == 0
+
+
+class TestQuestionsTakenOutOfTheBank:
+    @pytest.fixture
+    def second_question(self, make_question, publisher):
+        question = make_question(key="second")
+        services.publish(actor=publisher, instance=question)
+        question.refresh_from_db()
+        return question
+
+    def topic(self, api, chapter):
+        response = api.get(TOPICS_URL)
+        return next(item for item in response.data["topics"] if item["slug"] == chapter.slug)
+
+    def test_a_correct_answer_to_a_question_since_drafted_does_not_pass_100(
+        self, api, student, live_question, second_question, publisher, chapter
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 100
+        assert topic["questions"] == 1
+
+    def test_both_questions_published_and_answered_is_100(self, api, student, live_question, second_question, chapter):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 100
+        assert topic["questions"] == 2
+
+    def test_one_of_two_published_questions_right_is_half_learnt(
+        self, api, student, live_question, second_question, chapter
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question, "a")
+        answer(learner, second_question, "b")
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 50
+        assert topic["questions"] == 2
+
+    def test_a_question_scheduled_for_later_is_out_of_both_halves(
+        self, api, student, live_question, second_question, chapter
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        second_question.publish_from = timezone.now() + timedelta(days=7)
+        second_question.save(update_fields=["publish_from"])
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 100
+        assert topic["questions"] == 1
+
+    def test_a_drafted_question_does_not_inflate_the_overall_progress(
+        self, api, student, live_question, second_question, publisher
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["questionsAnswered"] == 1
+        assert summary["questionsLearnt"] == 1
+        assert summary["mastery"] == 100
+
+    def test_a_drafted_question_got_wrong_leaves_the_counts_too(
+        self, api, student, live_question, second_question, publisher
+    ):
+        learner = sign_in(api, student())
+        answer(learner, second_question, "b")
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["questionsAnswered"] == 0
+        assert summary["questionsLearnt"] == 0
+        assert summary["mastery"] == 0
+
+    def test_a_day_spent_on_a_question_since_drafted_is_still_a_study_day(
+        self, api, student, live_question, second_question, publisher
+    ):
+        learner = sign_in(api, student())
+        answer(learner, second_question)
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["studyDays"] == 1
+        assert summary["streak"] == 1
+
+    def test_an_emptied_bank_is_not_a_division_by_zero(self, api, student, live_question, second_question, publisher):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        for question in (live_question, second_question):
+            services.unpublish(actor=publisher, instance=question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["mastery"] == 0
+        assert summary["questionsLearnt"] == 0
+
+    def test_one_chapter_s_drafting_leaves_another_chapter_alone(
+        self, api, student, live_question, make_question, publisher, chapter
+    ):
+        other = Chapter.objects.create(slug="motorways", title="Motorways", order=2, status=PublishStatus.PUBLISHED)
+        elsewhere = make_question(key="elsewhere", chapter=other)
+        services.publish(actor=publisher, instance=elsewhere)
+        drafted = make_question(key="drafted")
+        services.publish(actor=publisher, instance=drafted)
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, drafted)
+        answer(learner, elsewhere)
+
+        services.unpublish(actor=publisher, instance=drafted)
+
+        here = self.topic(learner, chapter)
+        there = self.topic(learner, other)
+        assert (here["mastery"], here["questions"]) == (100, 1)
+        assert (there["mastery"], there["questions"]) == (100, 1)
+
+    def test_the_single_chapter_and_batch_figures_agree(
+        self, student, live_question, second_question, publisher, chapter
+    ):
+        learner = student()
+        for question in (live_question, second_question):
+            services.record_answer(learner, question, True)
+        services.unpublish(actor=publisher, instance=second_question)
+
+        assert services.mastery_of(learner, chapter) == {"mastery": 100, "questions": 1}
+        assert services.mastery_by_chapter(learner, [chapter]) == {chapter.pk: {"mastery": 100, "questions": 1}}
+
+    def test_one_student_s_drafted_attempts_do_not_reach_another(
+        self, api, student, live_question, second_question, publisher, packages
+    ):
+        answer(sign_in(api, student("starter")), second_question)
+        services.unpublish(actor=publisher, instance=second_question)
+
+        assert services.mastery_of(student("premium"), live_question.chapter) == {"mastery": 0, "questions": 1}
 
 
 class TestStreak:

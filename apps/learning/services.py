@@ -1082,6 +1082,10 @@ def saved_question_keys(student) -> list[str]:
     return list(SavedQuestion.objects.filter(student=student).values_list("question__key", flat=True))
 
 
+def attempts_on_live_questions(student, at=None):
+    return QuestionAttempt.objects.filter(student=student, question__in=live(Question.objects.all(), at))
+
+
 def mastery_by_chapter(student, chapters) -> dict[int, dict]:
     """:func:`mastery_of` for several chapters at once, in two queries instead of two per chapter.
 
@@ -1103,7 +1107,8 @@ def mastery_by_chapter(student, chapters) -> dict[int, dict]:
     # Distinct because a question answered correctly five times is one question learnt, which is
     # the whole point of counting questions rather than attempts.
     learnt = dict(
-        QuestionAttempt.objects.filter(student=student, was_correct=True, question__chapter_id__in=chapter_ids)
+        attempts_on_live_questions(student)
+        .filter(was_correct=True, question__chapter_id__in=chapter_ids)
         .values_list("question__chapter_id")
         .annotate(learnt=Count("question_id", distinct=True))
     )
@@ -1129,7 +1134,8 @@ def mastery_of(student, chapter: Chapter) -> dict:
         return {"mastery": 0, "questions": 0}
 
     learnt = (
-        QuestionAttempt.objects.filter(student=student, was_correct=True, question__chapter=chapter)
+        attempts_on_live_questions(student)
+        .filter(was_correct=True, question__chapter=chapter)
         .values("question_id")
         .distinct()
         .count()
@@ -1207,7 +1213,7 @@ def question_ids_answered_wrong(student):
 def progress_summary(student) -> dict:
     """The headline numbers for the Today screen."""
     days = study_days(student)
-    attempts = QuestionAttempt.objects.filter(student=student)
+    attempts = attempts_on_live_questions(student)
     answered = attempts.values("question_id").distinct().count()
     learnt = attempts.filter(was_correct=True).values("question_id").distinct().count()
     bank = live(Question.objects.all()).count()
