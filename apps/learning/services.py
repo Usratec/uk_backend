@@ -42,6 +42,7 @@ from apps.learning.models import (
     Sign,
     Subchapter,
 )
+from apps.notifications import services as notifications
 from apps.staff.authz import require_permission
 
 logger = logging.getLogger(__name__)
@@ -988,6 +989,7 @@ def mark_answer(question: Question, selected: list[str]) -> dict:
 def record_answer(student, question: Question, was_correct: bool) -> None:
     """Remember one answer."""
     QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
+    notifications.queue_streak_check(student)
 
 
 TIME_TAKEN_GRACE_SECONDS = 30
@@ -1055,17 +1057,20 @@ def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds
         )
         for clip in result["clips"]
     )
+    notifications.queue_streak_check(student)
     return attempt
 
 
 def mark_lesson_done(student, subchapter: Subchapter) -> None:
     """Record that a student finished a subchapter. Finishing it twice changes nothing."""
     LessonProgress.objects.get_or_create(student=student, subchapter=subchapter)
+    notifications.queue_streak_check(student)
 
 
 def mark_section_read(student, section: EbookSection) -> None:
     """Record that a student read a section of a book. Reading it twice changes nothing."""
     EbookSectionProgress.objects.get_or_create(student=student, section=section)
+    notifications.queue_streak_check(student)
 
 
 def sections_read_by(student) -> set[int]:
