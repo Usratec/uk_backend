@@ -396,9 +396,7 @@ class TestAnswering:
         assert response.status_code == 400
 
     def test_a_question_id_that_is_not_a_number_is_refused(self, api, student):
-        response = sign_in(api, student()).post(
-            ANSWER_URL, {"questionId": "nope", "selected": ["a"]}, format="json"
-        )
+        response = sign_in(api, student()).post(ANSWER_URL, {"questionId": "nope", "selected": ["a"]}, format="json")
 
         assert response.status_code == 400
         assert "questionId" in response.data
