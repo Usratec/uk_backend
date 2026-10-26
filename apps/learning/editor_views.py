@@ -5,6 +5,7 @@ from django.http.response import HttpResponseBase
 from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_POST
 
+from apps.core.uploads import delivery_headers
 from apps.learning import html, services
 from apps.learning.models import MediaAsset, MediaKind
 from apps.staff.access import granted_permissions
@@ -31,7 +32,11 @@ def media_file(request: HttpRequest, pk: int) -> HttpResponseBase:
     if url.startswith(("http://", "https://")):
         return HttpResponseRedirect(url)
 
-    return FileResponse(asset.file.open("rb"), content_type=asset.content_type or None)
+    headers = delivery_headers(asset.content_type, asset.file.name)
+    response = FileResponse(asset.file.open("rb"), content_type=headers["Content-Type"])
+    response["X-Content-Type-Options"] = headers["X-Content-Type-Options"]
+    response["Content-Disposition"] = headers["Content-Disposition"]
+    return response
 
 
 @require_POST

@@ -21,7 +21,7 @@ from apps.learning.models import (
     MediaAsset,
     MediaKind,
 )
-from apps.learning.tests.conftest import sign_in, uploaded_image
+from apps.learning.tests.conftest import mp4_bytes, sign_in, uploaded_image
 
 pytestmark = pytest.mark.django_db
 
@@ -40,7 +40,7 @@ def attempt_url(slug: str) -> str:
 @pytest.fixture
 def clip_video(db):
     asset = MediaAsset.objects.create(title="Country lane", kind=MediaKind.VIDEO)
-    asset.file.save("lane.mp4", SimpleUploadedFile("lane.mp4", b"video bytes", content_type="video/mp4"), save=True)
+    asset.file.save("lane.mp4", SimpleUploadedFile("lane.mp4", mp4_bytes(), content_type="video/mp4"), save=True)
     return asset
 
 

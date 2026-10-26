@@ -251,7 +251,7 @@ STATIC_URL = "/api/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 STORAGES: dict[str, dict] = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "default": {"BACKEND": "apps.core.storage.SafeFileSystemStorage"},
     # WhiteNoise serves static files from the app itself and stores a gzipped copy of each file
     # next to it during `collectstatic`. The same backend is used in every environment, so the
     # files collected when the Docker image is built are exactly what a deployed container serves.
@@ -302,7 +302,7 @@ if S3_BUCKET_NAME and not S3_CONFIGURED:
 
 if S3_CONFIGURED:
     STORAGES["default"] = {
-        "BACKEND": "storages.backends.s3.S3Storage",
+        "BACKEND": "apps.core.storage.SafeS3Storage",
         "OPTIONS": {
             "bucket_name": S3_BUCKET_NAME,
             "endpoint_url": S3_ENDPOINT_URL,

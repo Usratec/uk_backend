@@ -32,7 +32,7 @@ CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"
 # leaves nothing behind on disk.
 STORAGES = {  # noqa: F405
     **STORAGES,  # noqa: F405
-    "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+    "default": {"BACKEND": "apps.core.storage.SafeInMemoryStorage"},
 }
 
 # Tests never run collectstatic; let WhiteNoise find files on demand instead of from STATIC_ROOT.

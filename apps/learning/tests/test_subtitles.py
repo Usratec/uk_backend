@@ -14,7 +14,7 @@ from apps.learning.models import (
     SubtitleLanguage,
     default_subtitle_language,
 )
-from apps.learning.tests.conftest import sign_in
+from apps.learning.tests.conftest import mp4_bytes, sign_in
 from apps.learning.tests.test_query_counts import queries_for
 
 pytestmark = pytest.mark.django_db
@@ -30,7 +30,7 @@ def video(title: str = "A clip", name: str = "clip.mp4") -> MediaAsset:
     return MediaAsset.objects.create(
         title=title,
         kind=MediaKind.VIDEO,
-        file=SimpleUploadedFile(name, b"not really a video", content_type="video/mp4"),
+        file=SimpleUploadedFile(name, mp4_bytes(), content_type="video/mp4"),
     )
 
 
@@ -209,7 +209,7 @@ class TestTheAdmin:
             {
                 "title": "Roundabouts",
                 "kind": MediaKind.VIDEO,
-                "file": SimpleUploadedFile("roundabouts.mp4", b"video bytes", content_type="video/mp4"),
+                "file": SimpleUploadedFile("roundabouts.mp4", mp4_bytes(), content_type="video/mp4"),
                 "subtitles-TOTAL_FORMS": "1",
                 "subtitles-INITIAL_FORMS": "0",
                 "subtitles-MIN_NUM_FORMS": "0",
