@@ -13,6 +13,10 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+# The only currency we charge in. Checkout and the webhook both use this, so a payment in
+# anything else cannot be treated as the order we stored.
+CHECKOUT_CURRENCY = "gbp"
+
 
 class StripeError(Exception):
     """Stripe could not be reached, or refused the request."""
@@ -65,7 +69,7 @@ def create_checkout_session(
                 "line_items": [
                     {
                         "price_data": {
-                            "currency": "gbp",
+                            "currency": CHECKOUT_CURRENCY,
                             "unit_amount": to_pence(amount),
                             "product_data": {"name": name, "description": description},
                         },
