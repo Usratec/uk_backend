@@ -179,7 +179,9 @@ One query serves it: the package is joined in, so a long history costs no more t
 
 `POST /api/learn/videos/<slug>/progress/` saves where the signed-in learner is up to in a lesson
 video, so playback can be resumed on any device. The slug is the **video block's** slug, not the
-lesson's: one lesson can hold several videos, and each keeps its own position.
+lesson's: one lesson can hold several videos, and each keeps its own position. Every `video` block
+in `GET /api/learn/lessons/<slug>/` carries that `slug` with the learner's `progress` beside it, and
+so does `videoProgress` on a lesson card in `GET /api/learn/topics/`.
 
 ```json
 { "positionSeconds": 205, "durationSeconds": 620 }

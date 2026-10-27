@@ -165,6 +165,34 @@ class TestWhatIsRefused:
 
 
 class TestReadingItBack:
+    def test_a_video_block_names_the_slug_to_post_progress_to(self, learner, live_video):
+        block = video_block(learner.get(lesson_url(live_video.subchapter.slug)))
+
+        assert block["slug"] == "braking-distances"
+        assert learner.post(progress_url(block["slug"]), {"positionSeconds": 30}, format="json").status_code == 200
+
+    def test_a_document_block_carries_no_slug(self, learner, published_tree):
+        _, subchapter, _ = published_tree
+        document = LearningContent.objects.create(
+            subchapter=subchapter,
+            slug="the-handbook",
+            title="The handbook",
+            content_type=ContentType.DOCUMENT,
+            media=MediaAsset.objects.create(
+                title="A handbook",
+                kind=MediaKind.DOCUMENT,
+                file=SimpleUploadedFile("guide.pdf", b"%PDF-1.4", content_type="application/pdf"),
+            ),
+            order=4,
+            status=PublishStatus.PUBLISHED,
+        )
+
+        block = video_block(learner.get(lesson_url(subchapter.slug)), document.title)
+
+        assert block["type"] == "document"
+        assert "slug" not in block
+        assert "progress" not in block
+
     def test_the_lesson_detail_carries_the_saved_position(self, learner, live_video):
         learner.post(progress_url(live_video.slug), {"positionSeconds": 205, "durationSeconds": 620}, format="json")
 
