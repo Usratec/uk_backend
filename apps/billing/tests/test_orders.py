@@ -24,7 +24,6 @@ class TestOrderStatus:
         assert set(response.data) == {
             "id",
             "status",
-            "email",
             "package_name",
             "package_duration_days",
             "original_price",
@@ -33,6 +32,14 @@ class TestOrderStatus:
             "paid_at",
             "created_at",
         }
+
+    def test_does_not_reveal_the_buyer_email(self, api, order):
+        """The order id is a capability URL, so the response must not include the mailbox."""
+        response = api.get(status_url(order.id))
+
+        assert response.status_code == 200
+        assert "email" not in response.data
+        assert order.email.encode() not in response.content
 
     def test_shows_the_package_details(self, api, order):
         response = api.get(status_url(order.id))

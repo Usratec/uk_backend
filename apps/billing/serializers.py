@@ -21,7 +21,12 @@ class PromoCodeValidateSerializer(serializers.Serializer):
 
 
 class OrderStatusSerializer(serializers.ModelSerializer):
-    """What the storefront polls while waiting for Stripe to confirm the payment."""
+    """What the storefront polls while waiting for Stripe to confirm the payment.
+
+    The order id is a capability URL (it is emailed and can sit in browser history), so the
+    buyer's email and name stay off this response. Package and price stay so the payer can
+    confirm it is their order.
+    """
 
     package_name = serializers.CharField(source="package.name", read_only=True)
     package_duration_days = serializers.IntegerField(source="package.duration_days", read_only=True)
@@ -31,7 +36,6 @@ class OrderStatusSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "status",
-            "email",
             "package_name",
             "package_duration_days",
             "original_price",
