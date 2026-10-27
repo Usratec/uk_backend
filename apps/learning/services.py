@@ -862,6 +862,30 @@ def history_for(student, exams) -> dict[int, dict]:
     return history
 
 
+ALL_ATTEMPTS_LIMIT = 50
+
+
+def all_attempts_of(student, limit: int = ALL_ATTEMPTS_LIMIT) -> list[MockAttempt]:
+    return list(
+        MockAttempt.objects.filter(student=student).select_related("exam").order_by("-created_at", "-id")[:limit]
+    )
+
+
+def attempt_across_exams(attempt: MockAttempt) -> dict:
+    saved = attempt.result or {}
+    return {
+        **attempt_in_the_history(attempt),
+        "exam": {
+            "id": attempt.exam_id,
+            "slug": attempt.exam.slug,
+            "title": attempt.exam.title,
+            "kind": attempt.exam.kind,
+        },
+        "questionsPassed": saved.get("questionsPassed", attempt.passed),
+        "hazardPassed": saved.get("hazardPassed"),
+    }
+
+
 def saved_result_of(attempt: MockAttempt) -> dict:
     saved = dict(attempt.result or {})
     if not saved:
@@ -1327,6 +1351,18 @@ def question_ids_answered_wrong(student):
     return {question_id for question_id, was_correct in latest if not was_correct}
 
 
+def best_practice_result(attempts) -> dict:
+    best = max(
+        ((percent_of(score, total), total, score) for score, total in attempts.values_list("score", "total")),
+        default=None,
+    )
+    if best is None:
+        return {"bestPracticeScore": None, "bestPracticeCorrect": None, "bestPracticeTotal": None}
+
+    percent, total, score = best
+    return {"bestPracticeScore": percent, "bestPracticeCorrect": score, "bestPracticeTotal": total}
+
+
 def progress_summary(student) -> dict:
     """The headline numbers for the Today screen."""
     days = study_days(student)
@@ -1338,7 +1374,6 @@ def progress_summary(student) -> dict:
     mocks = sittings.filter(exam__kind=ExamKind.MOCK)
     practices = sittings.filter(exam__kind=ExamKind.PRACTICE)
     best_mock = mocks.order_by("-score").first()
-    best_practice = practices.order_by("-score").first()
     clips = HazardAttempt.objects.filter(student=student)
     best_clip = clips.order_by("-score").first()
 
@@ -1357,7 +1392,7 @@ def progress_summary(student) -> dict:
         "bestMockScore": best_mock.score if best_mock else None,
         "practiceAttempts": practices.count(),
         "practiceExamsPassed": practices.filter(passed=True).count(),
-        "bestPracticeScore": best_practice.score if best_practice else None,
+        **best_practice_result(practices),
         "hazardAttempts": clips.count(),
         "bestHazardScore": best_clip.score if best_clip else None,
     }

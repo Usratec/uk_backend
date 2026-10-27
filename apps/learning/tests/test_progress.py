@@ -449,7 +449,7 @@ class TestEachExamKindIsCountedOnItsOwn:
         summary = learner.get(PROGRESS_URL).data
         assert summary["practiceAttempts"] == 1
         assert summary["practiceExamsPassed"] == 1
-        assert summary["bestPracticeScore"] == 2
+        assert summary["bestPracticeScore"] == 100
 
     def test_sitting_a_mock_test_counts_as_a_mock_test(self, api, student, mock_test):
         learner = sign_in(api, student())
@@ -500,6 +500,109 @@ class TestEachExamKindIsCountedOnItsOwn:
 
         assert learner.get(PROGRESS_URL).data == first
         assert (first["mockAttempts"], first["practiceAttempts"]) == (1, 1)
+
+
+class TestTheBestPracticeScore:
+    @pytest.fixture
+    def practice(self, chapter, make_question, publisher):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        def build(slug, questions, pass_mark=1):
+            exam = PracticeExam.objects.create(slug=slug, title=slug, kind=ExamKind.PRACTICE, pass_mark=pass_mark)
+            for order in range(1, questions + 1):
+                question = make_question(key=f"{slug}-{order}")
+                services.publish(actor=publisher, instance=question)
+                exam.exam_questions.create(question=question, order=order)
+            services.publish(actor=publisher, instance=exam)
+            return exam
+
+        return build
+
+    def sit(self, api, exam, right):
+        answers = {
+            str(question.pk): ["a"] for index, question in enumerate(services.questions_in_exam(exam)) if index < right
+        }
+        return api.post(reverse("learn-exam-submit", args=[exam.slug]), {"answers": answers}, format="json")
+
+    def test_it_is_the_percentage_of_that_sitting_questions(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-40", questions=40), right=36)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 90
+        assert summary["bestPracticeCorrect"] == 36
+        assert summary["bestPracticeTotal"] == 40
+
+    def test_it_is_the_best_sitting_rather_than_the_latest(self, api, student, practice):
+        learner = sign_in(api, student())
+        exam = practice("practice-1", questions=4)
+
+        self.sit(learner, exam, right=4)
+        self.sit(learner, exam, right=1)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 100
+        assert summary["bestPracticeCorrect"] == 4
+
+    def test_the_best_of_two_papers_of_different_lengths_is_the_better_percentage(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-40", questions=40), right=36)
+        self.sit(learner, practice("practice-20", questions=20), right=19)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 95
+        assert summary["bestPracticeCorrect"] == 19
+        assert summary["bestPracticeTotal"] == 20
+
+    def test_an_equal_percentage_over_more_questions_wins_the_tie(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-20", questions=20), right=18)
+        self.sit(learner, practice("practice-40", questions=40), right=36)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 90
+        assert (summary["bestPracticeCorrect"], summary["bestPracticeTotal"]) == (36, 40)
+
+    def test_the_marks_belong_to_the_sitting_the_percentage_came_from(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-4", questions=4), right=3)
+        self.sit(learner, practice("practice-10", questions=10), right=5)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 75
+        assert (summary["bestPracticeCorrect"], summary["bestPracticeTotal"]) == (3, 4)
+
+    def test_a_learner_who_has_sat_nothing_has_no_figure(self, api, student, practice):
+        summary = sign_in(api, student()).get(PROGRESS_URL).data
+
+        assert summary["bestPracticeScore"] is None
+        assert summary["bestPracticeCorrect"] is None
+        assert summary["bestPracticeTotal"] is None
+
+    def test_a_mock_test_is_not_a_practice_exam_however_well_it_went(self, api, student, mock_with_clips):
+        learner = student()
+        MockAttempt.objects.create(student=learner, exam=mock_with_clips, score=2, total=2, passed=True)
+
+        summary = sign_in(api, learner).get(PROGRESS_URL).data
+
+        assert summary["bestPracticeScore"] is None
+        assert summary["bestMockScore"] == 2
+
+    def test_the_other_practice_figures_are_untouched(self, api, student, practice):
+        learner = sign_in(api, student())
+        exam = practice("practice-1", questions=4, pass_mark=3)
+
+        self.sit(learner, exam, right=4)
+        self.sit(learner, exam, right=1)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["practiceAttempts"] == 2
+        assert summary["practiceExamsPassed"] == 1
 
 
 class TestMastery:
