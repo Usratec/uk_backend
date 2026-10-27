@@ -219,6 +219,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.notifications.tasks.notify_expired_packages",
         "schedule": crontab(hour="9", minute="30"),
     },
+    # Daily is enough: these orders are kept for days, and the query is empty when there is
+    # nothing old enough to remove.
+    "delete-unfinished-orders": {
+        "task": "apps.billing.tasks.delete_unfinished_orders",
+        "schedule": crontab(hour="1", minute="0"),
+    },
 }
 
 # --- Learning ------------------------------------------------------------------------------------
