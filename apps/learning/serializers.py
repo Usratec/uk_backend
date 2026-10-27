@@ -210,6 +210,10 @@ class MediaBlockSerializer(serializers.Serializer):
     type = serializers.ChoiceField(choices=[("video", "video"), ("document", "document")])
     title = serializers.CharField()
     url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
+    slug = serializers.SlugField(
+        required=False,
+        help_text="Only videos carry it: the slug to post to /api/learn/videos/<slug>/progress/.",
+    )
     subtitles = SubtitleListField(required=False)
     progress = VideoProgressSerializer(
         required=False, help_text="The signed-in learner's own saved position. Only videos carry it."

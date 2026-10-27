@@ -708,6 +708,7 @@ def block_for(content: LearningContent, progress: dict | None = None) -> dict:
             "url": content.media.file.url,
         }
         if content.content_type == ContentType.VIDEO:
+            block["slug"] = content.slug
             block["subtitles"] = subtitles_of(content.media)
             block["progress"] = progress if progress is not None else video_position_of(None)
         return block
