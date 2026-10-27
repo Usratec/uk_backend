@@ -203,6 +203,33 @@ or missing position answers 400, so an incomplete request cannot zero a real one
 the end is clamped. Repeated calls update one row (learner and video are unique together, written
 by `update_or_create` in a transaction), so posting every few seconds costs one UPDATE.
 
+### Learner exam attempts
+
+`GET /api/learn/exam-attempts/` returns every exam the signed-in learner has sat — practice exams
+and mock tests together — newest first, in one request instead of one request per exam.
+
+```json
+{
+  "count": 2,
+  "attempts": [
+    {
+      "id": 412,
+      "exam": { "id": 7, "slug": "mock-1", "title": "Mock test 1", "kind": "mock" },
+      "completedAt": "2026-10-26T10:00:42Z",
+      "score": 42,
+      "total": 50,
+      "percent": 84,
+      "passed": true,
+      "questionsPassed": true,
+      "hazardPassed": true,
+      "hazardScore": 44,
+      "hazardMaxScore": 75,
+      "timeTakenSeconds": 1820
+    }
+  ]
+}
+```
+
 ### Learner notifications
 
 `GET /api/notifications/` returns the signed-in learner's notifications, newest first, as

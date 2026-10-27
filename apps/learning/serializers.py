@@ -700,6 +700,35 @@ class ExamRefSerializer(serializers.Serializer):
     kind = serializers.ChoiceField(choices=ExamKind.choices)
 
 
+class ExamIdentitySerializer(ExamRefSerializer):
+    id = serializers.IntegerField(help_text="The exam this sitting was of.")
+
+
+class ExamAttemptAcrossExamsSerializer(ExamAttemptSummarySerializer):
+    exam = ExamIdentitySerializer(help_text="Which exam it was. `kind` tells a practice exam from a mock test.")
+    questionsPassed = serializers.BooleanField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Whether the question score reached the pass mark in force at the time. Null for a "
+            "sitting recorded before the marked paper was kept."
+        ),
+    )
+    hazardPassed = serializers.BooleanField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Whether the hazard score reached the pass mark in force at the time. Null when there "
+            "was nothing to judge, and for a sitting recorded before the marked paper was kept."
+        ),
+    )
+
+
+class AllExamAttemptsResponseSerializer(serializers.Serializer):
+    attempts = ExamAttemptAcrossExamsSerializer(
+        many=True, help_text="Newest first, capped at the newest 50 across all exams."
+    )
+    count = serializers.IntegerField(help_text="How many sittings are listed, after the cap.")
+
+
 class ExamAttemptResultResponseSerializer(ExamResultResponseSerializer):
     completedAt = serializers.DateTimeField()  # noqa: N815
     exam = ExamRefSerializer()
@@ -724,7 +753,20 @@ class ProgressSummaryResponseSerializer(serializers.Serializer):
     bestMockScore = serializers.IntegerField(allow_null=True)  # noqa: N815
     practiceAttempts = serializers.IntegerField(help_text="Practice exams sat.")  # noqa: N815
     practiceExamsPassed = serializers.IntegerField()  # noqa: N815
-    bestPracticeScore = serializers.IntegerField(allow_null=True)  # noqa: N815
+    bestPracticeScore = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "The best practice exam sat, as a whole percentage of that sitting's questions — not "
+            "a count of right answers, because papers ask different numbers of questions. Null "
+            "until one has been sat. Hazard marks are never part of it."
+        ),
+    )
+    bestPracticeCorrect = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="Questions right in that same sitting. Null until one has been sat."
+    )
+    bestPracticeTotal = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="Questions that same sitting asked. Null until one has been sat."
+    )
     hazardAttempts = serializers.IntegerField()  # noqa: N815
     bestHazardScore = serializers.IntegerField(allow_null=True)  # noqa: N815
 

@@ -36,6 +36,7 @@ from apps.learning.models import (
     Subchapter,
 )
 from apps.learning.serializers import (
+    AllExamAttemptsResponseSerializer,
     AnswerRequestSerializer,
     AnswerResponseSerializer,
     DoneResponseSerializer,
@@ -672,6 +673,20 @@ class ExamAttemptListView(APIView):
                 "lastAttemptId": attempts[0]["id"] if attempts else None,
             }
         )
+
+
+class AllExamAttemptsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="listAllExamAttempts",
+        summary="Your attempts across every exam",
+        responses={200: AllExamAttemptsResponseSerializer},
+    )
+    def get(self, request: Request) -> Response:
+        student = cast(User, request.user)
+        attempts = [services.attempt_across_exams(attempt) for attempt in services.all_attempts_of(student)]
+        return Response({"attempts": attempts, "count": len(attempts)})
 
 
 class ExamAttemptView(APIView):
