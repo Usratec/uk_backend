@@ -63,21 +63,24 @@ def send_email_change_confirmation(user, new_email: str, token: str) -> None:
 
 
 def queue_security_link(raw_token: str, template: str) -> None:
-    """Queue a link email. The code stays in the cache until the worker sends, then it is dropped."""
+    """Queue a link email. The code stays in the cache until the worker sends, then it is dropped.
+
+    If the cache or the queue cannot be reached, the link is sent here. The code is still in
+    memory, so a down Redis does not lose the email.
+    """
     if template not in _MESSAGES:
         raise ValueError(f"Unknown security email {template}.")
     token = SecurityToken.objects.select_related("user").get(token_hash=hash_token(raw_token))
-    remember_secret(token, raw_token)
     from apps.accounts.tasks import send_security_link
 
     try:
+        remember_secret(token, raw_token)
         send_security_link.delay(token_id=token.pk, template=template)
     except Exception:
         logger.exception("Could not queue the %s email, sending it here instead", template)
-        try:
-            deliver_security_link(token, raw_token, template)
-        finally:
-            forget_secret(token.pk)
+        deliver_security_link(token, raw_token, template)
+        mark_emailed(token.pk)
+        drop_secret(token.pk)
 
 
 def deliver_security_link(token: SecurityToken, raw_token: str, template: str) -> None:
@@ -107,6 +110,23 @@ def load_secret(token_id: int) -> str | None:
 
 def forget_secret(token_id: int) -> None:
     cache.delete(_secret_key(token_id))
+
+
+def drop_secret(token_id: int) -> None:
+    """Remove a cached code, logging a failure instead of raising.
+
+    Called after the email has already been sent. Redis being down must not turn that into an error
+    for the caller, or a registration looks failed and an email change returns a 500.
+    """
+    try:
+        forget_secret(token_id)
+    except Exception:
+        logger.exception("Could not drop the cached security code for token %s", token_id)
+
+
+def mark_emailed(*token_ids: int) -> None:
+    """Record that a link for these rows has been sent, so a redelivered job does not send another."""
+    SecurityToken.objects.filter(pk__in=token_ids, emailed_at__isnull=True).update(emailed_at=timezone.now())
 
 
 def _secret_key(token_id: int) -> str:

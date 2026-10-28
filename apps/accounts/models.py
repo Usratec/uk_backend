@@ -227,6 +227,9 @@ class SecurityToken(TimestampedModel):
     payload = models.JSONField(default=dict, blank=True)
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
+    # Set once a link for this row has been sent, or a replacement link has been sent in its place.
+    # A redelivered job sees this and stops, which a cleared cache cannot tell from "never sent".
+    emailed_at = models.DateTimeField(null=True, blank=True)
 
     objects = SecurityTokenManager()
 
