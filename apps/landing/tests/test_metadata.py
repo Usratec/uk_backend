@@ -7,8 +7,6 @@ from apps.landing.tests.conftest import make_media, uploaded_video
 
 pytestmark = pytest.mark.django_db
 
-VIDEO_BYTES = b"not really a video"
-
 
 class TestLandingUploads:
     def test_an_image_loses_its_location(self):
@@ -29,6 +27,10 @@ class TestLandingUploads:
             assert dict(image.getexif()) == {}
 
     def test_a_video_is_stored_byte_for_byte(self):
-        media = make_media(media_type=LandingMediaType.VIDEO, file=uploaded_video())
+        upload = uploaded_video()
+        sent = upload.read()
+        upload.seek(0)
 
-        assert media.file.read() == VIDEO_BYTES
+        media = make_media(media_type=LandingMediaType.VIDEO, file=upload)
+
+        assert media.file.read() == sent

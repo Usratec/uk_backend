@@ -51,5 +51,6 @@ coverage.xml
 Thumbs.db
 
 # Cursor local stuff
+.cursor/
 .agents
 skills-lock.json

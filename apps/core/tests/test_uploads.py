@@ -48,11 +48,7 @@ def test_an_svg_bigger_than_the_markup_check_is_refused():
 
 
 def test_an_svg_with_script_past_the_first_slice_is_refused():
-    svg = (
-        b"<svg xmlns='http://www.w3.org/2000/svg'>"
-        + (b" " * 65536)
-        + b"<script>alert(1)</script></svg>"
-    )
+    svg = b"<svg xmlns='http://www.w3.org/2000/svg'>" + (b" " * 65536) + b"<script>alert(1)</script></svg>"
 
     with pytest.raises(ValidationError):
         identify(Named(svg))
