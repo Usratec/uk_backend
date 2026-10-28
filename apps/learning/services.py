@@ -16,7 +16,7 @@ from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
-from apps.core import audit
+from apps.core import audit, images
 from apps.core.models import PublishStatus
 from apps.learning import html
 from apps.learning.models import (
@@ -471,13 +471,19 @@ def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> Med
     check_image_upload(upload)
     _verify_is_an_image(upload)
 
+    original_name = upload.name
+    try:
+        upload = images.without_metadata(upload)
+    except images.ImageMetadataError as error:
+        raise ImageUploadError(str(error)) from error
+
     checksum = _checksum_of(upload)
     existing = MediaAsset.objects.filter(checksum=checksum, kind=MediaKind.IMAGE).order_by("pk").first()
     if existing is not None:
         return existing
 
     asset = MediaAsset(
-        title=(title or upload.name or "Picture")[:160],
+        title=(title or original_name or "Picture")[:160],
         kind=MediaKind.IMAGE,
         file=upload,
         uploaded_by=uploaded_by,

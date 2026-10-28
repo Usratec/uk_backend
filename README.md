@@ -139,6 +139,8 @@ gunicorn worker serves the whole site and each one may be 10 MB. The file is sto
 bucket in production, where URLs are signed and short-lived), under a random name in a directory
 per account, and the file behind a replaced or removed photo is deleted so nothing is orphaned.
 
+What is stored is never the file that arrived. See **Uploaded pictures carry no metadata** below.
+
 ### Learner order history
 
 `GET /api/cabinet/orders/` returns the signed-in learner's own orders, newest first, as
@@ -261,6 +263,17 @@ sent so the customer is not emailed twice.
 
 There is no theory-test-date reminder. The profile now records `theory_test_date`, but nothing
 reads it to schedule a notification; that is a decision for whoever adds the reminder.
+
+### Uploaded pictures carry no metadata
+
+A phone photograph carries the GPS fix of wherever it was taken, so a selfie taken at home is the
+learner's address, and an image link hands that to anyone who opens it — staff included. Nothing
+uploaded is therefore stored as it arrived: `apps.core.images.without_metadata` rewrites every
+picture from its pixels and keeps only what affects how it renders (transparency, gamma, DPI, ICC
+profile, compression, resolution, loop count and frame timing — handed to the encoder by name,
+because most of Pillow's writers never read them off the image). EXIF, the GPS IFD, camera make
+and model, timestamps, XMP and PNG text chunks are all gone because nothing carries them into the
+new file.
 
 ### Running without Docker
 

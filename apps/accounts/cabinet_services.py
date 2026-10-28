@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from apps.accounts import emails, services
 from apps.accounts.models import SecurityToken, TokenPurpose, User
+from apps.core import images
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,10 @@ def set_profile_photo(user: User, upload: UploadedFile) -> User:
 
     previous = user.photo.name or ""
     user.photo = upload
-    user.save(update_fields=["photo", "updated_at"])
+    try:
+        user.save(update_fields=["photo", "updated_at"])
+    except images.ImageMetadataError as error:
+        raise ProfilePhotoError(str(error)) from error
 
     if previous:
         _delete_stored_photo(user, previous)

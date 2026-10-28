@@ -1,6 +1,7 @@
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from apps.core.fields import SanitizedImageField
 from apps.core.models import TimestampedModel
 
 
@@ -41,7 +42,7 @@ class Testimonial(SiteContent):
         validators=[MinValueValidator(1), MaxValueValidator(5)],
         help_text="Stars out of 5.",
     )
-    avatar = models.ImageField(
+    avatar = SanitizedImageField(
         upload_to="testimonials/",
         blank=True,
         help_text="Optional photo. Without one the site shows its own placeholder.",
