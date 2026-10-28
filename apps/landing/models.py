@@ -2,6 +2,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.db import models
 
+from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import TimestampedModel
 
 IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "svg"]
@@ -55,12 +56,12 @@ class LandingText(TimestampedModel):
 class LandingMedia(TimestampedModel):
     title = models.CharField(max_length=160, verbose_name="name / title")
     media_type = models.CharField(max_length=10, choices=LandingMediaType.choices, default=LandingMediaType.IMAGE)
-    file = models.FileField(
+    file = SanitizedFileField(
         upload_to=landing_media_path,
         validators=[FileExtensionValidator(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS)],
         help_text="Images: JPG, PNG, or SVG. Videos: MP4 (H.264) plays everywhere; WebM/MOV also accepted.",
     )
-    poster = models.ImageField(
+    poster = SanitizedImageField(
         upload_to=landing_poster_path,
         blank=True,
         verbose_name="video thumbnail / poster",

@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import pytest
 from django.urls import reverse
 
@@ -75,10 +77,15 @@ class TestUploadingThroughTheEditor:
         ],
     )
     def test_every_format_we_claim_to_support(self, editor_client, name, content, content_type):
+        from PIL import Image
+
         response = editor_client.post(UPLOAD_URL, {"upload": upload(name, content, content_type)})
 
         assert response.status_code == 200
-        assert MediaAsset.objects.get().file.read() == content
+        stored = MediaAsset.objects.get().file.read()
+        with Image.open(BytesIO(stored)) as image, Image.open(BytesIO(content)) as sent:
+            assert image.format == sent.format
+            assert image.size == sent.size
 
     def test_an_unsupported_format_is_refused(self, editor_client):
         response = editor_client.post(UPLOAD_URL, {"upload": upload("scan.bmp", image_bytes("BMP"), "image/bmp")})

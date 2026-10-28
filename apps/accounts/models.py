@@ -8,6 +8,7 @@ from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from apps.core.fields import SanitizedImageField
 from apps.core.models import TimestampedModel
 
 
@@ -112,7 +113,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimestampedModel):
         blank=True,
         help_text="When the learner last changed that choice. Kept as the record of consent.",
     )
-    photo = models.ImageField(
+    photo = SanitizedImageField(
         upload_to=profile_photo_path,
         blank=True,
         verbose_name="profile photo",
