@@ -8,7 +8,9 @@ The admin calls these functions. So will the student API, which is why the rules
 than in the admin screens.
 """
 
+import hashlib
 import logging
+from decimal import ROUND_DOWN, Decimal
 
 from django.db import transaction
 from django.db.models import Count, Max, Q
@@ -30,6 +32,7 @@ from apps.learning.models import (
     HazardWindow,
     LearningContent,
     LessonProgress,
+    MediaAsset,
     MediaKind,
     MockAttempt,
     PracticeExam,
@@ -39,7 +42,9 @@ from apps.learning.models import (
     SavedQuestion,
     Sign,
     Subchapter,
+    VideoProgress,
 )
+from apps.notifications import services as notifications
 from apps.staff.authz import require_permission
 
 logger = logging.getLogger(__name__)
@@ -139,6 +144,14 @@ def problems_with_ebook_section(section: EbookSection) -> list[str]:
         listed = ", ".join(unknown[:5])
         problems.append(f"The text asks for signs that are not in the library: {listed}.")
 
+    missing = missing_media_references(section.body_html)
+    if missing:
+        listed = ", ".join(str(asset_id) for asset_id in missing[:5])
+        problems.append(
+            f"The text shows pictures that are no longer in the media library (assets {listed}). "
+            "Remove them from the text, or upload them again."
+        )
+
     if not section.ebook.is_published:
         problems.append(f"Its book '{section.ebook.title}' is not published, so students cannot reach it.")
 
@@ -203,6 +216,8 @@ def warnings_about(instance) -> list[str]:
             return ["Nothing in this subchapter is published yet, so students will see it empty."]
     if isinstance(instance, PracticeExam):
         if instance.hazard_pass_mark is None and instance.hazard_clips.exists():
+            if not instance.questions.exists():
+                return ["This test is clips only and has no hazard pass mark, so every student will pass it."]
             return ["This test has clips but no hazard pass mark, so students pass it on the questions alone."]
     if isinstance(instance, Ebook):
         if instance.file_id is None and not ebook_sections(instance).exists():
@@ -226,10 +241,14 @@ def problems_with_question(question: Question) -> list[str]:
         # Without exactly one, the frontend cannot tell the student what the answer was.
         problems.append("Exactly one answer must be marked correct.")
 
-    if question.question_type == QuestionType.IMAGE and any(option.sign_id is None for option in options):
-        problems.append("Every answer needs a road sign, because this question is answered with signs.")
+    if question.question_type == QuestionType.IMAGE and any(
+        option.sign_id is None and option.image_id is None for option in options
+    ):
+        problems.append(
+            "Every answer needs a road sign or a picture, because this question is answered with pictures."
+        )
 
-    # Word answers render as buttons. A sign question is answered with pictures, so its text
+    # Word answers render as buttons. A picture question is answered with pictures, so its text
     # may be empty; a word question with nothing in the button is not usable.
     if question.question_type in {QuestionType.SINGLE, QuestionType.MULTI} and any(
         not option.text.strip() for option in options
@@ -246,9 +265,15 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
     """What would make an exam unusable."""
     problems = []
     questions = list(exam.questions.all())
+    clips = list(exam.hazard_clips.all())
 
-    if not questions:
-        problems.append("This exam has no questions yet.")
+    if exam.kind == ExamKind.MOCK:
+        if not questions:
+            problems.append("A mock test stands in for the real test, so it needs questions as well as clips.")
+        if not clips:
+            problems.append("A mock test stands in for the real test, so it needs hazard clips as well as questions.")
+    elif not questions and not clips:
+        problems.append("This exam has no questions or hazard clips yet. Add at least one of either.")
 
     drafts = [question for question in questions if not question.is_published]
     if drafts:
@@ -256,10 +281,11 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
         listed = ", ".join(question.key for question in drafts[:5])
         problems.append(f"Some questions are not published yet: {listed}.")
 
-    if exam.pass_mark > len(questions):
+    if questions and exam.pass_mark is None:
+        problems.append("This paper asks questions, so it needs a pass mark.")
+    elif exam.pass_mark and exam.pass_mark > len(questions):
         problems.append(f"The pass mark is {exam.pass_mark} but there are only {len(questions)} questions.")
 
-    clips = list(exam.hazard_clips.all())
     hazard_marks = sum(clip.top_score for clip in clips)
     if exam.hazard_pass_mark and exam.hazard_pass_mark > hazard_marks:
         # Otherwise the clips could not be passed however early every hazard was spotted.
@@ -303,6 +329,14 @@ def _problems_with_content(content: LearningContent) -> list[str]:
             )
     elif html.is_empty(content.body_html):
         problems.append("There is no content yet.")
+
+    missing = missing_media_references(content.body_html)
+    if missing:
+        listed = ", ".join(str(asset_id) for asset_id in missing[:5])
+        problems.append(
+            f"The text shows pictures that are no longer in the media library (assets {listed}). "
+            "Remove them from the text, or upload them again."
+        )
 
     if not content.subchapter.is_published:
         problems.append(f"Its subchapter '{content.subchapter.title}' is not published, so students cannot reach it.")
@@ -375,6 +409,165 @@ def reorder(*, actor, model, ordered_ids: list[int]) -> None:
 
     if changed:
         model.objects.bulk_update(changed, ["order"])
+
+
+IMAGE_UPLOAD_TYPES = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+class ImageUploadError(Exception):
+    """The file staff chose cannot be used as a picture — beside a question, or inside content."""
+
+
+def check_image_upload(upload) -> None:
+    extension = (upload.name or "").rsplit(".", 1)[-1].lower() if "." in (upload.name or "") else ""
+    if extension not in IMAGE_UPLOAD_TYPES:
+        allowed = ", ".join(sorted({name.upper() for name in IMAGE_UPLOAD_TYPES}))
+        raise ImageUploadError(f"Only {allowed} files can be used as a picture.")
+
+    declared = (getattr(upload, "content_type", "") or "").lower()
+    if declared and declared not in set(IMAGE_UPLOAD_TYPES.values()):
+        raise ImageUploadError(f"'{declared}' is not a picture this site can show.")
+
+    if (upload.size or 0) > MAX_IMAGE_UPLOAD_BYTES:
+        raise ImageUploadError(f"The picture must be under {MAX_IMAGE_UPLOAD_BYTES // (1024 * 1024)} MB.")
+
+
+IMAGE_UPLOAD_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+
+
+def _verify_is_an_image(upload) -> None:
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(upload) as image:
+            image_format = image.format
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError) as error:
+        raise ImageUploadError("That file is not a picture this site can show.") from error
+    finally:
+        upload.seek(0)
+
+    if image_format not in IMAGE_UPLOAD_FORMATS:
+        raise ImageUploadError(f"{image_format or 'That file'} is not a picture this site can show.")
+
+
+def _checksum_of(upload) -> str:
+    digest = hashlib.sha256()
+    for chunk in upload.chunks():
+        digest.update(chunk)
+    upload.seek(0)
+    return digest.hexdigest()
+
+
+def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> MediaAsset:
+    check_image_upload(upload)
+    _verify_is_an_image(upload)
+
+    checksum = _checksum_of(upload)
+    existing = MediaAsset.objects.filter(checksum=checksum, kind=MediaKind.IMAGE).order_by("pk").first()
+    if existing is not None:
+        return existing
+
+    asset = MediaAsset(
+        title=(title or upload.name or "Picture")[:160],
+        kind=MediaKind.IMAGE,
+        file=upload,
+        uploaded_by=uploaded_by,
+    )
+    asset.checksum = checksum
+    asset.save()
+    return asset
+
+
+def image_url_of(asset: MediaAsset | None) -> str | None:
+    return asset.file.url if asset and asset.file else None
+
+
+MAX_SUBTITLE_UPLOAD_BYTES = 2 * 1024 * 1024
+
+WEBVTT_SIGNATURE = "WEBVTT"
+
+
+class SubtitleUploadError(Exception):
+    """The file staff chose cannot be used as a subtitle track."""
+
+
+def check_subtitle_upload(upload) -> None:
+    name = upload.name or ""
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if extension != "vtt":
+        raise SubtitleUploadError("Subtitles must be a WebVTT (.vtt) file.")
+
+    if (upload.size or 0) > MAX_SUBTITLE_UPLOAD_BYTES:
+        raise SubtitleUploadError(f"The subtitle file must be under {MAX_SUBTITLE_UPLOAD_BYTES // (1024 * 1024)} MB.")
+
+    _verify_is_webvtt(upload)
+
+
+def _verify_is_webvtt(upload) -> None:
+    try:
+        head = upload.read(64)
+    finally:
+        upload.seek(0)
+
+    if isinstance(head, bytes):
+        head = head.decode("utf-8-sig", errors="replace")
+    head = head.lstrip("﻿")
+
+    signature, _, rest = head.partition("\n")
+    signature = signature.rstrip("\r")
+    if not signature.startswith(WEBVTT_SIGNATURE) or signature[len(WEBVTT_SIGNATURE) :][:1] not in ("", " ", "\t"):
+        raise SubtitleUploadError(
+            "That file is not WebVTT subtitles: a .vtt file starts with the word WEBVTT on its first line."
+        )
+
+
+def subtitles_of(asset: MediaAsset | None) -> list[dict]:
+    if asset is None:
+        return []
+    return [
+        {"language": track.language, "label": track.get_language_display(), "url": track.file.url}
+        for track in asset.subtitles.all()
+        if track.file
+    ]
+
+
+def resolved_media_in(body_html: str | None) -> str:
+    asset_ids = html.media_ids_in(body_html)
+    if not asset_ids:
+        return body_html or ""
+
+    urls = {
+        asset.pk: url
+        for asset in MediaAsset.objects.filter(pk__in=asset_ids, kind=MediaKind.IMAGE)
+        if (url := image_url_of(asset))
+    }
+    return html.with_media_urls(body_html, urls)
+
+
+def missing_media_references(body_html: str | None) -> list[int]:
+    asset_ids = html.media_ids_in(body_html)
+    if not asset_ids:
+        return []
+
+    found = set(MediaAsset.objects.filter(pk__in=asset_ids, kind=MediaKind.IMAGE).values_list("pk", flat=True))
+    return [asset_id for asset_id in asset_ids if asset_id not in found]
+
+
+def question_media_of(question: Question) -> dict | None:
+    if question.media_sign:
+        return {"kind": "sign", "code": question.media_sign.code}
+    if question.media_image:
+        return {"kind": "image", "url": image_url_of(question.media_image)}
+    return None
 
 
 # --- What the API will serve ---------------------------------------------------------------------
@@ -460,6 +653,7 @@ def answer_sheet_for(question: Question) -> dict:
     return {
         "prompt": question.prompt,
         "sign": question.media_sign.code if question.media_sign else "",
+        "image": image_url_of(question.media_image),
         "explanation": question.explanation,
         "learn_more": question.learn_more.title if question.learn_more else "",
         "options": [
@@ -467,6 +661,7 @@ def answer_sheet_for(question: Question) -> dict:
                 "id": option.option_id,
                 "text": option.text,
                 "sign": option.sign.code if option.sign else "",
+                "image": image_url_of(option.image),
                 "is_correct": option.is_correct,
             }
             for option in question.options.all()
@@ -486,7 +681,7 @@ MEDIA_CONTENT_TYPES = {
 }
 
 
-def block_for(content: LearningContent) -> dict:
+def block_for(content: LearningContent, progress: dict | None = None) -> dict:
     """One content item as the frontend reads it.
 
     The frontend takes content as a list of blocks: theory is one HTML block, a question is a
@@ -507,13 +702,18 @@ def block_for(content: LearningContent) -> dict:
         }
 
     if content.content_type in MEDIA_CONTENT_TYPES and content.media:
-        return {
+        block: dict = {
             "type": content.content_type,
             "title": content.title,
             "url": content.media.file.url,
         }
+        if content.content_type == ContentType.VIDEO:
+            block["slug"] = content.slug
+            block["subtitles"] = subtitles_of(content.media)
+            block["progress"] = progress if progress is not None else video_position_of(None)
+        return block
 
-    return {"type": "html", "html": content.body_html, "title": content.title}
+    return {"type": "html", "html": resolved_media_in(content.body_html), "title": content.title}
 
 
 def student_view_of_question(question: Question) -> dict:
@@ -528,12 +728,13 @@ def student_view_of_question(question: Question) -> dict:
         "topic": question.chapter.slug,
         "type": question.question_type,
         "prompt": question.prompt,
-        "media": {"kind": "sign", "code": question.media_sign.code} if question.media_sign else None,
+        "media": question_media_of(question),
         "options": [
             {
                 "id": option.option_id,
                 **({"text": option.text} if option.text else {}),
                 **({"sign": option.sign.code} if option.sign else {}),
+                **({"image": image_url_of(option.image)} if option.image_id else {}),
             }
             for option in question.options.all()
         ],
@@ -548,14 +749,18 @@ def questions_in_exam(exam: PracticeExam, at=None):
     published while any of its questions is still a draft — see :func:`problems_with_exam`.
     """
     return live(
-        Question.objects.filter(exam_places__exam=exam).select_related("chapter").prefetch_related("options"),
+        Question.objects.filter(exam_places__exam=exam)
+        .select_related("chapter", "media_sign", "media_image")
+        .prefetch_related("options__sign", "options__image"),
         at=at,
     ).order_by("exam_places__order")
 
 
 def clips_in_exam(exam: PracticeExam, at=None):
     return live(
-        HazardClip.objects.filter(exam_places__exam=exam).select_related("media").prefetch_related("windows"),
+        HazardClip.objects.filter(exam_places__exam=exam)
+        .select_related("media")
+        .prefetch_related("windows", "media__subtitles"),
         at=at,
     ).order_by("exam_places__order")
 
@@ -658,6 +863,30 @@ def history_for(student, exams) -> dict[int, dict]:
     return history
 
 
+ALL_ATTEMPTS_LIMIT = 50
+
+
+def all_attempts_of(student, limit: int = ALL_ATTEMPTS_LIMIT) -> list[MockAttempt]:
+    return list(
+        MockAttempt.objects.filter(student=student).select_related("exam").order_by("-created_at", "-id")[:limit]
+    )
+
+
+def attempt_across_exams(attempt: MockAttempt) -> dict:
+    saved = attempt.result or {}
+    return {
+        **attempt_in_the_history(attempt),
+        "exam": {
+            "id": attempt.exam_id,
+            "slug": attempt.exam.slug,
+            "title": attempt.exam.title,
+            "kind": attempt.exam.kind,
+        },
+        "questionsPassed": saved.get("questionsPassed", attempt.passed),
+        "hazardPassed": saved.get("hazardPassed"),
+    }
+
+
 def saved_result_of(attempt: MockAttempt) -> dict:
     saved = dict(attempt.result or {})
     if not saved:
@@ -725,7 +954,7 @@ def mark_exam(exam: PracticeExam, answers: dict[str, list[str]], clicks: dict[st
 
     clips, hazard_score, hazard_max = _mark_clips(exam, clicks or {})
 
-    questions_passed = score >= exam.pass_mark
+    questions_passed = score >= (exam.pass_mark or 0)
     hazard_passed = hazard_result_of(exam, hazard_score, hazard_max)
 
     return {
@@ -788,6 +1017,7 @@ def mark_answer(question: Question, selected: list[str]) -> dict:
 def record_answer(student, question: Question, was_correct: bool) -> None:
     """Remember one answer."""
     QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
+    notifications.queue_streak_check(student)
 
 
 TIME_TAKEN_GRACE_SECONDS = 30
@@ -855,17 +1085,129 @@ def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds
         )
         for clip in result["clips"]
     )
+    notifications.queue_streak_check(student)
     return attempt
 
 
 def mark_lesson_done(student, subchapter: Subchapter) -> None:
     """Record that a student finished a subchapter. Finishing it twice changes nothing."""
     LessonProgress.objects.get_or_create(student=student, subchapter=subchapter)
+    notifications.queue_streak_check(student)
 
 
 def mark_section_read(student, section: EbookSection) -> None:
     """Record that a student read a section of a book. Reading it twice changes nothing."""
     EbookSectionProgress.objects.get_or_create(student=student, section=section)
+    notifications.queue_streak_check(student)
+
+
+FINISHED_WITHIN_SECONDS = Decimal("1.5")
+MAX_VIDEO_SECONDS = Decimal("999999.99")
+SECONDS = Decimal("0.01")
+
+
+def _seconds(value) -> Decimal | None:
+    if value is None:
+        return None
+    seconds = min(max(Decimal(str(value)), Decimal("0.00")), MAX_VIDEO_SECONDS)
+    return seconds.quantize(SECONDS, rounding=ROUND_DOWN)
+
+
+def live_video(slug: str, at=None):
+    at = at or timezone.now()
+    contents = live(LearningContent.objects.select_related("subchapter__chapter", "media"), at).filter(
+        subchapter__in=live(Subchapter.objects.all(), at),
+        subchapter__chapter__in=live(Chapter.objects.all(), at),
+    )
+    return contents.filter(slug=slug, content_type=ContentType.VIDEO, media__isnull=False).first()
+
+
+def save_video_position(*, student, content: LearningContent, position_seconds, duration_seconds=None):
+    position = _seconds(position_seconds) or Decimal("0.00")
+
+    with transaction.atomic():
+        known = (
+            VideoProgress.objects.filter(student=student, content=content)
+            .values_list("duration_seconds", flat=True)
+            .first()
+        )
+        duration = _seconds(duration_seconds) or known
+        if duration:
+            position = min(position, duration)
+
+        progress, _ = VideoProgress.objects.update_or_create(
+            student=student,
+            content=content,
+            defaults={"position_seconds": position, "duration_seconds": duration},
+        )
+    return progress
+
+
+def timecode(seconds) -> str:
+    total = int(Decimal(str(seconds or 0)))
+    hours, remainder = divmod(total, 3600)
+    minutes, rest = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{rest:02d}"
+    return f"{minutes:02d}:{rest:02d}"
+
+
+def video_position_of(progress) -> dict:
+    if progress is None:
+        return {
+            "positionSeconds": 0.0,
+            "durationSeconds": None,
+            "resumeAt": timecode(0),
+            "hasProgress": False,
+            "finished": False,
+            "updatedAt": None,
+        }
+
+    duration = progress.duration_seconds
+    finished = (
+        duration is not None
+        and progress.position_seconds > 0
+        and progress.position_seconds >= duration - FINISHED_WITHIN_SECONDS
+    )
+    return {
+        "positionSeconds": float(progress.position_seconds),
+        "durationSeconds": float(duration) if duration is not None else None,
+        "resumeAt": timecode(progress.position_seconds),
+        "hasProgress": True,
+        "finished": bool(finished),
+        "updatedAt": progress.updated_at,
+    }
+
+
+def video_positions_for(student, contents) -> dict[int, dict]:
+    ids = [content.pk for content in contents if content.content_type == ContentType.VIDEO]
+    if not ids:
+        return {}
+
+    saved = VideoProgress.objects.filter(student=student, content_id__in=ids)
+    return {progress.content_id: video_position_of(progress) for progress in saved}
+
+
+def resumable_videos_by_lesson(student, subchapters) -> dict[int, dict]:
+    if not subchapters:
+        return {}
+
+    saved = (
+        VideoProgress.objects.filter(
+            student=student,
+            content__in=live(LearningContent.objects.filter(content_type=ContentType.VIDEO)),
+            content__subchapter__in=subchapters,
+        )
+        .select_related("content")
+        .order_by("-updated_at", "-pk")
+    )
+
+    resumable: dict[int, dict] = {}
+    for progress in saved:
+        resumable.setdefault(
+            progress.content.subchapter_id, {"slug": progress.content.slug, **video_position_of(progress)}
+        )
+    return resumable
 
 
 def sections_read_by(student) -> set[int]:
@@ -880,6 +1222,10 @@ def completed_lesson_ids(student) -> set[int]:
 
 def saved_question_keys(student) -> list[str]:
     return list(SavedQuestion.objects.filter(student=student).values_list("question__key", flat=True))
+
+
+def attempts_on_live_questions(student, at=None):
+    return QuestionAttempt.objects.filter(student=student, question__in=live(Question.objects.all(), at))
 
 
 def mastery_by_chapter(student, chapters) -> dict[int, dict]:
@@ -903,7 +1249,8 @@ def mastery_by_chapter(student, chapters) -> dict[int, dict]:
     # Distinct because a question answered correctly five times is one question learnt, which is
     # the whole point of counting questions rather than attempts.
     learnt = dict(
-        QuestionAttempt.objects.filter(student=student, was_correct=True, question__chapter_id__in=chapter_ids)
+        attempts_on_live_questions(student)
+        .filter(was_correct=True, question__chapter_id__in=chapter_ids)
         .values_list("question__chapter_id")
         .annotate(learnt=Count("question_id", distinct=True))
     )
@@ -929,7 +1276,8 @@ def mastery_of(student, chapter: Chapter) -> dict:
         return {"mastery": 0, "questions": 0}
 
     learnt = (
-        QuestionAttempt.objects.filter(student=student, was_correct=True, question__chapter=chapter)
+        attempts_on_live_questions(student)
+        .filter(was_correct=True, question__chapter=chapter)
         .values("question_id")
         .distinct()
         .count()
@@ -995,20 +1343,31 @@ def question_ids_answered_wrong(student):
     question put right and then got wrong again is a mistake once more, and one got wrong and
     then put right is no longer a mistake to go back over.
     """
-    latest = {}
-    for question_id, was_correct in (
+    latest = (
         QuestionAttempt.objects.filter(student=student)
-        .order_by("created_at", "id")
+        .order_by("question_id", "-created_at", "-id")
+        .distinct("question_id")
         .values_list("question_id", "was_correct")
-    ):
-        latest[question_id] = was_correct
-    return {question_id for question_id, was_correct in latest.items() if not was_correct}
+    )
+    return {question_id for question_id, was_correct in latest if not was_correct}
+
+
+def best_practice_result(attempts) -> dict:
+    best = max(
+        ((percent_of(score, total), total, score) for score, total in attempts.values_list("score", "total")),
+        default=None,
+    )
+    if best is None:
+        return {"bestPracticeScore": None, "bestPracticeCorrect": None, "bestPracticeTotal": None}
+
+    percent, total, score = best
+    return {"bestPracticeScore": percent, "bestPracticeCorrect": score, "bestPracticeTotal": total}
 
 
 def progress_summary(student) -> dict:
     """The headline numbers for the Today screen."""
     days = study_days(student)
-    attempts = QuestionAttempt.objects.filter(student=student)
+    attempts = attempts_on_live_questions(student)
     answered = attempts.values("question_id").distinct().count()
     learnt = attempts.filter(was_correct=True).values("question_id").distinct().count()
     bank = live(Question.objects.all()).count()
@@ -1016,7 +1375,6 @@ def progress_summary(student) -> dict:
     mocks = sittings.filter(exam__kind=ExamKind.MOCK)
     practices = sittings.filter(exam__kind=ExamKind.PRACTICE)
     best_mock = mocks.order_by("-score").first()
-    best_practice = practices.order_by("-score").first()
     clips = HazardAttempt.objects.filter(student=student)
     best_clip = clips.order_by("-score").first()
 
@@ -1035,7 +1393,7 @@ def progress_summary(student) -> dict:
         "bestMockScore": best_mock.score if best_mock else None,
         "practiceAttempts": practices.count(),
         "practiceExamsPassed": practices.filter(passed=True).count(),
-        "bestPracticeScore": best_practice.score if best_practice else None,
+        **best_practice_result(practices),
         "hazardAttempts": clips.count(),
         "bestHazardScore": best_clip.score if best_clip else None,
     }
@@ -1075,6 +1433,7 @@ def student_view_of_clip(clip: HazardClip, stats: dict | None = None) -> dict:
         "title": clip.title,
         "description": clip.description,
         "url": clip.media.file.url,
+        "subtitles": subtitles_of(clip.media),
         "thumbnailUrl": clip.thumbnail_url,
         "hazards": clip.windows.count(),
         "topScore": clip.top_score,
@@ -1159,12 +1518,14 @@ def live_ebooks(at=None):
 
 def ebook_sections(ebook: Ebook, at=None):
     """The book's live sections, in the order staff put them in."""
-    return live(ebook.sections.select_related("media"), at=at).order_by("order", "title")
+    return live(ebook.sections.select_related("media").prefetch_related("media__subtitles"), at=at).order_by(
+        "order", "title"
+    )
 
 
 def ebook_section(slug: str, at=None):
     return (
-        live(EbookSection.objects.select_related("ebook", "media"), at=at)
+        live(EbookSection.objects.select_related("ebook", "media").prefetch_related("media__subtitles"), at=at)
         .filter(slug=slug, ebook__in=live_ebooks(at))
         .first()
     )
@@ -1175,7 +1536,13 @@ def blocks_of_section(section: EbookSection) -> list[dict]:
 
     for piece in html.split_on_signs(section.body_html):
         if "html" in piece:
-            blocks.append({"type": "html", "title": section.title if not blocks else "", "html": piece["html"]})
+            blocks.append(
+                {
+                    "type": "html",
+                    "title": "",
+                    "html": resolved_media_in(piece["html"]),
+                }
+            )
             continue
 
         drawn = signs_by_code(piece["codes"])
@@ -1184,13 +1551,14 @@ def blocks_of_section(section: EbookSection) -> list[dict]:
 
     document = section.media
     if document is not None and MediaKind(document.kind) in EBOOK_MEDIA_KINDS:
-        blocks.append(
-            {
-                "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
-                "title": section.title,
-                "url": document.file.url,
-            }
-        )
+        block: dict = {
+            "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
+            "title": "",
+            "url": document.file.url,
+        }
+        if MediaKind(document.kind) == MediaKind.VIDEO:
+            block["subtitles"] = subtitles_of(document)
+        blocks.append(block)
 
     return blocks
 

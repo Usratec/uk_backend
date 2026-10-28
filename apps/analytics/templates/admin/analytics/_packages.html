@@ -1,0 +1,48 @@
+{% load analytics %}
+<section id="packages" class="bi-section">
+    <h2>Packages &amp; access</h2>
+
+    <div class="bi-grid">
+        {% include "admin/analytics/_chart.html" with title="Revenue and purchases by package" id="package_revenue" only %}
+        {% include "admin/analytics/_chart.html" with title="Access periods ending" id="access_ending" only %}
+    </div>
+    <p class="bi-caption">{{ ending_soon }} students' access ends in the next 7 days.</p>
+
+    <div class="bi-table">
+        <p class="bi-table-title">Package performance in range</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Package</th>
+                    <th class="bi-right">Price</th>
+                    <th class="bi-right">Purchases</th>
+                    <th class="bi-right">Share</th>
+                    <th class="bi-right">Gross</th>
+                    <th class="bi-right">Refunds</th>
+                    <th class="bi-right">Net</th>
+                    <th class="bi-right">Revenue share</th>
+                    <th class="bi-right">Students with access now</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in package_rows %}
+                    <tr>
+                        <td>{{ row.package.name }}</td>
+                        <td class="bi-right">{{ row.price }}</td>
+                        <td class="bi-right">{{ row.purchases }}</td>
+                        <td class="bi-right">{{ row.share|percent }}</td>
+                        <td class="bi-right">{{ row.gross }}</td>
+                        <td class="bi-right">{{ row.refunds }}</td>
+                        <td class="bi-right">{{ row.net }}</td>
+                        <td class="bi-right">{{ row.revenue_share|percent }}</td>
+                        <td class="bi-right">{{ row.access_now }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="9" class="bi-empty">No data available yet</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% include "admin/analytics/_boxes.html" with boxes=package_boxes only %}
+</section>

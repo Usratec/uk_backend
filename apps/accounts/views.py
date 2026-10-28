@@ -118,6 +118,9 @@ class LoginView(APIView):
             return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
         if services.uses_google_sign_in_only(user):
+            # The reply has to name Google, or the customer is stuck. It also says the address is
+            # registered, so it counts as a failed sign-in and shares the lockout with a wrong password.
+            services.record_failed_login(email, ip)
             return Response(
                 {"detail": "This account uses Google Sign-In. Please sign in with Google."},
                 status=status.HTTP_400_BAD_REQUEST,

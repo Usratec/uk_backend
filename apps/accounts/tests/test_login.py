@@ -54,6 +54,30 @@ class TestSuccessfulLogin:
         assert user.last_login is not None
 
 
+class TestFindingTheAccount:
+    def test_a_mixed_case_address_finds_the_stored_lowercase_account(self, db):
+        from apps.accounts import services
+        from apps.accounts.models import User
+
+        User.objects.create_user(email="user@example.com", password=PASSWORD, first_name="Ursula")
+
+        found = services.find_by_email("User@Example.com")
+
+        assert found is not None
+        assert found.email == "user@example.com"
+        assert User.objects.filter(email="user@example.com").count() == 1
+
+    def test_an_uppercase_address_finds_the_account(self, user):
+        from apps.accounts import services
+
+        assert services.find_by_email(user.email.upper()) == user
+
+    def test_an_unknown_address_returns_none(self, db):
+        from apps.accounts import services
+
+        assert services.find_by_email("Nobody@Example.com") is None
+
+
 class TestRejectedLogin:
     def test_unknown_email_returns_401(self, api, db):
         response = login(api, "nobody@example.com", PASSWORD)
@@ -72,6 +96,28 @@ class TestRejectedLogin:
 
         assert response.status_code == 400
         assert response.data["detail"] == "This account uses Google Sign-In. Please sign in with Google."
+
+    def test_repeated_google_probes_are_locked_out(self, api, google_user):
+        """The Google reply says the address is registered, so it must not be free of the lockout."""
+        for _ in range(MAX_FAILED_LOGINS):
+            assert login(api, google_user.email, PASSWORD).status_code == 400
+
+        response = login(api, google_user.email, PASSWORD)
+
+        assert response.status_code == 429
+        assert response.data["detail"] == "Too many attempts. Please try again in 15 minutes."
+
+    def test_scanning_addresses_for_the_google_reply_is_throttled(self, api, django_user_model):
+        from apps.accounts.models import AuthMethod
+
+        for attempt in range(10):
+            email = f"google{attempt}@example.com"
+            django_user_model.objects.create_user(
+                email=email, first_name="G", auth_method=AuthMethod.GOOGLE, google_id=f"gid-{attempt}"
+            )
+            assert login(api, email, PASSWORD).status_code == 400
+
+        assert login(api, "one-too-many@example.com", PASSWORD).status_code == 429
 
     def test_disabled_account_with_the_right_password_returns_403(self, api, user):
         user.is_active = False

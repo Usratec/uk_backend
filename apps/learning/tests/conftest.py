@@ -238,7 +238,7 @@ def live_exam(chapter, make_question, publisher):
     chapter.save(update_fields=["status"])
 
     exam = PracticeExam.objects.create(
-        slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=2, time_limit_seconds=3420
+        slug="mock-1", title="Practice exam 1", kind=ExamKind.PRACTICE, pass_mark=2, time_limit_seconds=3420
     )
     for order, key in enumerate(("first", "second"), start=1):
         question = make_question(key=key)
@@ -259,6 +259,10 @@ def mock_with_clips(live_exam, make_clip, publisher):
         clip = make_clip(slug=slug, title=slug.replace("-", " ").title())
         services.publish(actor=publisher, instance=clip)
         live_exam.exam_clips.create(clip=clip, order=order)
+
+    live_exam.kind = ExamKind.MOCK
+    live_exam.title = "Mock test 1"
+    live_exam.save(update_fields=["kind", "title"])
     return live_exam
 
 

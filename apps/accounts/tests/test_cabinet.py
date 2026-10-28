@@ -121,6 +121,11 @@ class TestProfile:
             "first_name",
             "last_name",
             "phone",
+            "postcode",
+            "theory_test_date",
+            "confidence_level",
+            "marketing_email_opt_in",
+            "photo_url",
             "has_google_auth",
             "email_verified",
         }

@@ -54,8 +54,11 @@ container start, so scaling out can't run them concurrently.
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
+| Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
-| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/` |
+| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
+| Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
+| Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/` (and the rest of `/api/learn/`) |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
@@ -93,10 +96,171 @@ Access is two dates. `package_expires_at` ends learning access; `account_expires
 in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
 for is lost.
 
-Scheduled jobs run from the `beat` service: expiry reminders at 09:00, closing expired accounts at
-00:30 (never staff accounts), fulfilling lost orders every ten minutes, and telling the CRM about
-access it was never told about, hourly. There is deliberately no job to revoke learning access,
-because access is derived from the dates every time it is checked.
+Scheduled jobs run from the `beat` service: expiry reminders at 09:00, telling learners their
+access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
+lost orders every ten minutes, and telling the CRM about access it was never told about, hourly.
+There is deliberately no job to revoke learning access, because access is derived from the dates
+every time it is checked.
+
+### Learner profile
+
+`GET /api/cabinet/profile/` returns the signed-in learner's own details and `PATCH` updates them.
+Both act on `request.user`: there is no account id in the URL or in the body, and `id`, `pk` and
+`email` sent in a PATCH are ignored (the address has its own confirmation flow). A PATCH is
+partial, so a request that mentions one field leaves every other one — including the marketing
+preference and the photo — exactly as it was, and the response is the whole profile as it now
+stands.
+
+| Field | Accepts |
+|---|---|
+| `first_name`, `last_name`, `phone` | strings, as before |
+| `postcode` | a UK postcode in any spacing or case; stored as `SW1A 1AA`. `""` clears it |
+| `theory_test_date` | `YYYY-MM-DD`, or `null` when no test is booked |
+| `confidence_level` | `not_confident`, `somewhat_confident`, `confident`, `very_confident`, or `""` for no answer |
+| `marketing_email_opt_in` | `true` or `false` |
+| `photo_url` | read-only; absolute URL of the photo, or `null` |
+| `email`, `email_verified`, `has_google_auth` | read-only |
+
+A rejected value answers 400 with DRF's field errors, for example
+`{"postcode": ["Enter a valid UK postcode, for example SW1A 1AA."]}`.
+
+`marketing_email_opt_in` defaults to false and is only ever true because the learner set it
+themselves — registering, buying and editing the profile are none of them consent. Changing it
+stamps `marketing_email_opt_in_at`, which is the record of when they chose and is read-only in the
+admin so it cannot be backdated. Nothing sends marketing email yet; this only stores the choice.
+
+`POST /api/cabinet/profile/photo/` takes a multipart body with one `photo` field and replaces any
+photo already there; `DELETE` removes it. Both answer with the full profile. JPG, JPEG, PNG and
+WebP up to 10 MB are accepted, and every upload is opened with Pillow — the filename and the
+browser's content type are supplied by the client, so a renamed script or a truncated file is
+refused with `{"detail": "That file is not a picture this site can show."}` and the photo already
+on the account is left alone. Uploads are throttled at 20 an hour per account, because one
+gunicorn worker serves the whole site and each one may be 10 MB. The file is stored through the configured storage backend (the
+bucket in production, where URLs are signed and short-lived), under a random name in a directory
+per account, and the file behind a replaced or removed photo is deleted so nothing is orphaned.
+
+### Learner order history
+
+`GET /api/cabinet/orders/` returns the signed-in learner's own orders, newest first, as
+`{"results": [...]}`. It needs a token and nothing else: access that has expired, been refunded or
+never existed still reads its own history, because a receipt outlives what it bought.
+
+```json
+{
+  "results": [
+    {
+      "id": "6f0b1b6e-6a1a-4a7e-9c5e-6f4a2b0d9c11",
+      "created_at": "2026-10-26T10:00:00Z",
+      "status": "paid",
+      "package_name": "30 day access",
+      "package_duration_days": 30,
+      "original_price": "29.99",
+      "discount_amount": "5.00",
+      "final_price": "24.99",
+      "currency": "GBP",
+      "paid_at": "2026-10-26T10:00:42Z",
+      "refunded_at": null
+    }
+  ]
+}
+```
+
+`status` is the order's own status — `pending`, `paid`, `failed` or `refunded`. The amounts are the
+ones copied onto the order at checkout, so a later price change or a deleted promo code cannot
+rewrite what somebody was charged; `discount_amount` is what the promo code took off at the time.
+Nothing about the payment itself is exposed: the Stripe session, payment intent and transaction ids
+stay server-side, as does the email captured at checkout.
+
+The list is capped at the newest 50, like notifications, because nothing in this API is paginated.
+One query serves it: the package is joined in, so a long history costs no more than a short one.
+
+
+### Learner video position
+
+`POST /api/learn/videos/<slug>/progress/` saves where the signed-in learner is up to in a lesson
+video, so playback can be resumed on any device. The slug is the **video block's** slug, not the
+lesson's: one lesson can hold several videos, and each keeps its own position. Every `video` block
+in `GET /api/learn/lessons/<slug>/` carries that `slug` with the learner's `progress` beside it, and
+so does `videoProgress` on a lesson card in `GET /api/learn/topics/`.
+
+```json
+{ "positionSeconds": 205, "durationSeconds": 620 }
+```
+
+```json
+{
+  "slug": "braking-distances",
+  "positionSeconds": 205.0,
+  "durationSeconds": 620.0,
+  "resumeAt": "03:25",
+  "hasProgress": true,
+  "finished": false,
+  "updatedAt": "2026-10-26T10:00:42Z"
+}
+```
+
+`positionSeconds` is required, `durationSeconds` optional — omitting it keeps the duration saved
+earlier, and `position_seconds`/`duration_seconds` are accepted as aliases. A negative, non-numeric
+or missing position answers 400, so an incomplete request cannot zero a real one; a position past
+the end is clamped. Repeated calls update one row (learner and video are unique together, written
+by `update_or_create` in a transaction), so posting every few seconds costs one UPDATE.
+
+### Learner exam attempts
+
+`GET /api/learn/exam-attempts/` returns every exam the signed-in learner has sat — practice exams
+and mock tests together — newest first, in one request instead of one request per exam.
+
+```json
+{
+  "count": 2,
+  "attempts": [
+    {
+      "id": 412,
+      "exam": { "id": 7, "slug": "mock-1", "title": "Mock test 1", "kind": "mock" },
+      "completedAt": "2026-10-26T10:00:42Z",
+      "score": 42,
+      "total": 50,
+      "percent": 84,
+      "passed": true,
+      "questionsPassed": true,
+      "hazardPassed": true,
+      "hazardScore": 44,
+      "hazardMaxScore": 75,
+      "timeTakenSeconds": 1820
+    }
+  ]
+}
+```
+
+### Learner notifications
+
+`GET /api/notifications/` returns the signed-in learner's notifications, newest first, as
+`{"unread_count": n, "results": [...]}`. Each row carries `id`, `kind`, `title`, `text`, `link`
+(a frontend route, or `null`), `created_at` and `is_read`. The count covers the whole account; the
+list is capped at the newest 50, because nothing in this API is paginated.
+`POST /api/notifications/<id>/read/` marks one as read and answers 404 for an id that does not
+exist *or* belongs to somebody else; `POST /api/notifications/read-all/` marks the rest in one
+UPDATE and answers `{"updated": n}`. Both are safe to repeat. All three need a token, and every
+query is scoped to `request.user` — no learner id is ever read from a request.
+
+What creates them:
+
+| `kind` | Written by |
+|---|---|
+| `package_activated` | fulfilment, after a paid order is turned into access |
+| `package_ending_soon` | the 09:00 expiry-reminder job, alongside the email |
+| `package_expired` | the 09:30 job, for access that ended in the last two days and was not replaced or refunded |
+| `streak_milestone` | a worker, after a day of study is recorded — at 3, 7, 14, 30, 60 and 100 days |
+
+Each one carries an `event_key` that names the event rather than the message, unique per learner
+in the database. That is what makes every trigger safe to reprocess: a redelivered Stripe webhook,
+a reminder job rerun, or a retried Celery task finds the row already there and writes nothing.
+Notification writing never fails the thing that triggered it — a purchase that could not write to
+the bell has still granted access, and a reminder whose notification failed is still marked as
+sent so the customer is not emailed twice.
+
+There is no theory-test-date reminder. The profile now records `theory_test_date`, but nothing
+reads it to schedule a notification; that is a decision for whoever adds the reminder.
 
 ### Running without Docker
 
@@ -117,6 +281,30 @@ Site content — the FAQs and the testimonials — is managed under **Site conte
 model permissions rather than a role, so a superuser can edit it without granting anything first.
 Each list edits the sort order and the published flag in place, and carries publish and unpublish
 actions for a selection.
+
+The landing page is managed under **Landing page**, on the same model permissions. Its wording is
+a flat key → value store, so marketing can reword the page without a frontend deploy; the note
+beside each key says where the text appears and is never sent to the site. Its pictures and videos
+are a library with slots: a file only appears once staff assign it to a section and tick
+*Published / active*, so a replacement can be uploaded and reviewed while the old one is still
+live. Where a slot holds several active files the lowest display order wins, and the most recently
+updated breaks a tie — which is why the activate action saves each row rather than updating them
+in bulk.
+
+Questions take their pictures either way. The media library still holds every file, and a
+question or one of its answers can point at one already there, but the question form also carries
+an upload box — one for the question, one beside each answer in *Question options* — so a picture
+is attached in the same save that writes the question rather than in a trip to the library first.
+Anything uploaded that way becomes an ordinary library asset, and the same file uploaded twice
+finds the asset already there instead of making a second one. JPG, PNG, WebP and GIF, under 10 MB.
+
+Videos carry subtitles. A video in the media library has a *Subtitle tracks* table on its page
+where staff upload a WebVTT (`.vtt`) file and say which language it is in — British English is
+offered first, and the other languages on the list are picked from the same selector. The tracks
+hang off the library asset rather than off a lesson, so one upload covers every lesson, e-book
+section and hazard clip that plays the file, and the API hands them out with the video's own URL.
+Only videos show the table, only `.vtt` files whose contents really are WebVTT are accepted, and a
+video with no tracks is served exactly as it was before.
 
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a

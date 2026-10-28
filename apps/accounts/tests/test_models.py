@@ -48,6 +48,18 @@ class TestUserManager:
 
         assert User.objects.get_by_natural_key("SAM@example.com").email == "sam@example.com"
 
+    def test_lookup_by_a_mixed_case_email_finds_the_one_stored_account(self):
+        User.objects.create_user(email="user@example.com", first_name="Ursula")
+
+        found = User.objects.get_by_natural_key("User@Example.com")
+
+        assert found.email == "user@example.com"
+        assert User.objects.count() == 1
+
+    def test_lookup_without_an_email_raises_does_not_exist(self):
+        with pytest.raises(User.DoesNotExist):
+            User.objects.get_by_natural_key(None)
+
 
 class TestUserProperties:
     def test_account_is_inactive_when_nothing_was_bought(self):

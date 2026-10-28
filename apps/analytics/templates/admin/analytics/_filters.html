@@ -1,0 +1,49 @@
+<form class="bi-filters" method="get">
+    <div class="bi-field">
+        <label for="bi-range">Date range</label>
+        <select id="bi-range" name="range" data-custom-toggle>
+            {% for value, label in range_choices %}
+                <option value="{{ value }}" {% if filters.range_key == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div class="bi-field bi-field--custom" {% if filters.range_key != "custom" %}hidden{% endif %}>
+        <label for="bi-start">From</label>
+        <input id="bi-start" type="date" name="start" value="{{ filters.start|date:'Y-m-d' }}">
+    </div>
+    <div class="bi-field bi-field--custom" {% if filters.range_key != "custom" %}hidden{% endif %}>
+        <label for="bi-end">To</label>
+        <input id="bi-end" type="date" name="end" value="{{ filters.end|date:'Y-m-d' }}">
+    </div>
+
+    <div class="bi-field">
+        <label for="bi-group">Chart grouping</label>
+        <select id="bi-group" name="group">
+            {% for value, label in group_choices %}
+                <option value="{{ value }}" {% if filters.group == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div class="bi-field">
+        <label for="bi-package">Package</label>
+        <select id="bi-package" name="package">
+            <option value="">All packages</option>
+            {% for package in packages_available %}
+                <option value="{{ package.pk }}" {% if filters.package_id == package.pk %}selected{% endif %}>{{ package.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div class="bi-field">
+        <label for="bi-status">Payment status (order list)</label>
+        <select id="bi-status" name="status">
+            {% for value, label in status_choices %}
+                <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <button type="submit" class="bi-apply">Apply</button>
+</form>

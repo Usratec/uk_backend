@@ -8,12 +8,15 @@ Nothing here is a stored counter, so the tests compare against the attempts them
 from datetime import timedelta
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.core.models import PublishStatus
 from apps.learning import services
 from apps.learning.models import (
+    Chapter,
     ExamKind,
     LessonProgress,
     MockAttempt,
@@ -185,6 +188,67 @@ class TestSavingQuestions:
         assert sign_in(api, student()).post(saved_url("no-such-question")).status_code == 404
 
 
+def record_attempt(student, question, was_correct, created_at=None) -> QuestionAttempt:
+    attempt = QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
+    if created_at is not None:
+        QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=created_at)
+    return attempt
+
+
+class TestWhichQuestionsCountAsMistakes:
+    def test_a_question_only_ever_got_wrong_is_a_mistake(self, student, live_question):
+        learner = student()
+        record_attempt(learner, live_question, was_correct=False)
+
+        assert services.question_ids_answered_wrong(learner) == {live_question.pk}
+
+    def test_a_mistake_since_put_right_is_no_longer_one(self, student, live_question):
+        learner = student()
+        now = timezone.now()
+        record_attempt(learner, live_question, was_correct=False, created_at=now)
+        record_attempt(learner, live_question, was_correct=True, created_at=now + timedelta(minutes=1))
+
+        assert services.question_ids_answered_wrong(learner) == set()
+
+    def test_a_question_got_wrong_after_being_got_right_is_a_mistake_again(self, student, live_question):
+        learner = student()
+        now = timezone.now()
+        record_attempt(learner, live_question, was_correct=True, created_at=now)
+        record_attempt(learner, live_question, was_correct=False, created_at=now + timedelta(minutes=1))
+
+        assert services.question_ids_answered_wrong(learner) == {live_question.pk}
+
+    def test_attempts_sharing_a_timestamp_are_decided_by_the_last_row_written(self, student, live_question):
+        same_moment = timezone.now()
+        learner = student()
+        record_attempt(learner, live_question, was_correct=False, created_at=same_moment)
+        record_attempt(learner, live_question, was_correct=True, created_at=same_moment)
+
+        assert services.question_ids_answered_wrong(learner) == set()
+
+    def test_the_latest_attempt_is_picked_without_reading_them_all(
+        self, student, live_question, make_question, publisher, django_assert_num_queries
+    ):
+        learner = student()
+        other = make_question(key="other")
+        services.publish(actor=publisher, instance=other)
+        for question in (live_question, other):
+            for _ in range(4):
+                record_attempt(learner, question, was_correct=False)
+
+        with django_assert_num_queries(1):
+            assert services.question_ids_answered_wrong(learner) == {live_question.pk, other.pk}
+
+    def test_the_query_leaves_the_grouping_to_postgres(self, student, live_question):
+        learner = student()
+        record_attempt(learner, live_question, was_correct=False)
+
+        with CaptureQueriesContext(connection) as queries:
+            services.question_ids_answered_wrong(learner)
+
+        assert "DISTINCT ON" in queries.captured_queries[-1]["sql"]
+
+
 class TestPracticeModes:
     def test_mistakes_practises_what_was_got_wrong(self, api, student, live_question, make_question, publisher):
         other = make_question(key="right-one")
@@ -275,7 +339,7 @@ class TestPracticeModes:
 
 class TestMockAttempts:
     @pytest.fixture
-    def live_exam(self, chapter, make_question, publisher):
+    def live_exam(self, chapter, make_question, make_clip, publisher):
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
         exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=2)
@@ -283,6 +347,9 @@ class TestMockAttempts:
             question = make_question(key=key)
             services.publish(actor=publisher, instance=question)
             exam.exam_questions.create(question=question, order=order)
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
         services.publish(actor=publisher, instance=exam)
         return exam
 
@@ -333,7 +400,7 @@ class TestMockAttempts:
 
 class TestEachExamKindIsCountedOnItsOwn:
     @pytest.fixture
-    def make_exam(self, chapter, make_question, publisher):
+    def make_exam(self, chapter, make_question, make_clip, publisher):
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
 
@@ -343,6 +410,10 @@ class TestEachExamKindIsCountedOnItsOwn:
                 question = make_question(key=key)
                 services.publish(actor=publisher, instance=question)
                 exam.exam_questions.create(question=question, order=order)
+            if kind == ExamKind.MOCK:
+                clip = make_clip(slug=f"{slug}-clip", title=f"{slug} clip")
+                services.publish(actor=publisher, instance=clip)
+                exam.exam_clips.create(clip=clip, order=1)
             services.publish(actor=publisher, instance=exam)
             return exam
 
@@ -378,7 +449,7 @@ class TestEachExamKindIsCountedOnItsOwn:
         summary = learner.get(PROGRESS_URL).data
         assert summary["practiceAttempts"] == 1
         assert summary["practiceExamsPassed"] == 1
-        assert summary["bestPracticeScore"] == 2
+        assert summary["bestPracticeScore"] == 100
 
     def test_sitting_a_mock_test_counts_as_a_mock_test(self, api, student, mock_test):
         learner = sign_in(api, student())
@@ -429,6 +500,109 @@ class TestEachExamKindIsCountedOnItsOwn:
 
         assert learner.get(PROGRESS_URL).data == first
         assert (first["mockAttempts"], first["practiceAttempts"]) == (1, 1)
+
+
+class TestTheBestPracticeScore:
+    @pytest.fixture
+    def practice(self, chapter, make_question, publisher):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        def build(slug, questions, pass_mark=1):
+            exam = PracticeExam.objects.create(slug=slug, title=slug, kind=ExamKind.PRACTICE, pass_mark=pass_mark)
+            for order in range(1, questions + 1):
+                question = make_question(key=f"{slug}-{order}")
+                services.publish(actor=publisher, instance=question)
+                exam.exam_questions.create(question=question, order=order)
+            services.publish(actor=publisher, instance=exam)
+            return exam
+
+        return build
+
+    def sit(self, api, exam, right):
+        answers = {
+            str(question.pk): ["a"] for index, question in enumerate(services.questions_in_exam(exam)) if index < right
+        }
+        return api.post(reverse("learn-exam-submit", args=[exam.slug]), {"answers": answers}, format="json")
+
+    def test_it_is_the_percentage_of_that_sitting_questions(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-40", questions=40), right=36)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 90
+        assert summary["bestPracticeCorrect"] == 36
+        assert summary["bestPracticeTotal"] == 40
+
+    def test_it_is_the_best_sitting_rather_than_the_latest(self, api, student, practice):
+        learner = sign_in(api, student())
+        exam = practice("practice-1", questions=4)
+
+        self.sit(learner, exam, right=4)
+        self.sit(learner, exam, right=1)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 100
+        assert summary["bestPracticeCorrect"] == 4
+
+    def test_the_best_of_two_papers_of_different_lengths_is_the_better_percentage(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-40", questions=40), right=36)
+        self.sit(learner, practice("practice-20", questions=20), right=19)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 95
+        assert summary["bestPracticeCorrect"] == 19
+        assert summary["bestPracticeTotal"] == 20
+
+    def test_an_equal_percentage_over_more_questions_wins_the_tie(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-20", questions=20), right=18)
+        self.sit(learner, practice("practice-40", questions=40), right=36)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 90
+        assert (summary["bestPracticeCorrect"], summary["bestPracticeTotal"]) == (36, 40)
+
+    def test_the_marks_belong_to_the_sitting_the_percentage_came_from(self, api, student, practice):
+        learner = sign_in(api, student())
+
+        self.sit(learner, practice("practice-4", questions=4), right=3)
+        self.sit(learner, practice("practice-10", questions=10), right=5)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["bestPracticeScore"] == 75
+        assert (summary["bestPracticeCorrect"], summary["bestPracticeTotal"]) == (3, 4)
+
+    def test_a_learner_who_has_sat_nothing_has_no_figure(self, api, student, practice):
+        summary = sign_in(api, student()).get(PROGRESS_URL).data
+
+        assert summary["bestPracticeScore"] is None
+        assert summary["bestPracticeCorrect"] is None
+        assert summary["bestPracticeTotal"] is None
+
+    def test_a_mock_test_is_not_a_practice_exam_however_well_it_went(self, api, student, mock_with_clips):
+        learner = student()
+        MockAttempt.objects.create(student=learner, exam=mock_with_clips, score=2, total=2, passed=True)
+
+        summary = sign_in(api, learner).get(PROGRESS_URL).data
+
+        assert summary["bestPracticeScore"] is None
+        assert summary["bestMockScore"] == 2
+
+    def test_the_other_practice_figures_are_untouched(self, api, student, practice):
+        learner = sign_in(api, student())
+        exam = practice("practice-1", questions=4, pass_mark=3)
+
+        self.sit(learner, exam, right=4)
+        self.sit(learner, exam, right=1)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["practiceAttempts"] == 2
+        assert summary["practiceExamsPassed"] == 1
 
 
 class TestMastery:
@@ -488,6 +662,156 @@ class TestMastery:
         topic = next(item for item in response.data["topics"] if item["slug"] == chapter.slug)
         assert topic["mastery"] == 0
         assert topic["questions"] == 0
+
+
+class TestQuestionsTakenOutOfTheBank:
+    @pytest.fixture
+    def second_question(self, make_question, publisher):
+        question = make_question(key="second")
+        services.publish(actor=publisher, instance=question)
+        question.refresh_from_db()
+        return question
+
+    def topic(self, api, chapter):
+        response = api.get(TOPICS_URL)
+        return next(item for item in response.data["topics"] if item["slug"] == chapter.slug)
+
+    def test_a_correct_answer_to_a_question_since_drafted_does_not_pass_100(
+        self, api, student, live_question, second_question, publisher, chapter
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 100
+        assert topic["questions"] == 1
+
+    def test_both_questions_published_and_answered_is_100(self, api, student, live_question, second_question, chapter):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 100
+        assert topic["questions"] == 2
+
+    def test_one_of_two_published_questions_right_is_half_learnt(
+        self, api, student, live_question, second_question, chapter
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question, "a")
+        answer(learner, second_question, "b")
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 50
+        assert topic["questions"] == 2
+
+    def test_a_question_scheduled_for_later_is_out_of_both_halves(
+        self, api, student, live_question, second_question, chapter
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        second_question.publish_from = timezone.now() + timedelta(days=7)
+        second_question.save(update_fields=["publish_from"])
+
+        topic = self.topic(learner, chapter)
+        assert topic["mastery"] == 100
+        assert topic["questions"] == 1
+
+    def test_a_drafted_question_does_not_inflate_the_overall_progress(
+        self, api, student, live_question, second_question, publisher
+    ):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["questionsAnswered"] == 1
+        assert summary["questionsLearnt"] == 1
+        assert summary["mastery"] == 100
+
+    def test_a_drafted_question_got_wrong_leaves_the_counts_too(
+        self, api, student, live_question, second_question, publisher
+    ):
+        learner = sign_in(api, student())
+        answer(learner, second_question, "b")
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["questionsAnswered"] == 0
+        assert summary["questionsLearnt"] == 0
+        assert summary["mastery"] == 0
+
+    def test_a_day_spent_on_a_question_since_drafted_is_still_a_study_day(
+        self, api, student, live_question, second_question, publisher
+    ):
+        learner = sign_in(api, student())
+        answer(learner, second_question)
+
+        services.unpublish(actor=publisher, instance=second_question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["studyDays"] == 1
+        assert summary["streak"] == 1
+
+    def test_an_emptied_bank_is_not_a_division_by_zero(self, api, student, live_question, second_question, publisher):
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, second_question)
+
+        for question in (live_question, second_question):
+            services.unpublish(actor=publisher, instance=question)
+
+        summary = learner.get(PROGRESS_URL).data
+        assert summary["mastery"] == 0
+        assert summary["questionsLearnt"] == 0
+
+    def test_one_chapter_s_drafting_leaves_another_chapter_alone(
+        self, api, student, live_question, make_question, publisher, chapter
+    ):
+        other = Chapter.objects.create(slug="motorways", title="Motorways", order=2, status=PublishStatus.PUBLISHED)
+        elsewhere = make_question(key="elsewhere", chapter=other)
+        services.publish(actor=publisher, instance=elsewhere)
+        drafted = make_question(key="drafted")
+        services.publish(actor=publisher, instance=drafted)
+        learner = sign_in(api, student())
+        answer(learner, live_question)
+        answer(learner, drafted)
+        answer(learner, elsewhere)
+
+        services.unpublish(actor=publisher, instance=drafted)
+
+        here = self.topic(learner, chapter)
+        there = self.topic(learner, other)
+        assert (here["mastery"], here["questions"]) == (100, 1)
+        assert (there["mastery"], there["questions"]) == (100, 1)
+
+    def test_the_single_chapter_and_batch_figures_agree(
+        self, student, live_question, second_question, publisher, chapter
+    ):
+        learner = student()
+        for question in (live_question, second_question):
+            services.record_answer(learner, question, True)
+        services.unpublish(actor=publisher, instance=second_question)
+
+        assert services.mastery_of(learner, chapter) == {"mastery": 100, "questions": 1}
+        assert services.mastery_by_chapter(learner, [chapter]) == {chapter.pk: {"mastery": 100, "questions": 1}}
+
+    def test_one_student_s_drafted_attempts_do_not_reach_another(
+        self, api, student, live_question, second_question, publisher, packages
+    ):
+        answer(sign_in(api, student("starter")), second_question)
+        services.unpublish(actor=publisher, instance=second_question)
+
+        assert services.mastery_of(student("premium"), live_question.chapter) == {"mastery": 0, "questions": 1}
 
 
 class TestStreak:

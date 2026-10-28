@@ -1,20 +1,24 @@
-"""The /api/payments/ endpoints."""
+"""The /api/payments/ endpoints, and the learner's own order history under /api/cabinet/."""
 
 import logging
+from typing import cast
 
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.models import User
 from apps.accounts.serializers import DetailSerializer
-from apps.billing import checkout, pricing, webhooks
+from apps.billing import checkout, history, pricing, webhooks
 from apps.billing.models import Order
 from apps.billing.serializers import (
     CheckoutResponseSerializer,
     CheckoutSerializer,
+    OrderHistoryItemSerializer,
+    OrderHistorySerializer,
     OrderStatusSerializer,
     PromoCodeValidateSerializer,
     PromoCodeValidSerializer,
@@ -137,6 +141,15 @@ class OrderStatusView(APIView):
         if order is None:
             return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(OrderStatusSerializer(order).data)
+
+
+class OrderHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: OrderHistorySerializer}, summary="Your order history")
+    def get(self, request: Request) -> Response:
+        user = cast(User, request.user)
+        return Response({"results": OrderHistoryItemSerializer(history.recent(user), many=True).data})
 
 
 class StripeWebhookView(APIView):

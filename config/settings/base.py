@@ -66,6 +66,9 @@ INSTALLED_APPS = [
     "apps.crm",
     "apps.learning",
     "apps.content",
+    "apps.landing",
+    "apps.analytics",
+    "apps.notifications",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -135,6 +138,7 @@ REST_FRAMEWORK = {
         "auth_user": "30/minute",
         "password_reset": "5/hour",
         "email_resend": "5/hour",
+        "profile_photo": "20/hour",
         "checkout": "30/hour",
         "promo_code": "60/hour",
     },
@@ -158,6 +162,7 @@ SPECTACULAR_SETTINGS = {
     # Using the exam's own type to name its components keeps the names consistent and predictable.
     "ENUM_NAME_OVERRIDES": {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
+        "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
     },
 }
 
@@ -209,6 +214,16 @@ CELERY_BEAT_SCHEDULE = {
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),
+    },
+    "notify-expired-packages": {
+        "task": "apps.notifications.tasks.notify_expired_packages",
+        "schedule": crontab(hour="9", minute="30"),
+    },
+    # Daily is enough: these orders are kept for days, and the query is empty when there is
+    # nothing old enough to remove.
+    "delete-unfinished-orders": {
+        "task": "apps.billing.tasks.delete_unfinished_orders",
+        "schedule": crontab(hour="1", minute="0"),
     },
 }
 
@@ -333,6 +348,8 @@ SESSION_COOKIE_HTTPONLY = True
 
 # Only staff may reach the editor's upload endpoint.
 CKEDITOR_5_FILE_UPLOAD_PERMISSION = "staff"
+CK_EDITOR_5_UPLOAD_FILE_VIEW_NAME = "learning-media-upload"
+CKEDITOR_5_UPLOAD_FILE_TYPES = ["jpg", "jpeg", "png", "webp", "gif"]
 
 CKEDITOR_5_CONFIGS = {
     "default": {
@@ -347,6 +364,7 @@ CKEDITOR_5_CONFIGS = {
             "|",
             "blockQuote",
             "insertTable",
+            "insertImage",
             "|",
             "undo",
             "redo",
@@ -360,10 +378,7 @@ CKEDITOR_5_CONFIGS = {
             ]
         },
         "table": {"contentToolbar": ["tableColumn", "tableRow", "mergeTableCells"]},
-        # No image button yet, deliberately. The editor stores whatever URL its upload returns,
-        # and a bucket URL is signed and expires within the hour — so every picture in a lesson
-        # would break shortly after it was written. Images are in the media library, and serving
-        # them inline needs a stable URL that signs on demand; see the branch notes.
+        "removePlugins": ["ImageToolbar", "ImageResize"],
         "language": "en-gb",
     },
 }
@@ -390,17 +405,21 @@ JAZZMIN_SETTINGS = {
     "usermenu_links": [],
     # Customers first: it is what support staff open all day.
     "order_with_respect_to": [
+        "analytics",
         "crm",
         "support",
         "learning",
         "catalog",
         "content",
+        "landing",
         "billing",
         "entitlements",
         "accounts",
         "auth",
     ],
     "icons": {
+        "analytics": "fas fa-chart-column",
+        "analytics.Dashboard": "fas fa-chart-column",
         "crm": "fas fa-address-book",
         "crm.Candidate": "fas fa-user-graduate",
         "accounts": "fas fa-users",
@@ -432,12 +451,16 @@ JAZZMIN_SETTINGS = {
         "learning.QuestionAttempt": "fas fa-pen-to-square",
         "learning.MockAttempt": "fas fa-clipboard-check",
         "learning.LessonProgress": "fas fa-chart-line",
+        "learning.VideoProgress": "fas fa-circle-play",
         "learning.SavedQuestion": "fas fa-bookmark",
         "learning.EbookSectionProgress": "fas fa-bookmark",
         # The copy on the public pages, as opposed to the material students work through.
         "content": "fas fa-pen-nib",
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
+        "landing": "fas fa-bullhorn",
+        "landing.LandingText": "fas fa-font",
+        "landing.LandingMedia": "fas fa-images",
         "core.AuditEvent": "fas fa-clipboard-list",
         "auth": "fas fa-users-cog",
         "auth.Group": "fas fa-users-cog",

@@ -1,0 +1,13 @@
+<div class="bi-boxes">
+    {% for box in boxes %}
+        <div class="bi-box{% if box.tracking_required %} bi-box--untracked{% endif %}">
+            <p class="bi-box-label">{{ box.label }}</p>
+            {% if box.url %}
+                <p class="bi-box-value"><a href="{{ box.url }}">{{ box.value }}</a></p>
+            {% else %}
+                <p class="bi-box-value">{{ box.value }}</p>
+            {% endif %}
+            {% if box.subtitle %}<p class="bi-box-sub">{{ box.subtitle }}</p>{% endif %}
+        </div>
+    {% endfor %}
+</div>

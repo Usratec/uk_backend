@@ -1,0 +1,46 @@
+<section id="insights" class="bi-section">
+    <h2>Learning insights</h2>
+    <p class="bi-intro">
+        Where students appear to struggle. These are observations from the data, not proven causes.
+        Items need a minimum number of attempts before they're listed, so a single answer can't put
+        a topic at the top.
+    </p>
+
+    <div class="bi-grid">
+        {% for table in insight_tables %}
+            <div class="bi-table">
+                <p class="bi-table-title">{{ table.title }}</p>
+                <table>
+                    <thead>
+                        <tr>
+                            {% for column in table.columns %}
+                                <th {% if not forloop.first %}class="bi-right"{% endif %}>{{ column }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in table.rows %}
+                            <tr>
+                                <td>
+                                    {% if row.url %}<a href="{{ row.url }}">{{ row.label }}</a>{% else %}{{ row.label }}{% endif %}
+                                    {% if row.meta %}<span class="bi-row-meta">{{ row.meta }}</span>{% endif %}
+                                </td>
+                                {% for value in row.values %}<td class="bi-right">{{ value }}</td>{% endfor %}
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="{{ table.columns|length }}" class="bi-empty">
+                                    {% if table.tracking_required %}
+                                        <span class="bi-untracked">Tracking required</span> {{ table.tracking_required }}
+                                    {% else %}
+                                        No data available yet
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endfor %}
+    </div>
+</section>
