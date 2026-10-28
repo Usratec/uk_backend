@@ -27,35 +27,43 @@ _content_disposition: ContextVar[str | None] = ContextVar("upload_content_dispos
 
 _SVG_ACTIVE = ("<script", "javascript:", "onload=", "onerror=", "onclick=", "onmouseover=")
 
+_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"%PDF-", "application/pdf"),
+    (b"\x1a\x45\xdf\xa3", "video/webm"),
+)
+
+# Past the first slice, far enough to see a script, and small enough to keep in a worker.
+_MARKUP_READ_LIMIT = 512 * 1024
+
 
 def read_header(content, limit: int = 65536) -> bytes:
     content.seek(0)
     header = content.read(limit)
     if header.lstrip().startswith(b"<"):
-        # Markup is small. Read the rest so a script cannot sit past the first slice.
+        # Markup is small. Read further so a script cannot sit past the first slice,
+        # and stop so a huge upload cannot fill the worker.
         content.seek(0)
-        header = content.read()
+        header = content.read(_MARKUP_READ_LIMIT)
+        if content.read(1):
+            content.seek(0)
+            raise ValidationError("This file is too large to check.")
     content.seek(0)
     return header
 
 
 def sniff_content_type(header: bytes) -> str | None:
     """The type the bytes actually are, or None when they are not a format we store."""
-    if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if header.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if header.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
+    for signature, content_type in _SIGNATURES:
+        if header.startswith(signature):
+            return content_type
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
-    if header.startswith(b"%PDF-"):
-        return "application/pdf"
-    if header.startswith(b"\x1a\x45\xdf\xa3"):
-        return "video/webm"
     if len(header) >= 12 and header[4:8] == b"ftyp":
-        brand = header[8:12]
-        if brand == b"qt  ":
+        if header[8:12] == b"qt  ":
             return "video/quicktime"
         return "video/mp4"
     if _is_webvtt(header):

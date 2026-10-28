@@ -40,6 +40,32 @@ def test_an_svg_with_script_is_refused():
         identify(Named(svg))
 
 
+def test_an_svg_bigger_than_the_markup_check_is_refused():
+    svg = b"<svg xmlns='http://www.w3.org/2000/svg'>" + (b" " * (512 * 1024)) + b"</svg>"
+
+    with pytest.raises(ValidationError):
+        identify(Named(svg))
+
+
+def test_an_svg_with_script_past_the_first_slice_is_refused():
+    svg = (
+        b"<svg xmlns='http://www.w3.org/2000/svg'>"
+        + (b" " * 65536)
+        + b"<script>alert(1)</script></svg>"
+    )
+
+    with pytest.raises(ValidationError):
+        identify(Named(svg))
+
+
+def test_an_svg_at_the_markup_check_limit_is_accepted():
+    opening = b"<svg xmlns='http://www.w3.org/2000/svg'>"
+    closing = b"</svg>"
+    svg = opening + (b" " * (512 * 1024 - len(opening) - len(closing))) + closing
+
+    assert identify(Named(svg)) == "image/svg+xml"
+
+
 def test_a_pdf_is_not_accepted_as_a_picture():
     from apps.core.uploads import RASTER_IMAGE_TYPES, require_upload
 
