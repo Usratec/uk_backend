@@ -1071,10 +1071,12 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
         (
             "Scoring",
             {
-                "fields": ("max_clicks",),
+                "fields": ("max_clicks", "duration_seconds"),
                 "description": (
                     "Each hazard below is worth 5 down to 1, depending on how early in its window "
-                    "the student clicks. Clicking more often than the limit scores nothing at all."
+                    "the student clicks. Clicking more often than the limit scores nothing at all, "
+                    "as does clicking in a regular pattern, in rapid bursts, or evenly across the "
+                    "whole clip. The length is only needed for that last check."
                 ),
             },
         ),
@@ -1105,8 +1107,8 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
 
 @admin.register(HazardAttempt)
 class HazardAttemptAdmin(ReadOnlyAdmin):
-    list_display = ["student", "clip", "result", "voided", "created_at"]
-    list_filter = ["voided", "clip", "created_at"]
+    list_display = ["student", "clip", "result", "voided", "void_reason", "created_at"]
+    list_filter = ["voided", "void_reason", "clip", "created_at"]
     search_fields = ["student__email", "clip__title"]
     list_select_related = ["student", "clip"]
     date_hierarchy = "created_at"

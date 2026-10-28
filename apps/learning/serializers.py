@@ -13,10 +13,26 @@ Keys are camelCase where the endpoint returns camelCase: these describe the cont
 already implements, not Python conventions.
 """
 
+import math
+
 from drf_spectacular.utils import PolymorphicProxySerializer, extend_schema_field
 from rest_framework import serializers
 
-from apps.learning.models import ExamKind, QuestionType, SignCategory, SubtitleLanguage
+from apps.learning.models import ExamKind, HazardVoidReason, QuestionType, SignCategory, SubtitleLanguage
+
+MAX_CLICKS_PER_SUBMISSION = 500
+
+
+class ClickTimeField(serializers.FloatField):
+    def to_internal_value(self, data) -> float:
+        moment = super().to_internal_value(data)
+        if not math.isfinite(moment):
+            self.fail("invalid")
+        return moment
+
+
+def click_times(**kwargs) -> serializers.ListField:
+    return serializers.ListField(child=ClickTimeField(min_value=0), max_length=MAX_CLICKS_PER_SUBMISSION, **kwargs)
 
 
 class SignSerializer(serializers.Serializer):
@@ -591,11 +607,12 @@ class ExamSubmissionSerializer(serializers.Serializer):
     )
     hazardClicks = serializers.DictField(  # noqa: N815
         required=False,
-        child=serializers.ListField(child=serializers.FloatField(min_value=0)),
+        child=click_times(),
         help_text=(
             "For a mock test with clips: the seconds into each clip at which the student clicked, "
             'keyed by the clip\'s `slug`, e.g. {"country-lane": [4.2, 11.8]}. A clip left out '
-            "scores nothing, as an unanswered question does."
+            f"scores nothing, as an unanswered question does. At most {MAX_CLICKS_PER_SUBMISSION} "
+            "clicks per clip."
         ),
     )
     timeTakenSeconds = TimeTakenField()  # noqa: N815
@@ -618,7 +635,12 @@ class ExamClipResultSerializer(serializers.Serializer):
     title = serializers.CharField()
     score = serializers.IntegerField()
     topScore = serializers.IntegerField(help_text="The most this clip was worth.")  # noqa: N815
-    voided = serializers.BooleanField(help_text="True when the clip was clicked through too often to count.")
+    voided = serializers.BooleanField(help_text="True when the clicking was not accepted, so the clip scored nothing.")
+    voidReason = serializers.ChoiceField(  # noqa: N815
+        choices=HazardVoidReason.choices,
+        allow_null=True,
+        help_text="Why the clip was voided, or null when it counted.",
+    )
     hazards = HazardResultSerializer(many=True, help_text="Every hazard, spotted or not, with its timing.")
 
 
@@ -801,15 +823,22 @@ class HazardClipListResponseSerializer(serializers.Serializer):
 class HazardAttemptRequestSerializer(serializers.Serializer):
     """A finished attempt, posted to be scored."""
 
-    clicks = serializers.ListField(
-        child=serializers.FloatField(min_value=0),
+    clicks = click_times(
         allow_empty=True,
-        help_text="Seconds into the clip at which the student clicked, e.g. [4.2, 11.8].",
+        help_text=(
+            "Seconds into the clip at which the student clicked, e.g. [4.2, 11.8]. "
+            f"At most {MAX_CLICKS_PER_SUBMISSION} of them."
+        ),
     )
 
 
 class HazardAttemptResponseSerializer(serializers.Serializer):
     score = serializers.IntegerField()
     topScore = serializers.IntegerField()  # noqa: N815
-    voided = serializers.BooleanField(help_text="True when the clip was clicked through too often to count.")
+    voided = serializers.BooleanField(help_text="True when the clicking was not accepted, so the clip scored nothing.")
+    voidReason = serializers.ChoiceField(  # noqa: N815
+        choices=HazardVoidReason.choices,
+        allow_null=True,
+        help_text="Why the attempt was voided, or null when it counted.",
+    )
     hazards = HazardResultSerializer(many=True, help_text="Every hazard, spotted or not, with its timing.")
