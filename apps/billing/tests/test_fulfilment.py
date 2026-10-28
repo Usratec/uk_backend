@@ -43,17 +43,28 @@ def subjects():
 
 
 class TestNewCustomer:
-    def test_creates_a_verified_account(self, paid_order):
+    def test_creates_an_account_payment_has_not_verified(self, paid_order):
         fulfil(paid_order)
 
         user = User.objects.get(email="buyer@example.com")
         assert user.first_name == "Bea"
         assert user.last_name == "Jones"
         assert user.auth_method == AuthMethod.EMAIL
-        # They paid from this address, so it is known to reach them.
-        assert user.email_verified is True
+        # Paying does not prove the buyer can read this mailbox.
+        assert user.email_verified is False
         # No password yet: the welcome email invites them to choose one.
         assert user.has_usable_password() is False
+
+    def test_the_confirmation_link_is_what_verifies_the_address(self, api, paid_order):
+        fulfil(paid_order)
+
+        confirmation = next(m for m in mail.outbox if m.subject == "Please confirm your email address")
+        assert confirmation.to == ["buyer@example.com"]
+        raw_token = confirmation.body.split("token=")[1].split()[0]
+        response = api.get(f"/api/auth/email/verify/?token={raw_token}")
+
+        assert response.status_code == 200
+        assert User.objects.get(email="buyer@example.com").email_verified is True
 
     def test_links_the_order_to_the_account(self, paid_order):
         order = fulfil(paid_order)
@@ -70,7 +81,11 @@ class TestNewCustomer:
     def test_sends_a_welcome_and_a_receipt(self, paid_order):
         fulfil(paid_order)
 
-        assert subjects() == ["Welcome to 1Theory — set up your account", "Your order has been confirmed"]
+        assert subjects() == [
+            "Please confirm your email address",
+            "Welcome to 1Theory — set up your account",
+            "Your order has been confirmed",
+        ]
 
     def test_the_welcome_link_lets_them_set_a_password(self, api, paid_order):
         """No password is ever put in an email; the link is single-use and expires in 7 days."""
@@ -126,6 +141,8 @@ class TestExistingCustomer:
         fulfil(paid_order)
 
         assert subjects() == ["Your order has been confirmed"]
+        user_with_password.refresh_from_db()
+        assert user_with_password.email_verified is False
 
     def test_no_welcome_email_for_a_google_account(self, paid_order):
         User.objects.create_user(
@@ -167,7 +184,7 @@ class TestRunningTwice:
 
         assert User.objects.filter(email="buyer@example.com").count() == 1
         assert Subscription.objects.count() == 1
-        assert len(mail.outbox) == 2
+        assert len(mail.outbox) == 3
 
     def test_a_retry_after_the_account_was_created_still_sends_the_welcome(self, paid_order, monkeypatch):
         """The task can die between creating the account and sending the email."""

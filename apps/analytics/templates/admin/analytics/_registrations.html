@@ -1,0 +1,16 @@
+<section id="registrations" class="bi-section">
+    <h2>Student registrations</h2>
+    <p class="bi-intro">
+        Conversion follows each week's (or day's) new students to see how many have paid so far.
+        Activity is counted from the days on which a student actually studied, which is a truer
+        measure than signing in.
+    </p>
+
+    <div class="bi-grid">
+        {% include "admin/analytics/_chart.html" with title="New registrations and how many paid" id="registrations" only %}
+        {% include "admin/analytics/_chart.html" with title="Registration-to-payment conversion (%)" id="conversion" only %}
+    </div>
+    <div class="bi-grid">
+        {% include "admin/analytics/_chart.html" with title="Active students over time" id="active_students" only %}
+    </div>
+</section>

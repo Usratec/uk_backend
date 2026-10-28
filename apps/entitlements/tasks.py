@@ -7,6 +7,7 @@ could only ever agree with the dates, or disagree with them wrongly.
 
 import logging
 from datetime import timedelta
+from functools import partial
 
 from celery import shared_task
 from django.utils import timezone
@@ -14,6 +15,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.entitlements import emails
 from apps.entitlements.models import Subscription
+from apps.notifications import services as notifications
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,11 @@ def send_expiry_reminders() -> int:
         subscription.expiry_reminder_sent_at = timezone.now()
         subscription.save(update_fields=["expiry_reminder_sent_at", "updated_at"])
         sent += 1
+
+        notifications.notify_quietly(
+            partial(notifications.package_ending_soon, subscription),
+            f"expiry warning for subscription {subscription.pk}",
+        )
 
     logger.info("Sent %d expiry reminders", sent)
     return sent

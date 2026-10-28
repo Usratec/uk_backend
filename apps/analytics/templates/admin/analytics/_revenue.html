@@ -1,0 +1,51 @@
+{% load analytics %}
+<section id="revenue" class="bi-section">
+    <h2>Payments &amp; revenue</h2>
+    <p class="bi-intro">
+        Refunds are whole orders. This system records when a refund happened, so a refund is
+        subtracted in the period it was given rather than the one the payment was taken in.
+    </p>
+
+    <div class="bi-grid">
+        {% include "admin/analytics/_chart.html" with title="Revenue over time (£)" id="revenue_over_time" only %}
+        {% include "admin/analytics/_chart.html" with title="Payments by status" id="payments_by_status" only %}
+        {% include "admin/analytics/_chart.html" with title="Average order value (£)" id="average_order_value" only %}
+        {% include "admin/analytics/_chart.html" with title="Paid vs unpaid students" id="paid_vs_unpaid" only %}
+    </div>
+
+    <div class="bi-table">
+        <p class="bi-table-title">
+            Orders in range (latest 15) ·
+            <a href="{% url 'admin:analytics_export' 'payments' %}?{% filter_query filters %}">Export all as CSV</a>
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Order</th><th>Created</th><th>Paid</th><th>Status</th>
+                    <th>Package</th><th class="bi-right">Amount</th><th>Student</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in orders %}
+                    <tr>
+                        <td><a href="{% url 'admin:billing_order_change' order.pk %}">#{{ order.pk|truncatechars:10 }}</a></td>
+                        <td>{{ order.created_at|date:"j M Y H:i" }}</td>
+                        <td>{% if order.paid_at %}{{ order.paid_at|date:"j M Y H:i" }}{% else %}—{% endif %}</td>
+                        <td>{{ order.get_status_display }}</td>
+                        <td>{{ order.package.name }}</td>
+                        <td class="bi-right">£{{ order.final_price|floatformat:2 }}</td>
+                        <td>
+                            {% if order.user_id %}
+                                <a href="{% url 'admin:analytics_student' order.user_id %}">Student {{ order.user_id }}</a>
+                            {% else %}
+                                <span class="bi-muted">Guest checkout</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="7" class="bi-empty">No data available yet</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>

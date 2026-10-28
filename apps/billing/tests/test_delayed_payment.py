@@ -6,6 +6,7 @@ from apps.billing import webhooks
 from apps.billing.models import Order, OrderStatus, StripeEvent
 from apps.billing.tasks import fulfil_unfulfilled_orders
 from apps.entitlements.models import Subscription
+from apps.integrations.stripe_client import CHECKOUT_CURRENCY, to_pence
 
 pytestmark = pytest.mark.django_db
 
@@ -39,9 +40,13 @@ def session_event(order, event_type, event_id, payment_status, payment_intent="p
         "type": event_type,
         "data": {
             "object": {
+                "id": order.stripe_session_id,
                 "metadata": {"order_id": str(order.id)},
+                "client_reference_id": str(order.id),
                 "payment_status": payment_status,
                 "payment_intent": payment_intent,
+                "amount_total": to_pence(order.final_price),
+                "currency": CHECKOUT_CURRENCY,
             }
         },
     }

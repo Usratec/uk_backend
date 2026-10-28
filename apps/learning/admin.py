@@ -13,6 +13,7 @@ from typing import cast
 
 from django import forms
 from django.contrib import admin, messages
+from django.core.files.uploadedfile import UploadedFile
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import URLPattern, path, reverse
@@ -31,6 +32,7 @@ from apps.learning.models import (
     EbookSection,
     EbookSectionProgress,
     ExamHazardClip,
+    ExamKind,
     ExamQuestion,
     HazardAttempt,
     HazardClip,
@@ -38,6 +40,7 @@ from apps.learning.models import (
     LearningContent,
     LessonProgress,
     MediaAsset,
+    MediaKind,
     MockAttempt,
     PracticeExam,
     Question,
@@ -46,6 +49,9 @@ from apps.learning.models import (
     SavedQuestion,
     Sign,
     Subchapter,
+    Subtitle,
+    VideoProgress,
+    default_subtitle_language,
 )
 from apps.staff.admin import PermissionRequiredAdminMixin, badge, placeholder
 
@@ -402,14 +408,80 @@ class SignAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     prepopulated_fields = {"code": ("name",)}
 
 
+class ImageUploadForm(forms.ModelForm):
+    image_field: str
+
+    upload_image = forms.ImageField(
+        label="Upload a picture",
+        required=False,
+        widget=forms.ClearableFileInput(attrs={"accept": "image/jpeg,image/png,image/webp,image/gif"}),
+        help_text="JPG, PNG, WebP or GIF. It is added to the media library and chosen here.",
+    )
+
+    def clean_upload_image(self):
+        upload = self.cleaned_data.get("upload_image")
+        if upload:
+            try:
+                services.check_image_upload(upload)
+            except services.ImageUploadError as error:
+                raise forms.ValidationError(str(error)) from error
+        return upload
+
+
+def _attach_uploaded_image(request: HttpRequest, form: ImageUploadForm) -> None:
+    upload = getattr(form, "cleaned_data", {}).get("upload_image")
+    if not upload:
+        return
+    asset = services.image_asset_from_upload(upload=upload, uploaded_by=cast(User, request.user))
+    setattr(form.instance, form.image_field, asset)
+
+
+class QuestionOptionForm(ImageUploadForm):
+    image_field = "image"
+
+    class Meta:
+        model = QuestionOption
+        fields = ["order", "option_id", "text", "sign", "image", "is_correct"]
+
+
 class QuestionOptionInline(admin.TabularInline):
-    """The answers to choose between, edited beside the question they belong to."""
+    """The answers to choose between, edited beside the question they belong to.
+
+    Each answer carries its own picture and its own upload box, so the four pictures of an image
+    question are four uploads in one save rather than four trips to the media library.
+    """
 
     model = QuestionOption
+    form = QuestionOptionForm
     extra = 2
-    fields = ["order", "option_id", "text", "sign", "is_correct"]
+    fields = ["order", "option_id", "text", "sign", "image", "upload_image", "thumbnail", "is_correct"]
+    readonly_fields = ["thumbnail"]
     ordering = ["order"]
-    autocomplete_fields = ["sign"]
+    autocomplete_fields = ["sign", "image"]
+
+    @admin.display(description="Picture")
+    def thumbnail(self, option: QuestionOption) -> SafeString:
+        if option.pk is None or option.image is None:
+            return placeholder()
+        return _thumbnail(option.image.file, width=90)
+
+
+class QuestionForm(ImageUploadForm):
+    image_field = "media_image"
+
+    class Meta:
+        model = Question
+        fields = [
+            "chapter",
+            "key",
+            "question_type",
+            "prompt",
+            "media_sign",
+            "media_image",
+            "explanation",
+            "learn_more",
+            "publish_from",
+        ]
 
 
 @admin.register(Question)
@@ -425,10 +497,25 @@ class QuestionAdmin(PreviewMixin, PublishableAdmin):
     search_fields = ["key", "prompt", "explanation"]
     prepopulated_fields = {"key": ("prompt",)}
     list_select_related = ["chapter"]
-    autocomplete_fields = ["chapter", "media_sign", "learn_more"]
+    autocomplete_fields = ["chapter", "media_sign", "media_image", "learn_more"]
+    form = QuestionForm
     inlines = [QuestionOptionInline]
     fieldsets = (
-        (None, {"fields": ("chapter", "key", "question_type", "prompt", "media_sign")}),
+        (
+            None,
+            {
+                "fields": (
+                    "chapter",
+                    "key",
+                    "question_type",
+                    "prompt",
+                    "media_sign",
+                    "media_image",
+                    "upload_image",
+                    "thumbnail",
+                )
+            },
+        ),
         (
             "After answering",
             {
@@ -441,7 +528,25 @@ class QuestionAdmin(PreviewMixin, PublishableAdmin):
             {"fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link")},
         ),
     )
-    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link"]
+    readonly_fields = ["status", "published_at", "published_by", "readiness", "preview_link", "thumbnail"]
+
+    @admin.display(description="Picture shown now")
+    def thumbnail(self, question: Question) -> SafeString:
+        if question.pk is None or question.media_image is None:
+            return placeholder()
+        return _thumbnail(question.media_image.file, width=240)
+
+    def save_model(self, request: HttpRequest, obj: Question, form, change: bool) -> None:
+        _attach_uploaded_image(request, form)
+        super().save_model(request, obj, form, change)
+
+    def save_formset(self, request: HttpRequest, form, formset, change: bool) -> None:
+        if formset.model is QuestionOption:
+            for option_form in formset.forms:
+                if getattr(option_form, "cleaned_data", {}).get("DELETE"):
+                    continue
+                _attach_uploaded_image(request, option_form)
+        super().save_formset(request, form, formset, change)
 
     @admin.display(description="Question", ordering="prompt")
     def prompt_preview(self, question: Question) -> str:
@@ -454,6 +559,41 @@ class QuestionAdmin(PreviewMixin, PublishableAdmin):
         return f"{len(options)} options, {correct} correct"
 
 
+def _kept(formset, field: str) -> list:
+    kept = []
+    for form in formset.forms:
+        if not form.cleaned_data or form.cleaned_data.get("DELETE"):
+            continue
+        chosen = form.cleaned_data.get(field)
+        if chosen is not None:
+            kept.append(chosen)
+    return kept
+
+
+def _rows_submitted(data, prefix: str, field: str) -> int:
+    rows = 0
+    for index in range(int(data.get(f"{prefix}-TOTAL_FORMS") or 0)):
+        if data.get(f"{prefix}-{index}-DELETE"):
+            continue
+        if data.get(f"{prefix}-{index}-{field}"):
+            rows += 1
+    return rows
+
+
+QUESTIONS_PREFIX = "exam_questions"
+CLIPS_PREFIX = "exam_clips"
+
+
+class ExamQuestionInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self) -> None:
+        super().clean()
+        if self.instance.pass_mark is None and _kept(self, "question"):
+            raise forms.ValidationError(
+                "This paper asks questions, so it needs a pass mark. "
+                "Leave the pass mark empty only on a paper of hazard clips alone."
+            )
+
+
 class ExamQuestionInline(admin.TabularInline):
     """Which questions an exam asks, and in what order.
 
@@ -462,14 +602,32 @@ class ExamQuestionInline(admin.TabularInline):
     """
 
     model = ExamQuestion
+    formset = ExamQuestionInlineFormSet
     extra = 1
     fields = ["order", "question"]
     ordering = ["order"]
     autocomplete_fields = ["question"]
 
 
+class ExamHazardClipInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self) -> None:
+        super().clean()
+        wanted = self.instance.hazard_pass_mark
+        if not wanted:
+            return
+
+        clips = _kept(self, "clip")
+        available = sum(clip.top_score for clip in clips)
+        if wanted > available:
+            raise forms.ValidationError(
+                f"The hazard perception pass mark is {wanted}, but these clips are only worth "
+                f"{available} marks, so nobody could pass them however early every hazard was spotted."
+            )
+
+
 class ExamHazardClipInline(admin.TabularInline):
     model = ExamHazardClip
+    formset = ExamHazardClipInlineFormSet
     extra = 1
     fields = ["order", "clip", "worth"]
     readonly_fields = ["worth"]
@@ -486,6 +644,44 @@ class ExamHazardClipInline(admin.TabularInline):
         return f"{place.clip.top_score} marks"
 
 
+class PracticeExamForm(forms.ModelForm):
+    class Meta:
+        model = PracticeExam
+        fields = [
+            "title",
+            "slug",
+            "description",
+            "kind",
+            "order",
+            "pass_mark",
+            "time_limit_seconds",
+            "hazard_pass_mark",
+            "publish_from",
+        ]
+
+    def clean(self) -> dict:
+        super().clean()
+        cleaned = self.cleaned_data
+
+        if f"{QUESTIONS_PREFIX}-TOTAL_FORMS" not in self.data:
+            return cleaned
+
+        questions = _rows_submitted(self.data, QUESTIONS_PREFIX, "question")
+        clips = _rows_submitted(self.data, CLIPS_PREFIX, "clip")
+
+        if cleaned.get("kind") == ExamKind.MOCK:
+            if not questions:
+                self.add_error("kind", "A mock test stands in for the real test, so it needs questions too.")
+            if not clips:
+                self.add_error("kind", "A mock test stands in for the real test, so it needs hazard clips too.")
+        elif not questions and not clips:
+            raise forms.ValidationError(
+                "A practice exam needs something to sit: add at least one question or one hazard clip."
+            )
+
+        return cleaned
+
+
 @admin.register(PracticeExam)
 class PracticeExamAdmin(PublishableAdmin):
     list_display = ["title", "kind", "question_count", "clip_count", "pass_mark", "order", "state"]
@@ -493,6 +689,7 @@ class PracticeExamAdmin(PublishableAdmin):
     list_filter = ["status", "kind"]
     search_fields = ["title", "slug", "description"]
     prepopulated_fields = {"slug": ("title",)}
+    form = PracticeExamForm
     inlines = [ExamQuestionInline, ExamHazardClipInline]
     fieldsets = (
         (None, {"fields": ("title", "slug", "description", "kind", "order")}),
@@ -503,7 +700,9 @@ class PracticeExamAdmin(PublishableAdmin):
                 "description": (
                     "Sets the pass marks and time limit. Questions and hazard clips are scored "
                     "separately. Students must pass both to pass the test. If no hazard pass mark "
-                    "is set, only the questions determine whether they pass."
+                    "is set, only the questions determine whether they pass. A practice exam may "
+                    "be questions alone or clips alone — leave the pass mark empty on a paper of "
+                    "clips alone. A mock test stands in for the real test, so it needs both."
                 ),
             },
         ),
@@ -657,11 +856,77 @@ class LessonProgressAdmin(ReadOnlyAdmin):
     date_hierarchy = "completed_at"
 
 
+@admin.register(VideoProgress)
+class VideoProgressAdmin(ReadOnlyAdmin):
+    list_display = ["student", "content", "lesson", "position_seconds", "duration_seconds", "updated_at"]
+    list_filter = ["content__subchapter__chapter", "updated_at"]
+    search_fields = ["student__email", "content__title", "content__slug"]
+    list_select_related = ["student", "content", "content__subchapter"]
+    date_hierarchy = "updated_at"
+
+    @admin.display(description="Lesson", ordering="content__subchapter__title")
+    def lesson(self, progress: VideoProgress) -> str:
+        return progress.content.subchapter.title
+
+
 @admin.register(SavedQuestion)
 class SavedQuestionAdmin(ReadOnlyAdmin):
     list_display = ["student", "question", "saved_at"]
     search_fields = ["student__email", "question__key"]
     list_select_related = ["student", "question"]
+
+
+class SubtitleForm(forms.ModelForm):
+    class Meta:
+        model = Subtitle
+        fields = ["language", "file"]
+        widgets = {"file": forms.ClearableFileInput(attrs={"accept": ".vtt,text/vtt"})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.instance.pk:
+            self.fields["language"].initial = default_subtitle_language()
+
+    def has_changed(self) -> bool:
+        if not self.instance.pk and self.add_prefix("file") not in self.files:
+            chosen = self.data.get(self.add_prefix("language"))
+            return bool(chosen) and chosen != default_subtitle_language()
+        return super().has_changed()
+
+    def clean_file(self):
+        upload = self.cleaned_data.get("file")
+        if isinstance(upload, UploadedFile):
+            try:
+                services.check_subtitle_upload(upload)
+            except services.SubtitleUploadError as error:
+                raise forms.ValidationError(str(error)) from error
+        return upload
+
+
+class SubtitleInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if self.instance.kind in ("", MediaKind.VIDEO):
+            return
+        if any(form.cleaned_data and not form.cleaned_data.get("DELETE") for form in self.forms):
+            raise forms.ValidationError(
+                "Only a video can have subtitles. Set Kind to Video, or clear the subtitle tracks below."
+            )
+
+
+class SubtitleInline(admin.TabularInline):
+    model = Subtitle
+    form = SubtitleForm
+    formset = SubtitleInlineFormSet
+    extra = 1
+    fields = ["language", "file", "current_file"]
+    readonly_fields = ["current_file"]
+
+    @admin.display(description="Uploaded file")
+    def current_file(self, track: Subtitle) -> SafeString:
+        if track.pk is None or not track.file:
+            return placeholder()
+        return format_html('<a class="adm-btn" href="{}" target="_blank">Open the .vtt</a>', track.file.url)
 
 
 @admin.register(MediaAsset)
@@ -672,10 +937,11 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     credentials stay on the server and nothing arrives in it that staff did not put there.
     """
 
-    list_display = ["title", "kind", "readable_size", "created_at"]
+    inlines = [SubtitleInline]
+    list_display = ["title", "kind", "readable_size", "subtitle_languages", "created_at"]
     list_filter = ["kind", "created_at"]
     search_fields = ["title", "file"]
-    readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link"]
+    readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link", "content_reference"]
     fieldsets = (
         (None, {"fields": ("title", "kind", "file")}),
         (
@@ -685,7 +951,37 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
                 "description": "Taken from the upload itself. The link is signed and expires.",
             },
         ),
+        (
+            "Using it in content",
+            {
+                "fields": ("content_reference",),
+                "description": (
+                    "Pictures only. Paste this into the editor's Insert image → via URL "
+                    "to show this picture in a lesson or an e-book section. It is a reference to "
+                    "this library entry rather than a link to the file."
+                ),
+            },
+        ),
     )
+
+    @admin.display(description="Reference for the editor")
+    def content_reference(self, asset: MediaAsset) -> SafeString:
+        if asset.pk is None or asset.kind != MediaKind.IMAGE:
+            return placeholder()
+        return format_html("<code>{}</code>", html.reference_for(asset.pk))
+
+    def get_queryset(self, request: HttpRequest):
+        return super().get_queryset(request).prefetch_related("subtitles")
+
+    def get_inline_instances(self, request: HttpRequest, obj=None):
+        if obj is not None and obj.kind != MediaKind.VIDEO:
+            return []
+        return super().get_inline_instances(request, obj)
+
+    @admin.display(description="Subtitles")
+    def subtitle_languages(self, asset: MediaAsset) -> SafeString:
+        languages = [track.language for track in asset.subtitles.all()]
+        return format_html("{}", ", ".join(languages)) if languages else placeholder()
 
     @admin.display(description="Size", ordering="size_bytes")
     def readable_size(self, asset: MediaAsset) -> str:
@@ -923,10 +1219,13 @@ class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
             {
                 "fields": ("body_html", "media"),
                 "description": format_html(
-                    "The text is shown first, then the file if there is one. To draw a strip of "
-                    "road signs in the middle of the text, write <code>{}</code> on a line of its "
-                    "own — the caption after the bar is optional, and the codes are the ones in "
-                    "the Signs library.",
+                    "The text is shown first, then the file if there is one. Pictures and GIFs go "
+                    "in the text itself, where they stay in the place you put them: use "
+                    "Insert image to upload one, or paste a picture's reference from the "
+                    "Media assets library into the same button's via URL box. JPG, PNG, "
+                    "WebP and GIF. To draw a strip of road signs in the middle of the text, write "
+                    "<code>{}</code> on a line of its own — the caption after the bar is optional, "
+                    "and the codes are the ones in the Signs library.",
                     "[signs: give-way, stop | Common warning signs]",
                 ),
             },

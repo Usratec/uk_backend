@@ -179,7 +179,7 @@ class TestTheExamListingWithAHistory:
         learner, bystander = student("starter"), student("premium")
         for number in (2, 3, 4):
             other = PracticeExam.objects.create(
-                slug=f"mock-{number}", title=f"Mock test {number}", kind=ExamKind.MOCK, pass_mark=1
+                slug=f"mock-{number}", title=f"Practice exam {number}", kind=ExamKind.PRACTICE, pass_mark=1
             )
             other.exam_questions.create(question=live_exam.questions.first(), order=1)
             services.publish(actor=publisher, instance=other)
@@ -211,7 +211,7 @@ class TestReadingAPastSitting:
 
         saved = sign_in(api, learner).get(attempt_url(attempt)).data
 
-        assert saved["exam"] == {"slug": "mock-1", "title": "Mock test 1", "kind": "mock"}
+        assert saved["exam"] == {"slug": "mock-1", "title": "Practice exam 1", "kind": "practice"}
         assert saved["completedAt"] == MockAttempt.objects.get(pk=attempt).created_at
         assert saved["attemptId"] == attempt
 

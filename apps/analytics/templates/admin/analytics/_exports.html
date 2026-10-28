@@ -1,0 +1,16 @@
+{% load analytics %}
+<section id="exports" class="bi-section">
+    <h2>Exports (CSV)</h2>
+    <p class="bi-intro">
+        Each export uses the filters above. The student report uses student IDs rather than names
+        or emails.
+    </p>
+    <ul class="bi-exports">
+        {% for report, label, description in reports %}
+            <li>
+                <a href="{% url 'admin:analytics_export' report %}?{% filter_query filters %}">{{ label }}</a>
+                {% if description %}<span class="bi-muted">· {{ description }}</span>{% endif %}
+            </li>
+        {% endfor %}
+    </ul>
+</section>

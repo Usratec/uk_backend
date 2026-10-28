@@ -23,6 +23,8 @@ the public contract once published.
 """
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -204,6 +206,7 @@ class MediaAsset(TimestampedModel):
     # Recorded at upload because asking the bucket costs a request, and these are shown in a list.
     size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
     content_type = models.CharField(max_length=100, blank=True, editable=False)
+    checksum = models.CharField(max_length=64, blank=True, editable=False, db_index=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploads"
     )
@@ -220,6 +223,57 @@ class MediaAsset(TimestampedModel):
             self.size_bytes = getattr(self.file, "size", 0) or 0
             self.content_type = getattr(getattr(self.file, "file", None), "content_type", "") or self.content_type
         super().save(*args, **kwargs)
+
+
+class SubtitleLanguage(models.TextChoices):
+    EN_GB = "en-GB", "British English"
+    EN_US = "en-US", "American English"
+    FR_FR = "fr-FR", "French"
+    DE_DE = "de-DE", "German"
+    NL_NL = "nl-NL", "Dutch"
+
+
+def default_subtitle_language() -> str:
+    configured = (settings.LANGUAGE_CODE or "").lower()
+    return next((code for code in SubtitleLanguage.values if code.lower() == configured), "")
+
+
+def subtitle_path(instance, filename: str) -> str:
+    return f"learning/subtitle/{filename}"
+
+
+class Subtitle(TimestampedModel):
+    asset = models.ForeignKey(
+        MediaAsset,
+        on_delete=models.CASCADE,
+        related_name="subtitles",
+        help_text="The video this track belongs to.",
+    )
+    language = models.CharField(
+        max_length=16,
+        choices=SubtitleLanguage.choices,
+        help_text="The language of this track, as a BCP 47 tag.",
+    )
+    file = models.FileField(
+        upload_to=subtitle_path,
+        validators=[FileExtensionValidator(["vtt"])],
+        help_text="A WebVTT (.vtt) file. Its contents are checked on upload, not just its name.",
+    )
+
+    class Meta:
+        ordering = ["asset", "language"]
+        constraints = [
+            models.UniqueConstraint(fields=["asset", "language"], name="one_subtitle_per_language_per_asset")
+        ]
+        verbose_name = "subtitle track"
+
+    def __str__(self) -> str:
+        return f"{self.get_language_display()} subtitles for {self.asset_id and self.asset.title}"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.asset_id and self.asset.kind != MediaKind.VIDEO:
+            raise ValidationError(f"'{self.asset.title}' is not a video, so it has nothing to subtitle.")
 
 
 class SignCategory(models.TextChoices):
@@ -253,8 +307,9 @@ class Sign(TimestampedModel):
 class QuestionType(models.TextChoices):
     """How a question is answered.
 
-    ``image`` is a single-answer question whose options are road signs rather than words, which
-    the frontend lays out as pictures.
+    ``image`` is a single-answer question whose options are pictures rather than words — either a
+    road sign the frontend draws from its specification or an uploaded image — which the frontend
+    lays out as a grid.
     """
 
     SINGLE = "single", "One answer"
@@ -290,6 +345,16 @@ class Question(PublishableModel, TimestampedModel):
         blank=True,
         related_name="questions",
         verbose_name="sign shown with the question",
+    )
+    media_image = models.ForeignKey(
+        "learning.MediaAsset",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="questions",
+        limit_choices_to={"kind": MediaKind.IMAGE},
+        verbose_name="image shown with the question",
+        help_text="A picture or GIF from the media library. Upload one below to add it to the library.",
     )
     learn_more = models.ForeignKey(
         Subchapter,
@@ -338,6 +403,15 @@ class QuestionOption(TimestampedModel):
         related_name="answer_options",
         help_text="For questions answered with road signs.",
     )
+    image = models.ForeignKey(
+        "learning.MediaAsset",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="answer_options",
+        limit_choices_to={"kind": MediaKind.IMAGE},
+        help_text="For answers that are a picture rather than a sign drawn from a specification.",
+    )
     is_correct = models.BooleanField(default=False)
     order = models.PositiveSmallIntegerField(default=0)
 
@@ -361,7 +435,11 @@ class PracticeExam(PublishableModel, TimestampedModel):
     kind = models.CharField(max_length=10, choices=ExamKind.choices, default=ExamKind.PRACTICE)
 
     time_limit_seconds = models.PositiveIntegerField(null=True, blank=True, help_text="Leave empty for no time limit.")
-    pass_mark = models.PositiveSmallIntegerField(help_text="How many questions must be right to pass.")
+    pass_mark = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="How many questions must be right to pass. Leave empty on a paper of clips alone.",
+    )
     hazard_pass_mark = models.PositiveSmallIntegerField(
         null=True,
         blank=True,
@@ -439,7 +517,7 @@ class QuestionAttempt(TimestampedModel):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["student", "question"])]
+        indexes = [models.Index(fields=["student", "question", "-created_at"])]
 
     def __str__(self) -> str:
         return f"{self.student} · {self.question.key} · {'right' if self.was_correct else 'wrong'}"
@@ -504,6 +582,41 @@ class LessonProgress(models.Model):
 
     def __str__(self) -> str:
         return f"{self.student} · {self.subchapter.title}"
+
+
+class VideoProgress(TimestampedModel):
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="video_progress")
+    content = models.ForeignKey(LearningContent, on_delete=models.CASCADE, related_name="video_progress")
+    position_seconds = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="How far into the video the student had watched.",
+    )
+    duration_seconds = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text="How long the video is, as the player reported it. Empty when it never said.",
+    )
+
+    class Meta:
+        ordering = ["-updated_at"]
+        verbose_name = "video progress"
+        verbose_name_plural = "video progress"
+        constraints = [
+            models.UniqueConstraint(fields=["student", "content"], name="one_video_position_per_lesson_video"),
+            models.CheckConstraint(condition=models.Q(position_seconds__gte=0), name="video_position_is_not_negative"),
+            models.CheckConstraint(
+                condition=models.Q(duration_seconds__isnull=True) | models.Q(duration_seconds__gte=0),
+                name="video_duration_is_not_negative",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.student} · {self.content.title} · {self.position_seconds}s"
 
 
 class SavedQuestion(models.Model):

@@ -119,6 +119,43 @@
     font-weight: 500;
 }
 
+.adm-preview__image {
+    max-width: 420px;
+    height: auto;
+    margin: 12px 0;
+    border-radius: 6px;
+}
+
+.adm-preview__answer-image {
+    max-width: 120px;
+    height: auto;
+    margin-right: 10px;
+    border-radius: 4px;
+    vertical-align: middle;
+}
+
+.adm-preview__body figure {
+    margin: 18px 0;
+}
+
+.adm-preview__body img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+}
+
+.adm-preview__body figcaption {
+    margin-top: 6px;
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.adm-preview__body figure.image-style-side {
+    float: right;
+    max-width: 50%;
+    margin: 6px 0 12px 20px;
+}
+
 .adm-preview__block-title {
     margin-top: 32px;
     padding-top: 18px;

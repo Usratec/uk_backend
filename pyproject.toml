@@ -66,6 +66,7 @@ select = [
 # Tests use bare asserts, fixed dummy secrets and subprocess calls by design.
 "**/tests/**" = ["S101", "S105", "S106", "S603", "S607"]
 "tests/**" = ["S101", "S105", "S106", "S603", "S607"]
+"apps/analytics/management/commands/seed_analytics_demo.py" = ["S311"]
 # Local and test settings deliberately carry non-secret development keys.
 "config/settings/local.py" = ["S105"]
 "config/settings/test.py" = ["S105"]

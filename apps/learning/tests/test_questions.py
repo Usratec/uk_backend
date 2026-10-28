@@ -11,6 +11,7 @@ from apps.core.models import PublishStatus
 from apps.learning import services
 from apps.learning.models import (
     ContentType,
+    ExamKind,
     LearningContent,
     PracticeExam,
     Question,
@@ -265,11 +266,147 @@ class TestQuestionsInsideLessons:
 
 
 class TestExams:
-    def test_an_exam_needs_questions(self, chapter):
-        exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", pass_mark=9)
+    def test_a_practice_exam_with_neither_questions_nor_clips_cannot_be_published(self, publisher):
+        exam = PracticeExam.objects.create(slug="empty", title="Empty paper", kind=ExamKind.PRACTICE, pass_mark=9)
 
-        assert "no questions yet" in services.problems_with_exam(exam)[0]
+        assert "no questions or hazard clips yet" in services.problems_with_exam(exam)[0]
+        with pytest.raises(services.NotReadyToPublishError, match="no questions or hazard clips"):
+            services.publish(actor=publisher, instance=exam)
 
+    def test_a_practice_exam_of_clips_alone_can_be_published(self, publisher, make_clip):
+        exam = PracticeExam.objects.create(
+            slug="hazard-drill", title="Hazard drill", kind=ExamKind.PRACTICE, pass_mark=None, hazard_pass_mark=5
+        )
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
+
+        assert services.problems_with_exam(exam) == []
+
+        services.publish(actor=publisher, instance=exam)
+        exam.refresh_from_db()
+        assert exam.is_published
+
+    def test_a_practice_exam_of_questions_alone_can_be_published(self, publisher, make_question):
+        exam = PracticeExam.objects.create(
+            slug="signs-drill", title="Signs drill", kind=ExamKind.PRACTICE, pass_mark=1
+        )
+        question = make_question()
+        services.publish(actor=publisher, instance=question)
+        exam.questions.add(question)
+
+        assert services.problems_with_exam(exam) == []
+
+        services.publish(actor=publisher, instance=exam)
+        exam.refresh_from_db()
+        assert exam.is_published
+
+    def test_a_practice_exam_of_both_parts_can_be_published(self, publisher, make_question, make_clip):
+        exam = PracticeExam.objects.create(
+            slug="mixed", title="Mixed paper", kind=ExamKind.PRACTICE, pass_mark=1, hazard_pass_mark=5
+        )
+        question = make_question()
+        services.publish(actor=publisher, instance=question)
+        exam.questions.add(question)
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
+
+        assert services.problems_with_exam(exam) == []
+
+    def test_a_clip_only_exam_without_a_hazard_pass_mark_is_warned_about(self, make_clip):
+        exam = PracticeExam.objects.create(slug="hazard-drill", title="Hazard drill", kind=ExamKind.PRACTICE)
+        exam.exam_clips.create(clip=make_clip(), order=1)
+
+        assert "every student will pass it" in services.warnings_about(exam)[0]
+
+
+class TestWhatAMockTestMustContain:
+    def live_question(self, publisher, make_question):
+        question = make_question()
+        services.publish(actor=publisher, instance=question)
+        return question
+
+    def live_clip(self, publisher, make_clip):
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        return clip
+
+    def test_a_mock_test_of_questions_alone_is_refused(self, publisher, make_question):
+        exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=1)
+        exam.questions.add(self.live_question(publisher, make_question))
+
+        assert any("needs hazard clips" in problem for problem in services.problems_with_exam(exam))
+        with pytest.raises(services.NotReadyToPublishError, match="needs hazard clips"):
+            services.publish(actor=publisher, instance=exam)
+
+    def test_a_mock_test_of_clips_alone_is_refused(self, publisher, make_clip):
+        exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, hazard_pass_mark=5)
+        exam.exam_clips.create(clip=self.live_clip(publisher, make_clip), order=1)
+
+        assert any("needs questions" in problem for problem in services.problems_with_exam(exam))
+        with pytest.raises(services.NotReadyToPublishError, match="needs questions"):
+            services.publish(actor=publisher, instance=exam)
+
+    def test_an_empty_mock_test_is_told_about_both_halves(self, publisher):
+        exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=1)
+
+        problems = services.problems_with_exam(exam)
+
+        assert any("needs questions" in problem for problem in problems)
+        assert any("needs hazard clips" in problem for problem in problems)
+
+    def test_a_mock_test_of_both_halves_can_be_published(self, publisher, make_question, make_clip):
+        exam = PracticeExam.objects.create(
+            slug="mock-1", title="Mock test 1", kind=ExamKind.MOCK, pass_mark=1, hazard_pass_mark=5
+        )
+        exam.questions.add(self.live_question(publisher, make_question))
+        exam.exam_clips.create(clip=self.live_clip(publisher, make_clip), order=1)
+
+        assert services.problems_with_exam(exam) == []
+
+        services.publish(actor=publisher, instance=exam)
+        exam.refresh_from_db()
+        assert exam.is_published
+
+
+class TestThePassMarkIsOnlyWantedWithQuestions:
+    def test_a_paper_that_asks_questions_needs_one(self, publisher, make_question):
+        exam = PracticeExam.objects.create(
+            slug="signs-drill", title="Signs drill", kind=ExamKind.PRACTICE, pass_mark=None
+        )
+        question = make_question()
+        services.publish(actor=publisher, instance=question)
+        exam.questions.add(question)
+
+        assert any("needs a pass mark" in problem for problem in services.problems_with_exam(exam))
+
+    def test_a_paper_of_clips_alone_does_not(self, publisher, make_clip):
+        exam = PracticeExam.objects.create(
+            slug="hazard-drill", title="Hazard drill", kind=ExamKind.PRACTICE, pass_mark=None, hazard_pass_mark=5
+        )
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
+
+        assert services.problems_with_exam(exam) == []
+
+    def test_a_sitting_of_a_paper_without_one_is_not_failed_on_its_questions(self, publisher, make_clip):
+        exam = PracticeExam.objects.create(
+            slug="hazard-drill", title="Hazard drill", kind=ExamKind.PRACTICE, pass_mark=None, hazard_pass_mark=5
+        )
+        clip = make_clip()
+        services.publish(actor=publisher, instance=clip)
+        exam.exam_clips.create(clip=clip, order=1)
+
+        result = services.mark_exam(exam, {}, {"country-lane": [10.0]})
+
+        assert result["passMark"] is None
+        assert result["questionsPassed"] is True
+        assert result["passed"] is True
+
+
+class TestWhatElseHoldsAnExamBack:
     def test_an_exam_with_a_draft_question_names_it(self, publisher, make_question):
         exam = PracticeExam.objects.create(slug="mock-1", title="Mock test 1", pass_mark=1)
         exam.questions.add(make_question(key="unfinished"))

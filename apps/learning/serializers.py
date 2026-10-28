@@ -16,7 +16,7 @@ already implements, not Python conventions.
 from drf_spectacular.utils import PolymorphicProxySerializer, extend_schema_field
 from rest_framework import serializers
 
-from apps.learning.models import ExamKind, QuestionType, SignCategory
+from apps.learning.models import ExamKind, QuestionType, SignCategory, SubtitleLanguage
 
 
 class SignSerializer(serializers.Serializer):
@@ -48,8 +48,12 @@ class SignMapField(serializers.DictField):
 class QuestionMediaSerializer(serializers.Serializer):
     """What is shown alongside a question. Only road signs so far."""
 
-    kind = serializers.ChoiceField(choices=[("sign", "sign")])
-    code = serializers.SlugField(help_text="Look this up in the response's `signs` map.")
+    kind = serializers.ChoiceField(choices=[("sign", "sign"), ("image", "image")])
+    code = serializers.SlugField(required=False, help_text="With a sign: look it up in the response's `signs` map.")
+    url = serializers.URLField(
+        required=False,
+        help_text="With a picture: a short-lived signed URL for the image or GIF.",
+    )
 
 
 class QuestionOptionSerializer(serializers.Serializer):
@@ -60,8 +64,12 @@ class QuestionOptionSerializer(serializers.Serializer):
     """
 
     id = serializers.CharField(help_text="Send this back to answer, e.g. 'a'.")
-    text = serializers.CharField(required=False, help_text="Absent on answers that are a sign rather than words.")
+    text = serializers.CharField(required=False, help_text="Absent on answers that are a picture rather than words.")
     sign = serializers.SlugField(required=False, help_text="Present when the answer is a road sign.")
+    image = serializers.URLField(
+        required=False,
+        help_text="Present when the answer is an uploaded picture: a short-lived signed URL.",
+    )
 
 
 class StudentQuestionSerializer(serializers.Serializer):
@@ -105,7 +113,7 @@ class HtmlBlockSerializer(serializers.Serializer):
 
     type = serializers.ChoiceField(choices=[("html", "html")])
     title = serializers.CharField(help_text="Shown as a heading when the lesson has more than one block.")
-    html = serializers.CharField()
+    html = serializers.CharField(help_text="Cleaned HTML. Any picture's src is a short-lived signed URL.")
 
 
 class CheckBlockSerializer(serializers.Serializer):
@@ -119,6 +127,79 @@ class CheckBlockSerializer(serializers.Serializer):
     )
 
 
+class SubtitleSerializer(serializers.Serializer):
+    language = serializers.ChoiceField(
+        choices=SubtitleLanguage.choices,
+        help_text="A BCP 47 tag, for `srclang` — `en-GB`, `fr-FR`. More languages may be added later.",
+    )
+    label = serializers.CharField(help_text="The language's name in English, for the player's menu.")  # type: ignore[assignment]
+    url = serializers.URLField(help_text="A short-lived signed URL for the WebVTT file.")
+
+
+class SubtitleListField(serializers.ListField):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("child", SubtitleSerializer())
+        kwargs.setdefault(
+            "help_text",
+            "The video's subtitle tracks, one per language, empty when it has none. Only videos carry it.",
+        )
+        super().__init__(**kwargs)
+
+
+class VideoProgressSerializer(serializers.Serializer):
+    slug = serializers.SlugField(
+        required=False, help_text="The video block's slug, required when progress is not linked to a block."
+    )
+    positionSeconds = serializers.FloatField(  # noqa: N815
+        help_text="Seconds into the video to resume from. 0 when nothing has been saved."
+    )
+    durationSeconds = serializers.FloatField(  # noqa: N815
+        allow_null=True, help_text="How long the video is, as the player last reported it. Null when it never did."
+    )
+    resumeAt = serializers.CharField(  # noqa: N815
+        help_text="`positionSeconds` as a timecode for the player's label — `03:25`, or `1:02:03` past an hour."
+    )
+    hasProgress = serializers.BooleanField(  # noqa: N815
+        help_text="False when this learner has no saved position for the video, so start from the beginning."
+    )
+    finished = serializers.BooleanField(
+        help_text=(
+            "True if the saved position is within 1.5 seconds of the end. Does not mark the lesson as complete."
+        )
+    )
+    updatedAt = serializers.DateTimeField(  # noqa: N815
+        allow_null=True, help_text="When the position was last saved. Null when there is none."
+    )
+
+
+class VideoProgressRequestSerializer(serializers.Serializer):
+    ALIASES = {"position_seconds": "positionSeconds", "duration_seconds": "durationSeconds"}
+
+    positionSeconds = serializers.DecimalField(  # noqa: N815
+        max_digits=9,
+        decimal_places=2,
+        min_value=0,
+        help_text="Seconds into the video. Clamped to the duration, and a negative value is refused.",
+    )
+    durationSeconds = serializers.DecimalField(  # noqa: N815
+        max_digits=9,
+        decimal_places=2,
+        min_value=0,
+        required=False,
+        allow_null=True,
+        help_text="How long the video is. Optional, and a duration saved earlier is kept when it is left out.",
+    )
+
+    def to_internal_value(self, data):
+        if hasattr(data, "items"):
+            renamed = data.dict() if hasattr(data, "dict") else dict(data)
+            for alias, key in self.ALIASES.items():
+                if alias in renamed and key not in renamed:
+                    renamed[key] = renamed.pop(alias)
+            data = renamed
+        return super().to_internal_value(data)
+
+
 class MediaBlockSerializer(serializers.Serializer):
     """A video to watch or a document to read.
 
@@ -129,6 +210,14 @@ class MediaBlockSerializer(serializers.Serializer):
     type = serializers.ChoiceField(choices=[("video", "video"), ("document", "document")])
     title = serializers.CharField()
     url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
+    slug = serializers.SlugField(
+        required=False,
+        help_text="Only videos carry it: the slug to post to /api/learn/videos/<slug>/progress/.",
+    )
+    subtitles = SubtitleListField(required=False)
+    progress = VideoProgressSerializer(
+        required=False, help_text="The signed-in learner's own saved position. Only videos carry it."
+    )
 
 
 class SignsBlockSerializer(serializers.Serializer):
@@ -208,6 +297,7 @@ class HazardClipSerializer(serializers.Serializer):
     title = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
     url = serializers.URLField(help_text="A short-lived signed URL for the video. Do not cache it.")
+    subtitles = SubtitleListField()
     thumbnailUrl = serializers.URLField(  # noqa: N815
         allow_null=True,
         help_text="A short-lived signed URL for the still, or null when the clip has none.",
@@ -259,6 +349,13 @@ class LessonSummarySerializer(serializers.Serializer):
     summary = serializers.CharField(allow_blank=True)
     minutes = serializers.IntegerField(help_text="Rough study time.")
     done = serializers.BooleanField(help_text="Always false until progress is recorded.")
+    videoProgress = VideoProgressSerializer(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "The video in this lesson the learner last watched, with their saved position, so the "
+            "card can offer to resume it. Null when they have saved none."
+        ),
+    )
 
 
 class TopicSerializer(serializers.Serializer):
@@ -426,7 +523,10 @@ class ExamSummarySerializer(serializers.Serializer):
     description = serializers.CharField(allow_blank=True)
     kind = serializers.ChoiceField(choices=ExamKind.choices)
     questionCount = serializers.IntegerField(help_text="How many questions will be asked.")  # noqa: N815
-    passMark = serializers.IntegerField(help_text="How many must be right to pass.")  # noqa: N815
+    passMark = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text="How many must be right to pass. Null on a paper of hazard clips alone, which asks none.",
+    )
     hazardPassMark = serializers.IntegerField(  # noqa: N815
         allow_null=True,
         help_text=(
@@ -536,11 +636,18 @@ class ExamStatisticsSerializer(serializers.Serializer):
 class ExamResultResponseSerializer(ExamStatisticsSerializer):
     score = serializers.IntegerField(help_text="Questions right. The same as `correctQuestions`.")
     total = serializers.IntegerField(help_text="Questions asked. The same as `totalQuestions`.")
-    passMark = serializers.IntegerField()  # noqa: N815
+    passMark = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="Null on a paper of hazard clips alone, which asks no questions."
+    )
     hazardPassMark = serializers.IntegerField(  # noqa: N815
         allow_null=True, help_text="The clips' own pass mark, or null when none is configured."
     )
-    questionsPassed = serializers.BooleanField(help_text="Whether the question score reached `passMark`.")  # noqa: N815
+    questionsPassed = serializers.BooleanField(  # noqa: N815
+        help_text=(
+            "Whether the question score reached `passMark`. Always true on a paper with no "
+            "questions, which has no question half to fail on — the clips decide it."
+        )
+    )
     hazardPassed = serializers.BooleanField(  # noqa: N815
         allow_null=True,
         help_text=(
@@ -597,6 +704,35 @@ class ExamRefSerializer(serializers.Serializer):
     kind = serializers.ChoiceField(choices=ExamKind.choices)
 
 
+class ExamIdentitySerializer(ExamRefSerializer):
+    id = serializers.IntegerField(help_text="The exam this sitting was of.")
+
+
+class ExamAttemptAcrossExamsSerializer(ExamAttemptSummarySerializer):
+    exam = ExamIdentitySerializer(help_text="Which exam it was. `kind` tells a practice exam from a mock test.")
+    questionsPassed = serializers.BooleanField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Whether the question score reached the pass mark in force at the time. Null for a "
+            "sitting recorded before the marked paper was kept."
+        ),
+    )
+    hazardPassed = serializers.BooleanField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Whether the hazard score reached the pass mark in force at the time. Null when there "
+            "was nothing to judge, and for a sitting recorded before the marked paper was kept."
+        ),
+    )
+
+
+class AllExamAttemptsResponseSerializer(serializers.Serializer):
+    attempts = ExamAttemptAcrossExamsSerializer(
+        many=True, help_text="Newest first, capped at the newest 50 across all exams."
+    )
+    count = serializers.IntegerField(help_text="How many sittings are listed, after the cap.")
+
+
 class ExamAttemptResultResponseSerializer(ExamResultResponseSerializer):
     completedAt = serializers.DateTimeField()  # noqa: N815
     exam = ExamRefSerializer()
@@ -621,7 +757,20 @@ class ProgressSummaryResponseSerializer(serializers.Serializer):
     bestMockScore = serializers.IntegerField(allow_null=True)  # noqa: N815
     practiceAttempts = serializers.IntegerField(help_text="Practice exams sat.")  # noqa: N815
     practiceExamsPassed = serializers.IntegerField()  # noqa: N815
-    bestPracticeScore = serializers.IntegerField(allow_null=True)  # noqa: N815
+    bestPracticeScore = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "The best practice exam sat, as a whole percentage of that sitting's questions — not "
+            "a count of right answers, because papers ask different numbers of questions. Null "
+            "until one has been sat. Hazard marks are never part of it."
+        ),
+    )
+    bestPracticeCorrect = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="Questions right in that same sitting. Null until one has been sat."
+    )
+    bestPracticeTotal = serializers.IntegerField(  # noqa: N815
+        allow_null=True, help_text="Questions that same sitting asked. Null until one has been sat."
+    )
     hazardAttempts = serializers.IntegerField()  # noqa: N815
     bestHazardScore = serializers.IntegerField(allow_null=True)  # noqa: N815
 

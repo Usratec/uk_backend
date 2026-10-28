@@ -36,6 +36,7 @@ from apps.learning.models import (
     Subchapter,
 )
 from apps.learning.serializers import (
+    AllExamAttemptsResponseSerializer,
     AnswerRequestSerializer,
     AnswerResponseSerializer,
     DoneResponseSerializer,
@@ -58,6 +59,8 @@ from apps.learning.serializers import (
     SavedResponseSerializer,
     SignListResponseSerializer,
     TopicListResponseSerializer,
+    VideoProgressRequestSerializer,
+    VideoProgressSerializer,
 )
 
 PLAN_NEEDED = "An active plan is needed for this"
@@ -115,6 +118,9 @@ class TopicListView(APIView):
         done = services.completed_lesson_ids(student)
         mastery = services.mastery_by_chapter(student, chapters)
         lessons = self._lessons_by_chapter(student, chapters, has_access, package_id)
+        resumable = services.resumable_videos_by_lesson(
+            student, [subchapter for group in lessons.values() for subchapter in group]
+        )
 
         return Response(
             {
@@ -132,6 +138,7 @@ class TopicListView(APIView):
                                 "summary": subchapter.summary,
                                 "minutes": subchapter.minutes,
                                 "done": subchapter.pk in done,
+                                "videoProgress": resumable.get(subchapter.pk),
                             }
                             for subchapter in lessons.get(chapter.pk, [])
                         ],
@@ -183,12 +190,17 @@ class LessonDetailView(APIView):
             # endpoint cannot be used to map out what other packages contain.
             return plan_needed()
 
-        content = entitlements.visible_content(student, services.live_content_of(subchapter)).order_by(
-            "order", "title"
+        content = (
+            entitlements.visible_content(student, services.live_content_of(subchapter))
+            .select_related("media", "hazard_clip__media")
+            .prefetch_related("media__subtitles", "hazard_clip__media__subtitles", "hazard_clip__windows")
+            .order_by("order", "title")
         )
 
         neighbours = list(services.live_subchapters_of(subchapter.chapter).order_by("order", "title"))
         position = next((i for i, item in enumerate(neighbours) if item.pk == subchapter.pk), None)
+        content = list(content)
+        positions = services.video_positions_for(student, content)
 
         return Response(
             {
@@ -197,7 +209,7 @@ class LessonDetailView(APIView):
                     "title": subchapter.title,
                     "summary": subchapter.summary,
                     "minutes": subchapter.minutes,
-                    "blocks": [services.block_for(item) for item in content],
+                    "blocks": [services.block_for(item, positions.get(item.pk)) for item in content],
                 },
                 "topic": {
                     "slug": subchapter.chapter.slug,
@@ -396,7 +408,11 @@ class PracticeSetView(APIView):
         mode = request.query_params.get("mode", "random")
         count = _count_from(request.query_params.get("count"))
 
-        questions = services.live(Question.objects.select_related("chapter").prefetch_related("options"))
+        questions = services.live(
+            Question.objects.select_related("chapter", "media_sign", "media_image").prefetch_related(
+                "options__sign", "options__image"
+            )
+        )
         questions = entitlements.visible_questions(student, questions)
 
         if mode == "topic":
@@ -462,20 +478,19 @@ class AnswerView(APIView):
         if not entitlements.has_access(student):
             return plan_needed()
 
+        submitted = AnswerRequestSerializer(data=request.data)
+        submitted.is_valid(raise_exception=True)
+
         question = (
-            services.live(Question.objects.prefetch_related("options"))
-            .filter(pk=request.data.get("questionId"))
+            services.live(Question.objects.prefetch_related("options__sign", "options__image"))
+            .filter(pk=submitted.validated_data["questionId"])
             .first()
         )
         if question is None or not entitlements.can_view(student, question):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        selected = request.data.get("selected") or []
-        if not isinstance(selected, list):
-            return Response({"detail": "selected must be a list of option ids."}, status=400)
-
         # Marked on the server: the answer was never in the page for the student to read.
-        marked = services.mark_answer(question, [str(option) for option in selected])
+        marked = services.mark_answer(question, submitted.validated_data["selected"])
         services.record_answer(student, question, marked["correct"])
         return Response(marked)
 
@@ -659,6 +674,20 @@ class ExamAttemptListView(APIView):
         )
 
 
+class AllExamAttemptsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="listAllExamAttempts",
+        summary="Your attempts across every exam",
+        responses={200: AllExamAttemptsResponseSerializer},
+    )
+    def get(self, request: Request) -> Response:
+        student = cast(User, request.user)
+        attempts = [services.attempt_across_exams(attempt) for attempt in services.all_attempts_of(student)]
+        return Response({"attempts": attempts, "count": len(attempts)})
+
+
 class ExamAttemptView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -703,6 +732,36 @@ class LessonCompleteView(APIView):
 
         services.mark_lesson_done(student, subchapter)
         return Response({"done": True})
+
+
+class VideoProgressView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="saveVideoProgress",
+        summary="Save where a learner is up to in a lesson video",
+        request=VideoProgressRequestSerializer,
+        responses={200: VideoProgressSerializer},
+    )
+    def post(self, request: Request, slug: str) -> Response:
+        student = cast(User, request.user)
+        video = services.live_video(slug)
+        if video is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not entitlements.can_view(student, video):
+            return plan_needed()
+
+        sent = VideoProgressRequestSerializer(data=request.data)
+        sent.is_valid(raise_exception=True)
+
+        progress = services.save_video_position(
+            student=student,
+            content=video,
+            position_seconds=sent.validated_data["positionSeconds"],
+            duration_seconds=sent.validated_data.get("durationSeconds"),
+        )
+        return Response({"slug": video.slug, **services.video_position_of(progress)})
 
 
 class SavedQuestionView(APIView):
@@ -773,7 +832,9 @@ class HazardClipListView(APIView):
         if not entitlements.has_access(student):
             return plan_needed()
 
-        listing = services.live(HazardClip.objects.select_related("media").prefetch_related("windows"))
+        listing = services.live(
+            HazardClip.objects.select_related("media").prefetch_related("windows", "media__subtitles")
+        )
         clips = list(listing.order_by("order", "title"))
         stats = services.hazard_stats_for(student, clips)
         return Response({"clips": [services.student_view_of_clip(clip, stats[clip.pk]) for clip in clips]})
@@ -796,7 +857,7 @@ class HazardClipView(APIView):
     def _find(self, student, slug: str):
         if not entitlements.has_access(student):
             return None
-        clips = HazardClip.objects.select_related("media").prefetch_related("windows")
+        clips = HazardClip.objects.select_related("media").prefetch_related("windows", "media__subtitles")
         return services.live(clips).filter(slug=slug).first()
 
 

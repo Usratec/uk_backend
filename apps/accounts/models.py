@@ -3,6 +3,7 @@ import secrets
 from datetime import timedelta
 
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
@@ -15,6 +16,31 @@ class AuthMethod(models.TextChoices):
 
     EMAIL = "email", "Email + password"
     GOOGLE = "google", "Google sign-in"
+
+
+class ConfidenceLevel(models.TextChoices):
+    NOT_CONFIDENT = "not_confident", "Not confident"
+    SOMEWHAT_CONFIDENT = "somewhat_confident", "Somewhat confident"
+    CONFIDENT = "confident", "Confident"
+    VERY_CONFIDENT = "very_confident", "Very confident"
+
+
+UK_POSTCODE = RegexValidator(
+    regex=r"^[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}$",
+    message="Enter a valid UK postcode, for example SW1A 1AA.",
+)
+
+
+def normalise_postcode(value: str) -> str:
+    compact = value.replace(" ", "").upper()
+    if len(compact) < 5:
+        return compact
+    return f"{compact[:-3]} {compact[-3:]}"
+
+
+def profile_photo_path(instance: "User", filename: str) -> str:
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    return f"profile-photos/{instance.pk}/{secrets.token_hex(8)}.{extension}"
 
 
 class UserManager(BaseUserManager["User"]):
@@ -48,7 +74,9 @@ class UserManager(BaseUserManager["User"]):
         return super().normalize_email(email).lower()
 
     def get_by_natural_key(self, email: str | None):
-        return self.get(email__iexact=email)
+        if email is None:
+            raise self.model.DoesNotExist
+        return self.get(email=email.lower())
 
 
 class User(AbstractBaseUser, PermissionsMixin, TimestampedModel):
@@ -58,6 +86,38 @@ class User(AbstractBaseUser, PermissionsMixin, TimestampedModel):
     first_name = models.CharField(max_length=150)
     last_name = models.CharField(max_length=150, blank=True)
     phone = models.CharField(max_length=20, blank=True)
+    postcode = models.CharField(
+        max_length=10,
+        blank=True,
+        validators=[UK_POSTCODE],
+        help_text="UK postcode, stored uppercased as SW1A 1AA.",
+    )
+    theory_test_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The date the learner has booked, if they have booked one.",
+    )
+    confidence_level = models.CharField(
+        max_length=20,
+        choices=ConfidenceLevel.choices,
+        blank=True,
+        help_text="How ready the learner says they feel. Empty means they have not said.",
+    )
+    marketing_email_opt_in = models.BooleanField(
+        default=False,
+        help_text="Only true if the learner ticked the box themselves. Signing up is not consent.",
+    )
+    marketing_email_opt_in_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the learner last changed that choice. Kept as the record of consent.",
+    )
+    photo = models.ImageField(
+        upload_to=profile_photo_path,
+        blank=True,
+        verbose_name="profile photo",
+        help_text="JPG, PNG or WebP, up to 10 MB.",
+    )
 
     auth_method = models.CharField(max_length=10, choices=AuthMethod.choices, default=AuthMethod.EMAIL)
     google_id = models.CharField("Google account id", max_length=255, unique=True, null=True, blank=True)
@@ -88,6 +148,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimestampedModel):
 
     def __str__(self) -> str:
         return self.email
+
+    def clean(self) -> None:
+        super().clean()
+        self.postcode = normalise_postcode(self.postcode)
 
     def get_full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip() or self.email

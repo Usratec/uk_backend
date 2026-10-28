@@ -43,6 +43,7 @@ def order(package):
         first_name="Bea",
         original_price=package.price,
         final_price=package.price,
+        stripe_session_id="cs_test",
     )
 
 

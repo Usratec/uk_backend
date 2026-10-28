@@ -194,9 +194,7 @@ class TestReadingInSections:
         assert response.data["ebook"]["title"] == "Study guide"
         assert [section["title"] for section in response.data["sections"]] == ["The hierarchy"]
         assert response.data["sections"][0]["number"] == 1
-        assert response.data["sections"][0]["blocks"] == [
-            {"type": "html", "html": "<p>Rule H1.</p>", "title": "The hierarchy"}
-        ]
+        assert response.data["sections"][0]["blocks"] == [{"type": "html", "html": "<p>Rule H1.</p>", "title": ""}]
 
     def test_it_says_where_to_carry_on(self, api, student, read_online):
         response = sign_in(api, student()).get(ebook_url("study-guide"))
@@ -234,6 +232,7 @@ class TestReadingInSections:
 
         assert [block["type"] for block in blocks] == ["html", "document"]
         assert blocks[1]["url"] == document.file.url
+        assert [block["title"] for block in blocks] == ["", ""]
 
     def test_a_video_in_a_section_becomes_a_video_block(self, api, student, read_online, make_section, publisher):
         video = MediaAsset.objects.create(

@@ -1,0 +1,9 @@
+<section id="overview" class="bi-section">
+    <h2>Business overview</h2>
+    <p class="bi-intro">
+        Revenue counts payments that completed, by payment date. A payment refunded later still
+        counts on the day it was taken, and the refund is subtracted on the day it was refunded.
+        Pending and failed payments never count as revenue.
+    </p>
+    {% include "admin/analytics/_boxes.html" with boxes=overview_boxes only %}
+</section>
