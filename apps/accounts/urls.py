@@ -1,8 +1,11 @@
 from django.urls import path
 
-from apps.accounts import cabinet_views, views
+from apps.accounts import apple_views, cabinet_views, deletion_views, views
 
 urlpatterns = [
+    path("auth/apple/nonce/", apple_views.AppleNonceView.as_view(), name="auth-apple-nonce"),
+    path("auth/apple/", apple_views.AppleSignInView.as_view(), name="auth-apple"),
+    path("auth/apple/link/", apple_views.AppleLinkView.as_view(), name="auth-apple-link"),
     path("auth/register/", views.RegisterView.as_view(), name="auth-register"),
     path("auth/login/", views.LoginView.as_view(), name="auth-login"),
     path("auth/google/", views.GoogleSignInView.as_view(), name="auth-google"),
@@ -19,6 +22,7 @@ urlpatterns = [
     ),
     # The customer's own account area.
     path("cabinet/profile/", cabinet_views.ProfileView.as_view(), name="cabinet-profile"),
+    path("cabinet/account/", deletion_views.AccountDeletionView.as_view(), name="cabinet-account-delete"),
     path("cabinet/profile/photo/", cabinet_views.ProfilePhotoView.as_view(), name="cabinet-profile-photo"),
     path("cabinet/email/change/", cabinet_views.EmailChangeRequestView.as_view(), name="cabinet-email-change"),
     path(

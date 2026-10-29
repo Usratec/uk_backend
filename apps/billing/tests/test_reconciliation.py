@@ -395,6 +395,7 @@ class TestRunningFulfilmentTwice:
         code.refresh_from_db()
         assert code.uses_count == 1
 
+    @pytest.mark.django_db(transaction=True)
     def test_the_welcome_email_is_sent_once(self, package):
         from django.core import mail
 

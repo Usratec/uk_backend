@@ -16,6 +16,13 @@ EXPIRY_LOOKBACK = timedelta(days=2)
 
 
 @shared_task
+def deliver_pending_push() -> int:
+    from apps.notifications.push import deliver_pending
+
+    return deliver_pending()
+
+
+@shared_task
 def check_study_streak(student_id: int) -> int | None:
     from apps.learning import services as learning
 

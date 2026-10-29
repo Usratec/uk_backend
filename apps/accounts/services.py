@@ -224,8 +224,10 @@ def invalidate_tokens(user: User, purposes: Sequence[str], at=None) -> int:
 # --- Email verification -------------------------------------------------------------------------
 
 
-def send_email_verification(user: User) -> bool:
+def send_email_verification(user: User, *, after_commit: bool = False) -> bool:
     token = SecurityToken.objects.issue(TokenPurpose.EMAIL_VERIFICATION, user, EMAIL_VERIFICATION_VALID_FOR)
+    if after_commit:
+        return emails.send_quietly(emails.send_email_verification, user, token, True)
     return emails.send_quietly(emails.send_email_verification, user, token)
 
 

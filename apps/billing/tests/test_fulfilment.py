@@ -15,7 +15,7 @@ from apps.billing.models import Order, OrderStatus
 from apps.billing.tasks import fulfil_order
 from apps.entitlements.models import Subscription
 
-pytestmark = pytest.mark.django_db
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
@@ -40,6 +40,86 @@ def fulfil(order):
 
 def subjects():
     return sorted(message.subject for message in mail.outbox)
+
+
+def test_welcome_task_is_published_only_after_token_is_visible_to_worker(paid_order, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from django.db import connections, transaction
+
+    from apps.accounts.tasks import send_security_link
+    from apps.billing import emails, fulfilment
+
+    user = fulfilment.provision_account(paid_order)
+    visible = []
+
+    def worker_can_read(token_id):
+        try:
+            return SecurityToken.objects.filter(pk=token_id).exists()
+        finally:
+            connections.close_all()
+
+    def publish(*, token_id, template):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            visible.append(pool.submit(worker_can_read, token_id).result(timeout=5))
+
+    monkeypatch.setattr(send_security_link, "delay", publish)
+    with transaction.atomic():
+        emails.send_welcome(user)
+        assert visible == []
+    assert visible == [True]
+
+
+def test_failed_after_commit_welcome_remains_retryable(paid_order, monkeypatch):
+    from apps.accounts import emails
+    from apps.billing import fulfilment
+
+    def unavailable(*args, **kwargs):
+        raise OSError("delivery unavailable")
+
+    with monkeypatch.context() as failing:
+        failing.setattr(emails, "remember_secret", unavailable)
+        failing.setattr(emails, "deliver_security_link", unavailable)
+        with pytest.raises(OSError, match="delivery unavailable"):
+            fulfilment.fulfil(paid_order)
+
+    paid_order.refresh_from_db()
+    assert paid_order.welcome_email_required
+    assert paid_order.welcome_email_sent_at is None
+    fulfilment.fulfil(paid_order)
+    paid_order.refresh_from_db()
+    assert paid_order.welcome_email_sent_at is not None
+    assert any(message.subject.startswith("Welcome") for message in mail.outbox)
+
+
+def test_deletion_between_activation_and_email_does_not_queue_erased_profile(paid_order, monkeypatch):
+    from unittest.mock import Mock
+
+    from apps.accounts.deletion import delete_account
+    from apps.billing import fulfilment
+
+    activate = fulfilment._activate_paid_order
+
+    def delete_after_activation(order):
+        result = activate(order)
+        assert result is not None
+        delete_account(result[1])
+        return result
+
+    welcome = Mock()
+    receipt = Mock()
+    crm = Mock()
+    monkeypatch.setattr(fulfilment, "_activate_paid_order", delete_after_activation)
+    monkeypatch.setattr(fulfilment, "send_welcome", welcome)
+    monkeypatch.setattr(fulfilment, "send_order_confirmation", receipt)
+    monkeypatch.setattr(fulfilment.notifications, "notify_access_granted", crm)
+
+    fulfilment.fulfil(paid_order)
+
+    welcome.assert_not_called()
+    receipt.assert_not_called()
+    crm.assert_not_called()
+    assert not User.objects.filter(email=paid_order.email).exists()
 
 
 class TestNewCustomer:

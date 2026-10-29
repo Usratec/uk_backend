@@ -12,6 +12,7 @@ from functools import partial
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from apps.accounts.deletion import is_deleted_order_email
 from apps.accounts.models import AuthMethod, User
 from apps.accounts.services import send_email_verification
 from apps.billing import emails
@@ -25,9 +26,36 @@ logger = logging.getLogger(__name__)
 
 def fulfil(order: Order) -> None:
     """Give the buyer their account, their access and their emails."""
+    activated = _activate_paid_order(order)
+    if activated is None:
+        return
+    _notify_paid_order(activated[0])
+
+
+@transaction.atomic
+def _notify_paid_order(order: Order) -> None:
+    # Activation commits separately so failed emails can be retried. Reacquire the deletion
+    # lock before using profile snapshots: deletion may have happened between these phases.
+    order = Order.objects.select_for_update().select_related("package").get(pk=order.pk)
+    if is_deleted_order_email(order.email) or order.user_id is None:
+        return
+    user = User.objects.select_for_update().filter(pk=order.user_id).first()
+    if user is None:
+        return
+    send_welcome(order, user)
+    send_order_confirmation(order)
+    notifications.notify_access_granted(order, user)
+
+
+@transaction.atomic
+def _activate_paid_order(order: Order) -> tuple[Order, User] | None:
+    # Share the deletion lock: stale webhook objects must never recreate an erased account.
+    order = Order.objects.select_for_update().select_related("package").get(pk=order.pk)
+    if is_deleted_order_email(order.email):
+        return None
     if order.status != OrderStatus.PAID:
         logger.error("Refusing to fulfil order %s, which is %s", order.id, order.status)
-        return
+        return None
 
     user = provision_account(order)
     subscription, _ = entitlements.activate(order, user)
@@ -37,9 +65,7 @@ def fulfil(order: Order) -> None:
     )
 
     order.refresh_from_db()
-    send_welcome(order, user)
-    send_order_confirmation(order)
-    notifications.notify_access_granted(order, user)
+    return order, user
 
 
 def provision_account(order: Order) -> User:
@@ -50,6 +76,8 @@ def provision_account(order: Order) -> User:
     """
     with transaction.atomic():
         locked_order = Order.objects.select_for_update().get(pk=order.pk)
+        if is_deleted_order_email(locked_order.email):
+            raise ValueError("Cannot provision an account for an anonymised order.")
         user = User.objects.filter(email__iexact=locked_order.email).first()
         created = False
 
@@ -108,7 +136,7 @@ def send_welcome(order: Order, user: User) -> None:
     # Paying does not prove the person can read the mailbox. The same confirmation link
     # registration uses is what sets email_verified.
     if not user.email_verified:
-        send_email_verification(user)
+        send_email_verification(user, after_commit=True)
 
 
 def send_order_confirmation(order: Order) -> None:

@@ -1,13 +1,15 @@
 """The emails the authentication flows send. Subjects are part of the product and must not drift."""
 
 import logging
+from collections.abc import Callable
 from typing import TypedDict
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import transaction
 from django.utils import timezone
 
-from apps.accounts.models import SecurityToken, hash_token
+from apps.accounts.models import SecurityToken, User, hash_token
 from apps.core import email
 
 logger = logging.getLogger(__name__)
@@ -49,8 +51,8 @@ _MESSAGES: dict[str, _Message] = {
 }
 
 
-def send_email_verification(user, token: str) -> None:
-    queue_security_link(token, "email_verification")
+def send_email_verification(user, token: str, after_commit: bool = False) -> None:
+    queue_security_link(token, "email_verification", after_commit=after_commit)
 
 
 def send_password_reset(user, token: str) -> None:
@@ -62,7 +64,9 @@ def send_email_change_confirmation(user, new_email: str, token: str) -> None:
     queue_security_link(token, "email_change")
 
 
-def queue_security_link(raw_token: str, template: str) -> None:
+def queue_security_link(
+    raw_token: str, template: str, *, after_commit: bool = False, on_failure: Callable[[], None] | None = None
+) -> None:
     """Queue a link email. The code stays in the cache until the worker sends, then it is dropped.
 
     If the cache or the queue cannot be reached, the link is sent here. The code is still in
@@ -71,6 +75,37 @@ def queue_security_link(raw_token: str, template: str) -> None:
     if template not in _MESSAGES:
         raise ValueError(f"Unknown security email {template}.")
     token = SecurityToken.objects.select_related("user").get(token_hash=hash_token(raw_token))
+    if after_commit:
+        transaction.on_commit(lambda: _dispatch_after_commit(token.pk, raw_token, template, on_failure))
+        return
+    _dispatch_link(token, raw_token, template)
+
+
+def _dispatch_after_commit(token_id, raw_token, template, on_failure) -> None:
+    try:
+        _dispatch_committed_link(token_id, raw_token, template)
+    except Exception:
+        # Restore caller retry markers after the dispatch transaction releases its user lock.
+        if on_failure is not None:
+            on_failure()
+        raise
+
+
+@transaction.atomic
+def _dispatch_committed_link(token_id: int, raw_token: str, template: str) -> None:
+    token = SecurityToken.objects.filter(pk=token_id).first()
+    if token is None:
+        return
+    # Deletion may have happened after commit but before this callback. Serialize with erasure
+    # before publishing. The token itself was already committed and is visible to the worker.
+    if not User.objects.select_for_update().filter(pk=token.user_id).exists():
+        return
+    token = SecurityToken.objects.select_related("user").filter(pk=token_id).first()
+    if token is not None:
+        _dispatch_link(token, raw_token, template)
+
+
+def _dispatch_link(token: SecurityToken, raw_token: str, template: str) -> None:
     from apps.accounts.tasks import send_security_link
 
     try:
