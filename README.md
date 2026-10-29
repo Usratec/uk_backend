@@ -176,7 +176,6 @@ stay server-side, as does the email captured at checkout.
 The list is capped at the newest 50, like notifications, because nothing in this API is paginated.
 One query serves it: the package is joined in, so a long history costs no more than a short one.
 
-
 ### Learner video position
 
 `POST /api/learn/videos/<slug>/progress/` saves where the signed-in learner is up to in a lesson
@@ -263,6 +262,13 @@ sent so the customer is not emailed twice.
 
 There is no theory-test-date reminder. The profile now records `theory_test_date`, but nothing
 reads it to schedule a notification; that is a decision for whoever adds the reminder.
+
+### Direct video uploads and HLS streaming
+
+Videos no longer pass through Django. The browser is given short-lived permission to write **one**
+object into the private bucket, the backend checks what actually arrived, and a Celery worker turns
+it into an HLS ladder with ffmpeg. Playback is authorized per learner and served by CloudFront.
+
 
 ### Uploaded pictures carry no metadata
 

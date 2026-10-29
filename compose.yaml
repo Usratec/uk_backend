@@ -39,6 +39,14 @@ services:
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_REGION: ${S3_REGION:-auto}
+
+      CLOUDFRONT_DOMAIN: ${CLOUDFRONT_DOMAIN:-}
+      CLOUDFRONT_KEY_PAIR_ID: ${CLOUDFRONT_KEY_PAIR_ID:-}
+      CLOUDFRONT_PRIVATE_KEY: ${CLOUDFRONT_PRIVATE_KEY:-}
+      CLOUDFRONT_COOKIE_DOMAIN: ${CLOUDFRONT_COOKIE_DOMAIN:-}
+      VIDEO_TRANSCODING_ENABLED: ${VIDEO_TRANSCODING_ENABLED:-True}
+
+      CELERY_TASK_ALWAYS_EAGER: "False"
     ports:
       - "8000:8000"
     # Mount the source code so edits apply without rebuilding the image.
@@ -50,13 +58,35 @@ services:
       redis:
         condition: service_started
 
-  # Runs background jobs: finishing a purchase after Stripe confirms payment, and sending emails.
+  # Runs background jobs: finishing a purchase after Stripe confirms payment, sending emails, and
+  # transcoding uploaded video. Both queues, because transcode_video is routed to its own queue and
+  # would otherwise sit untouched here. How the queues are split across containers when deployed is
+  # a deployment decision, not this file's.
   worker:
     build: .
-    command: celery --app config worker --loglevel info
+    command: celery --app config worker --queues celery,video --loglevel info
     environment: *django_env
     volumes: *source_code
     depends_on: *backing_services
+
+  # An S3 bucket on this machine, so the upload and streaming pipeline can be exercised without
+  # an AWS account. Started only on request:
+  #
+  #   docker compose --profile s3 up
+  #
+  # It needs the four S3_ variables in .env to match (see the README), and `127.0.0.1 localstack`
+  # in /etc/hosts if a browser on this machine is to follow the presigned URLs the backend signs —
+  # the host is part of the signature, so the backend and the browser have to spell it the same way.
+  localstack:
+    image: localstack/localstack:3.0
+    profiles: [s3]
+    environment:
+      SERVICES: s3
+      DEBUG: 0
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
 
   # Puts the scheduled jobs on the queue at their appointed times. Only ever run one of these.
   beat:
@@ -68,3 +98,4 @@ services:
 
 volumes:
   postgres_data:
+  localstack_data:

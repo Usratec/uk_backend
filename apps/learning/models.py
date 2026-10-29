@@ -22,6 +22,8 @@ Content is addressed by ``slug`` because that is what the API asks for, so a slu
 the public contract once published.
 """
 
+from uuid import uuid4
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, MinValueValidator
@@ -191,6 +193,28 @@ def media_path(instance, filename: str) -> str:
     return f"learning/{instance.kind}/{filename}"
 
 
+class VideoProcessingStatus(models.TextChoices):
+    LEGACY = "legacy", "Uploaded through the admin"
+    PENDING_UPLOAD = "pending_upload", "Waiting for the upload"
+    UPLOADED = "uploaded", "Uploaded, being checked"
+    QUEUED = "queued", "Queued for processing"
+    PROCESSING = "processing", "Processing"
+    READY = "ready", "Ready to stream"
+    FAILED = "failed", "Processing failed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+UNFINISHED_UPLOAD_STATUSES = (
+    VideoProcessingStatus.PENDING_UPLOAD,
+    VideoProcessingStatus.UPLOADED,
+)
+
+ACTIVE_PROCESSING_STATUSES = (
+    VideoProcessingStatus.QUEUED,
+    VideoProcessingStatus.PROCESSING,
+)
+
+
 class MediaAsset(TimestampedModel):
     """A file staff uploaded — a video, a document, an image.
 
@@ -213,18 +237,87 @@ class MediaAsset(TimestampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploads"
     )
 
+    upload_token = models.UUIDField(
+        default=uuid4,
+        unique=True,
+        editable=False,
+        help_text="How the frontend refers to this file while uploading it and when asking to play it.",
+    )
+    processing_status = models.CharField(
+        max_length=20,
+        choices=VideoProcessingStatus.choices,
+        default=VideoProcessingStatus.LEGACY,
+        editable=False,
+        db_index=True,
+        help_text="Where this file is between being chosen and being ready to stream.",
+    )
+    upload_expires_at = models.DateTimeField(
+        null=True, blank=True, editable=False, help_text="After this the upload can no longer be finished."
+    )
+    multipart_upload_id = models.CharField(max_length=255, blank=True, editable=False)
+    declared_size_bytes = models.PositiveBigIntegerField(
+        default=0, editable=False, help_text="The size the browser said it would send, before it sent anything."
+    )
+    hls_prefix = models.CharField(max_length=255, blank=True, editable=False)
+    hls_master_key = models.CharField(max_length=255, blank=True, editable=False)
+    renditions = models.JSONField(
+        default=list, blank=True, editable=False, help_text="The quality levels that were produced."
+    )
+    duration_seconds = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, editable=False)
+    source_width = models.PositiveIntegerField(default=0, editable=False)
+    source_height = models.PositiveIntegerField(default=0, editable=False)
+    processing_job = models.UUIDField(
+        null=True, blank=True, editable=False, help_text="The processing run that owns this file right now."
+    )
+    processing_error = models.TextField(blank=True, editable=False)
+    processing_attempts = models.PositiveSmallIntegerField(default=0, editable=False)
+    queued_at = models.DateTimeField(null=True, blank=True, editable=False)
+    processing_started_at = models.DateTimeField(null=True, blank=True, editable=False)
+    processing_heartbeat_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="Last sign of life from the worker holding this file. Stops when its task dies.",
+    )
+    processing_finished_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["processing_status", "upload_expires_at"])]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(processing_status=VideoProcessingStatus.READY) | ~models.Q(hls_master_key=""),
+                name="ready_video_has_a_master_playlist",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.title
+
+    @property
+    def is_streaming(self) -> bool:
+        return bool(self.hls_master_key) and self.processing_status != VideoProcessingStatus.CANCELLED
+
+    @property
+    def has_source_file(self) -> bool:
+        return bool(self.file) and self.processing_status not in (
+            VideoProcessingStatus.PENDING_UPLOAD,
+            VideoProcessingStatus.CANCELLED,
+        )
+
+    @property
+    def is_playable_source(self) -> bool:
+        if not self.file:
+            return False
+        if self.processing_status in (VideoProcessingStatus.LEGACY, VideoProcessingStatus.READY):
+            return True
+        return self.is_streaming
 
     def save(self, *args, **kwargs):
         if self.file and not self.file._committed:
             self.file = images.without_metadata_if_image(self.file.file)
 
-        # Taken from the upload itself rather than trusted from a form field.
-        if self.file:
+        if self.file and self.processing_status == VideoProcessingStatus.LEGACY:
             self.size_bytes = getattr(self.file, "size", 0) or 0
             self.content_type = getattr(getattr(self.file, "file", None), "content_type", "") or self.content_type
         super().save(*args, **kwargs)

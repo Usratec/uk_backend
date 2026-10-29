@@ -1,10 +1,39 @@
 from django.urls import path
 
-from apps.learning import api, editor_views
+from apps.learning import api, editor_views, media_views
 
 urlpatterns = [
     path("learning/media/upload/", editor_views.media_upload, name="learning-media-upload"),
     path("learning/media/<int:pk>/", editor_views.media_file, name="learning-media-file"),
+    # Direct browser-to-bucket video uploads. Staff only: the video bytes never pass through here,
+    # only the permission to write one object and the check on what arrived.
+    path("learning/media/videos/", media_views.VideoUploadStartView.as_view(), name="learning-video-upload-start"),
+    path(
+        "learning/media/videos/<uuid:media_id>/",
+        media_views.VideoStatusView.as_view(),
+        name="learning-video-status",
+    ),
+    path(
+        "learning/media/videos/<uuid:media_id>/parts/",
+        media_views.VideoUploadPartsView.as_view(),
+        name="learning-video-upload-parts",
+    ),
+    path(
+        "learning/media/videos/<uuid:media_id>/complete/",
+        media_views.VideoUploadCompleteView.as_view(),
+        name="learning-video-upload-complete",
+    ),
+    path(
+        "learning/media/videos/<uuid:media_id>/cancel/",
+        media_views.VideoUploadCancelView.as_view(),
+        name="learning-video-upload-cancel",
+    ),
+    # What a learner asks for when they press play.
+    path(
+        "learn/media/<uuid:media_id>/playback/",
+        media_views.MediaPlaybackView.as_view(),
+        name="learn-media-playback",
+    ),
     # The frontend's own words: a chapter is a "topic" and a subchapter is a "lesson".
     path("learn/topics/", api.TopicListView.as_view(), name="learn-topics"),
     path("learn/lessons/<slug:slug>/", api.LessonDetailView.as_view(), name="learn-lesson"),

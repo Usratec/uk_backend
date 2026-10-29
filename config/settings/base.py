@@ -163,6 +163,7 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
         "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
+        "VideoProcessingStatusEnum": "apps.learning.models.VideoProcessingStatus.choices",
     },
 }
 
@@ -196,6 +197,14 @@ CELERY_TIMEZONE = TIME_ZONE
 # Safe because the tasks here can be repeated without doing anything twice.
 CELERY_TASK_ACKS_LATE = True
 
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = env.int("CELERY_WORKER_PREFETCH_MULTIPLIER", default=1)
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+
+VIDEO_TASK_QUEUE = env.str("VIDEO_TASK_QUEUE", default="video")
+CELERY_TASK_DEFAULT_QUEUE = env.str("CELERY_TASK_DEFAULT_QUEUE", default="celery")
+CELERY_TASK_ROUTES = {"apps.learning.tasks.transcode_video": {"queue": VIDEO_TASK_QUEUE}}
+
 CELERY_BEAT_SCHEDULE = {
     "send-expiry-reminders": {
         "task": "apps.entitlements.tasks.send_expiry_reminders",
@@ -224,6 +233,10 @@ CELERY_BEAT_SCHEDULE = {
     "delete-unfinished-orders": {
         "task": "apps.billing.tasks.delete_unfinished_orders",
         "schedule": crontab(hour="1", minute="0"),
+    },
+    "sweep-abandoned-video-uploads": {
+        "task": "apps.learning.tasks.sweep_abandoned_uploads",
+        "schedule": crontab(minute="*/15"),
     },
 }
 
@@ -261,9 +274,13 @@ STORAGES: dict[str, dict] = {
 # --- Uploaded files ------------------------------------------------------------------------------
 #
 # Videos, documents and images staff upload go to an S3-compatible bucket rather than the disk,
-# because the web container's filesystem does not survive a deploy. The settings are the generic
-# S3 ones, so the same code runs against Cloudflare R2 today and AWS S3 later by changing the
-# endpoint; R2 has no regions, hence `auto`.
+# because the container's filesystem does not survive a deploy. The settings are the generic S3
+# ones, so the same code runs against Cloudflare R2 and against AWS S3:
+#
+#   R2      S3_ENDPOINT_URL=https://<account>.r2.cloudflarestorage.com, S3_REGION=auto, and a
+#           pair of R2 API keys. R2 has no regions, hence `auto`.
+#   AWS S3  leave S3_ENDPOINT_URL empty so boto3 derives it, set S3_REGION to the real region
+#           (eu-west-2), and leave the keys empty when the ECS task role grants the access.
 #
 # Without a bucket configured, uploads fall back to the local filesystem. That keeps the test
 # suite and a fresh checkout working with no credentials and no network.
@@ -272,55 +289,132 @@ S3_BUCKET_NAME = env.str("S3_BUCKET_NAME", default="")
 S3_ENDPOINT_URL = env.str("S3_ENDPOINT_URL", default="")
 S3_ACCESS_KEY_ID = env.str("S3_ACCESS_KEY_ID", default="")
 S3_SECRET_ACCESS_KEY = env.str("S3_SECRET_ACCESS_KEY", default="")
+S3_REGION = env.str("S3_REGION", default="auto")
+S3_URL_EXPIRY_SECONDS = env.int("S3_URL_EXPIRY_SECONDS", default=3600)
 MEDIA_URL = "/api/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-# All four or none. Reading the credentials without a default used to raise while settings were
-# being imported, which stops Django starting rather than stopping uploads: a half-configured
-# bucket took the whole site down, including signing in and paying, neither of which needs one.
-# Uploads are worth less than the site being up, so a missing credential falls back to the disk
-# and says so loudly in the logs.
-S3_CONFIGURED = all([S3_BUCKET_NAME, S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY])
+
+S3_USES_AWS_ROLE = any(
+    env.str(name, default="")
+    for name in (
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    )
+)
+S3_HAS_STATIC_KEYS = bool(S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY)
+
+# A bucket plus some way of signing for it. Reading the credentials without a default used to
+# raise while settings were being imported, which stops Django starting rather than stopping
+# uploads: a half-configured bucket took the whole site down, including signing in and paying,
+# neither of which needs one. Uploads are worth less than the site being up, so a missing
+# credential falls back to the disk and says so loudly in the logs.
+S3_CONFIGURED = bool(S3_BUCKET_NAME) and (S3_HAS_STATIC_KEYS or S3_USES_AWS_ROLE)
 
 if S3_BUCKET_NAME and not S3_CONFIGURED:
     import warnings
 
-    missing = [
-        name
-        for name, value in (
-            ("S3_ENDPOINT_URL", S3_ENDPOINT_URL),
-            ("S3_ACCESS_KEY_ID", S3_ACCESS_KEY_ID),
-            ("S3_SECRET_ACCESS_KEY", S3_SECRET_ACCESS_KEY),
-        )
-        if not value
-    ]
     warnings.warn(
-        f"S3_BUCKET_NAME is set but {', '.join(missing)} is not, so uploads are being stored on "
-        "the local disk and will be lost on the next deploy.",
+        "S3_BUCKET_NAME is set but nothing can sign for it — set S3_ACCESS_KEY_ID and "
+        "S3_SECRET_ACCESS_KEY, or run the container with an AWS task role — so uploads are being "
+        "stored on the local disk and will be lost on the next deploy.",
+        stacklevel=1,
+    )
+
+# Signing against AWS needs the bucket's real region: a presigned URL signed for the wrong one is
+# rejected, and `auto` is an R2 convention that means nothing to AWS.
+if S3_CONFIGURED and not S3_ENDPOINT_URL and S3_REGION in ("", "auto"):
+    import warnings
+
+    warnings.warn(
+        "S3_ENDPOINT_URL is empty, so the bucket is treated as AWS S3, but S3_REGION is "
+        f"{S3_REGION or 'empty'}. Set it to the bucket's region (for example eu-west-2) or every "
+        "signature will be rejected.",
         stacklevel=1,
     )
 
 if S3_CONFIGURED:
-    STORAGES["default"] = {
-        "BACKEND": "storages.backends.s3.S3Storage",
-        "OPTIONS": {
-            "bucket_name": S3_BUCKET_NAME,
-            "endpoint_url": S3_ENDPOINT_URL,
-            "access_key": S3_ACCESS_KEY_ID,
-            "secret_key": S3_SECRET_ACCESS_KEY,
-            "region_name": env.str("S3_REGION", default="auto"),
-            # Every URL is signed and short-lived, so the bucket stays private and a link that
-            # leaks stops working. The backend checks entitlements before it signs one.
-            "querystring_auth": True,
-            "querystring_expire": env.int("S3_URL_EXPIRY_SECONDS", default=3600),
-            # Uploads are never world-readable, whatever the bucket's own default is.
-            "default_acl": "private",
-            # Refuse to overwrite: two files of the same name are two files.
-            "file_overwrite": False,
-            # R2 does not support these, and sending them fails the upload.
-            "object_parameters": {},
-        },
+    _s3_options: dict = {
+        "bucket_name": S3_BUCKET_NAME,
+        "region_name": S3_REGION,
+        # Every URL is signed and short-lived, so the bucket stays private and a link that
+        # leaks stops working. The backend checks entitlements before it signs one.
+        "querystring_auth": True,
+        "querystring_expire": S3_URL_EXPIRY_SECONDS,
+        # Refuse to overwrite: two files of the same name are two files.
+        "file_overwrite": False,
+        # R2 does not support these, and sending them fails the upload.
+        "object_parameters": {},
     }
+    if S3_ENDPOINT_URL:
+        _s3_options["endpoint_url"] = S3_ENDPOINT_URL
+    if S3_HAS_STATIC_KEYS:
+        _s3_options["access_key"] = S3_ACCESS_KEY_ID
+        _s3_options["secret_key"] = S3_SECRET_ACCESS_KEY
+    if S3_ENDPOINT_URL:
+        _s3_options["default_acl"] = "private"
+
+    STORAGES["default"] = {"BACKEND": "storages.backends.s3.S3Storage", "OPTIONS": _s3_options}
+
+
+VIDEO_UPLOAD_PREFIX = env.str("VIDEO_UPLOAD_PREFIX", default="learning/video-source")
+VIDEO_HLS_PREFIX = env.str("VIDEO_HLS_PREFIX", default="learning/video-hls")
+
+VIDEO_MAX_UPLOAD_BYTES = env.int("VIDEO_MAX_UPLOAD_BYTES", default=2 * 1024**3)
+VIDEO_MAX_DURATION_SECONDS = env.int("VIDEO_MAX_DURATION_SECONDS", default=3 * 60 * 60)
+
+VIDEO_UPLOAD_URL_EXPIRY_SECONDS = env.int("VIDEO_UPLOAD_URL_EXPIRY_SECONDS", default=900)
+VIDEO_UPLOAD_SESSION_TTL_SECONDS = env.int("VIDEO_UPLOAD_SESSION_TTL_SECONDS", default=24 * 60 * 60)
+
+VIDEO_MULTIPART_THRESHOLD_BYTES = env.int("VIDEO_MULTIPART_THRESHOLD_BYTES", default=100 * 1024**2)
+VIDEO_MULTIPART_PART_BYTES = env.int("VIDEO_MULTIPART_PART_BYTES", default=16 * 1024**2)
+
+VIDEO_TRANSCODING_ENABLED = env.bool("VIDEO_TRANSCODING_ENABLED", default=True)
+FFMPEG_PATH = env.str("FFMPEG_PATH", default="ffmpeg")
+FFPROBE_PATH = env.str("FFPROBE_PATH", default="ffprobe")
+VIDEO_FFMPEG_PRESET = env.str("VIDEO_FFMPEG_PRESET", default="veryfast")
+
+VIDEO_FFMPEG_THREADS = env.int("VIDEO_FFMPEG_THREADS", default=0)
+VIDEO_HLS_SEGMENT_SECONDS = env.int("VIDEO_HLS_SEGMENT_SECONDS", default=6)
+VIDEO_PROBE_TIMEOUT_SECONDS = env.int("VIDEO_PROBE_TIMEOUT_SECONDS", default=120)
+VIDEO_TRANSCODE_TIMEOUT_SECONDS = env.int("VIDEO_TRANSCODE_TIMEOUT_SECONDS", default=3 * 60 * 60)
+VIDEO_PROCESSING_MAX_ATTEMPTS = env.int("VIDEO_PROCESSING_MAX_ATTEMPTS", default=3)
+
+VIDEO_WORKSPACE_DIR = env.str("VIDEO_WORKSPACE_DIR", default="")
+VIDEO_WORKSPACE_HEADROOM_FACTOR = env.float("VIDEO_WORKSPACE_HEADROOM_FACTOR", default=3.5)
+
+VIDEO_HEARTBEAT_SECONDS = env.int("VIDEO_HEARTBEAT_SECONDS", default=60)
+VIDEO_HEARTBEAT_GRACE_SECONDS = env.int("VIDEO_HEARTBEAT_GRACE_SECONDS", default=5 * 60)
+
+VIDEO_STALE_PROCESSING_SECONDS = env.int(
+    "VIDEO_STALE_PROCESSING_SECONDS", default=VIDEO_TRANSCODE_TIMEOUT_SECONDS + 30 * 60
+)
+
+
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": env.int(
+        "CELERY_VISIBILITY_TIMEOUT_SECONDS", default=VIDEO_TRANSCODE_TIMEOUT_SECONDS + 60 * 60
+    )
+}
+
+if VIDEO_MULTIPART_PART_BYTES < 5 * 1024**2:
+    import warnings
+
+    warnings.warn(
+        "VIDEO_MULTIPART_PART_BYTES is below the 5 MiB minimum S3 accepts for a part, so "
+        "multipart uploads of more than one part will be refused by the bucket.",
+        stacklevel=1,
+    )
+
+CLOUDFRONT_DOMAIN = env.str("CLOUDFRONT_DOMAIN", default="")
+CLOUDFRONT_KEY_PAIR_ID = env.str("CLOUDFRONT_KEY_PAIR_ID", default="")
+CLOUDFRONT_PRIVATE_KEY = env.str("CLOUDFRONT_PRIVATE_KEY", default="")
+
+CLOUDFRONT_COOKIE_DOMAIN = env.str("CLOUDFRONT_COOKIE_DOMAIN", default="")
+CLOUDFRONT_SIGNED_TTL_SECONDS = env.int("CLOUDFRONT_SIGNED_TTL_SECONDS", default=4 * 60 * 60)
+
+VIDEO_ALLOW_UNSIGNED_PLAYBACK = env.bool("VIDEO_ALLOW_UNSIGNED_PLAYBACK", default=False)
 
 # --- URLs ----------------------------------------------------------------------------------------
 
@@ -336,6 +430,12 @@ BACKEND_BASE_URL = with_trailing_slash(env.str("BACKEND_BASE_URL", default="http
 
 CORS_ALLOWED_ORIGINS: list[str] = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_URLS_REGEX = r"^/api/.*$"
+# The playback endpoint answers with the CloudFront cookies that let the player fetch the
+# manifests and segments, and a browser discards a cross-origin Set-Cookie unless the response
+# says credentials are allowed. Safe here because the origins are an explicit list and never `*`,
+# and because the admin session cookie is SameSite=Lax, so it is still not sent cross-site.
+# The bucket needs its own CORS rule exposing ETag, because the part uploads do not come here.
+CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS: list[str] = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
 X_FRAME_OPTIONS = "DENY"
