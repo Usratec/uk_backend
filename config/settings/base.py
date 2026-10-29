@@ -163,6 +163,7 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
         "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
+        "VideoProcessingStatusEnum": "apps.learning.models.VideoProcessingStatus.choices",
     },
 }
 
@@ -196,6 +197,14 @@ CELERY_TIMEZONE = TIME_ZONE
 # Safe because the tasks here can be repeated without doing anything twice.
 CELERY_TASK_ACKS_LATE = True
 
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = env.int("CELERY_WORKER_PREFETCH_MULTIPLIER", default=1)
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+
+VIDEO_TASK_QUEUE = env.str("VIDEO_TASK_QUEUE", default="video")
+CELERY_TASK_DEFAULT_QUEUE = env.str("CELERY_TASK_DEFAULT_QUEUE", default="celery")
+CELERY_TASK_ROUTES = {"apps.learning.tasks.transcode_video": {"queue": VIDEO_TASK_QUEUE}}
+
 CELERY_BEAT_SCHEDULE = {
     "send-expiry-reminders": {
         "task": "apps.entitlements.tasks.send_expiry_reminders",
@@ -224,6 +233,10 @@ CELERY_BEAT_SCHEDULE = {
     "delete-unfinished-orders": {
         "task": "apps.billing.tasks.delete_unfinished_orders",
         "schedule": crontab(hour="1", minute="0"),
+    },
+    "sweep-abandoned-video-uploads": {
+        "task": "apps.learning.tasks.sweep_abandoned_uploads",
+        "schedule": crontab(minute="*/15"),
     },
 }
 
@@ -417,6 +430,12 @@ BACKEND_BASE_URL = with_trailing_slash(env.str("BACKEND_BASE_URL", default="http
 
 CORS_ALLOWED_ORIGINS: list[str] = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_URLS_REGEX = r"^/api/.*$"
+# The playback endpoint answers with the CloudFront cookies that let the player fetch the
+# manifests and segments, and a browser discards a cross-origin Set-Cookie unless the response
+# says credentials are allowed. Safe here because the origins are an explicit list and never `*`,
+# and because the admin session cookie is SameSite=Lax, so it is still not sent cross-site.
+# The bucket needs its own CORS rule exposing ETag, because the part uploads do not come here.
+CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS: list[str] = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
 X_FRAME_OPTIONS = "DENY"

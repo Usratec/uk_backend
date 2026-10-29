@@ -497,6 +497,19 @@ def image_url_of(asset: MediaAsset | None) -> str | None:
     return asset.file.url if asset and asset.file else None
 
 
+def playback_of(asset: MediaAsset | None) -> dict | None:
+    from apps.learning import media_processing
+
+    return media_processing.playback_summary(asset)
+
+
+def video_url_of(asset: MediaAsset | None) -> str:
+    summary = playback_of(asset)
+    if not summary or not summary["playbackType"]:
+        return ""
+    return str(summary["playbackUrl"])
+
+
 MAX_SUBTITLE_UPLOAD_BYTES = 2 * 1024 * 1024
 
 WEBVTT_SIGNATURE = "WEBVTT"
@@ -711,12 +724,17 @@ def block_for(content: LearningContent, progress: dict | None = None) -> dict:
         block: dict = {
             "type": content.content_type,
             "title": content.title,
-            "url": content.media.file.url,
+            "url": (
+                video_url_of(content.media)
+                if content.content_type == ContentType.VIDEO
+                else (content.media.file.url if content.media.is_playable_source else "")
+            ),
         }
         if content.content_type == ContentType.VIDEO:
             block["slug"] = content.slug
             block["subtitles"] = subtitles_of(content.media)
             block["progress"] = progress if progress is not None else video_position_of(None)
+            block["playback"] = playback_of(content.media)
         return block
 
     return {"type": "html", "html": resolved_media_in(content.body_html), "title": content.title}
@@ -1438,7 +1456,8 @@ def student_view_of_clip(clip: HazardClip, stats: dict | None = None) -> dict:
         "slug": clip.slug,
         "title": clip.title,
         "description": clip.description,
-        "url": clip.media.file.url,
+        "url": video_url_of(clip.media),
+        "playback": playback_of(clip.media),
         "subtitles": subtitles_of(clip.media),
         "thumbnailUrl": clip.thumbnail_url,
         "hazards": clip.windows.count(),
@@ -1557,13 +1576,15 @@ def blocks_of_section(section: EbookSection) -> list[dict]:
 
     document = section.media
     if document is not None and MediaKind(document.kind) in EBOOK_MEDIA_KINDS:
+        is_video = MediaKind(document.kind) == MediaKind.VIDEO
         block: dict = {
             "type": EBOOK_MEDIA_KINDS[MediaKind(document.kind)],
             "title": "",
-            "url": document.file.url,
+            "url": video_url_of(document) if is_video else (document.file.url if document.is_playable_source else ""),
         }
         if MediaKind(document.kind) == MediaKind.VIDEO:
             block["subtitles"] = subtitles_of(document)
+            block["playback"] = playback_of(document)
         blocks.append(block)
 
     return blocks

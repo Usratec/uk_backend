@@ -16,7 +16,7 @@ already implements, not Python conventions.
 from drf_spectacular.utils import PolymorphicProxySerializer, extend_schema_field
 from rest_framework import serializers
 
-from apps.learning.models import ExamKind, QuestionType, SignCategory, SubtitleLanguage
+from apps.learning.models import ExamKind, QuestionType, SignCategory, SubtitleLanguage, VideoProcessingStatus
 
 
 class SignSerializer(serializers.Serializer):
@@ -200,6 +200,25 @@ class VideoProgressRequestSerializer(serializers.Serializer):
         return super().to_internal_value(data)
 
 
+class VideoPlaybackSerializer(serializers.Serializer):
+    mediaId = serializers.UUIDField(help_text="Identifies the video, in place of its storage key.")  # noqa: N815
+    status = serializers.ChoiceField(
+        choices=VideoProcessingStatus.choices,
+        help_text="`ready` means it can be played. The others describe uploading and processing.",
+    )
+    playbackType = serializers.CharField(  # noqa: N815
+        allow_blank=True,
+        help_text="`hls` for adaptive streaming, `progressive` for a single file, blank when nothing is playable.",
+    )
+    playbackUrl = serializers.CharField(help_text="POST-free GET that issues playback authorization.")  # noqa: N815
+    durationSeconds = serializers.FloatField(  # noqa: N815
+        allow_null=True, help_text="How long the video is, once processing has measured it."
+    )
+    qualities = serializers.ListField(
+        child=serializers.CharField(), help_text="The renditions in the manifest, such as 360p and 720p."
+    )
+
+
 class MediaBlockSerializer(serializers.Serializer):
     """A video to watch or a document to read.
 
@@ -209,7 +228,13 @@ class MediaBlockSerializer(serializers.Serializer):
 
     type = serializers.ChoiceField(choices=[("video", "video"), ("document", "document")])
     title = serializers.CharField()
-    url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
+    url = serializers.URLField(
+        allow_blank=True,
+        help_text=(
+            "A short-lived signed URL for the original file. Do not cache it. Blank while a video "
+            "is still being uploaded. Kept for the players already using it; prefer `playback`."
+        ),
+    )
     slug = serializers.SlugField(
         required=False,
         help_text="Only videos carry it: the slug to post to /api/learn/videos/<slug>/progress/.",
@@ -217,6 +242,9 @@ class MediaBlockSerializer(serializers.Serializer):
     subtitles = SubtitleListField(required=False)
     progress = VideoProgressSerializer(
         required=False, help_text="The signed-in learner's own saved position. Only videos carry it."
+    )
+    playback = VideoPlaybackSerializer(
+        required=False, allow_null=True, help_text="Only videos carry it: how to play this one."
     )
 
 
@@ -296,7 +324,14 @@ class HazardClipSerializer(serializers.Serializer):
     slug = serializers.CharField()
     title = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
-    url = serializers.URLField(help_text="A short-lived signed URL for the video. Do not cache it.")
+    url = serializers.URLField(
+        allow_blank=True,
+        help_text=(
+            "A short-lived signed URL for the original video. Do not cache it. Kept for the "
+            "players already using it; prefer `playback`."
+        ),
+    )
+    playback = VideoPlaybackSerializer(allow_null=True, help_text="How to play this clip.")
     subtitles = SubtitleListField()
     thumbnailUrl = serializers.URLField(  # noqa: N815
         allow_null=True,

@@ -1,7 +1,10 @@
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from django.contrib.auth.models import Group
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
@@ -12,6 +15,7 @@ from apps.billing.models import Order, OrderStatus
 from apps.catalog.models import Package
 from apps.core.models import PublishStatus
 from apps.entitlements import services as entitlements
+from apps.integrations import s3_client
 from apps.learning.models import (
     Chapter,
     Ebook,
@@ -267,6 +271,132 @@ def mock_with_clips(live_exam, make_clip, publisher):
 
 
 # --- The student side: a signed-in customer with a package -----------------------------------
+
+
+class FakeBucket:
+    """An in-memory stand-in for the uploads bucket, so no test needs AWS credentials."""
+
+    def __init__(self):
+        self.objects: dict[str, tuple[int, str]] = {}
+        self.multipart: dict[str, dict] = {}
+        self.signed_puts: list[dict] = []
+        self.signed_parts: list[dict] = []
+        self.deleted: list[str] = []
+        self.uploaded: list[str] = []
+        self.aborted: list[str] = []
+        self._next_upload = 0
+
+    def is_configured(self) -> bool:
+        return True
+
+    def put(self, key: str, *, size: int = 2048, content_type: str = "video/mp4") -> None:
+        self.objects[key] = (size, content_type)
+
+    def presigned_put_url(self, *, key: str, content_type: str, expires_in: int) -> str:
+        self.signed_puts.append({"key": key, "content_type": content_type, "expires_in": expires_in})
+        return f"https://bucket.test/{key}?X-Amz-Signature=fake&X-Amz-Expires={expires_in}"
+
+    def create_multipart_upload(self, *, key: str, content_type: str) -> str:
+        self._next_upload += 1
+        upload_id = f"upload-{self._next_upload}"
+        self.multipart[upload_id] = {"key": key, "content_type": content_type, "parts": {}}
+        return upload_id
+
+    def presigned_part_urls(self, *, key, upload_id, part_numbers, expires_in) -> dict[int, str]:
+        self.signed_parts.append({"key": key, "upload_id": upload_id, "numbers": list(part_numbers)})
+        signed = "X-Amz-Signature=fake"
+        return {number: f"https://bucket.test/{key}?partNumber={number}&{signed}" for number in part_numbers}
+
+    def add_part(self, upload_id: str, number: int, *, size: int = 5 * 1024**2, etag: str = "") -> str:
+        etag = etag or f"etag-{number}"
+        self.multipart[upload_id]["parts"][number] = (size, etag)
+        return etag
+
+    def list_parts(self, *, key, upload_id) -> list:
+        held = self.multipart.get(upload_id)
+        if held is None:
+            return []
+        return [
+            s3_client.UploadedPart(number=number, size_bytes=size, etag=etag)
+            for number, (size, etag) in sorted(held["parts"].items())
+        ]
+
+    def complete_multipart_upload(self, *, key, upload_id, parts) -> None:
+        held = self.multipart.pop(upload_id)
+        self.objects[key] = (sum(part.size_bytes for part in parts), held["content_type"])
+
+    def abort_multipart_upload(self, *, key, upload_id) -> None:
+        self.aborted.append(upload_id)
+        self.multipart.pop(upload_id, None)
+
+    def head_object(self, *, key: str):
+        held = self.objects.get(key)
+        if held is None:
+            return None
+        size, content_type = held
+        return s3_client.StoredObject(key=key, size_bytes=size, content_type=content_type, etag=f"etag-of-{key}")
+
+    def download_to(self, *, key: str, destination: str) -> None:
+        if key not in self.objects:
+            raise s3_client.ObjectStorageError("Nothing is stored under that key.")
+        Path(destination).write_bytes(b"fake video bytes")
+
+    def upload_file(self, *, key: str, path: str, content_type: str, cache_control: str = "") -> None:
+        self.uploaded.append(key)
+        self.objects[key] = (Path(path).stat().st_size, content_type)
+
+    def delete_prefix(self, *, prefix: str) -> int:
+        if not prefix or not prefix.strip("/"):
+            raise s3_client.ObjectStorageError("Refusing to delete an empty prefix.")
+        doomed = [key for key in self.objects if key.startswith(prefix)]
+        for key in doomed:
+            del self.objects[key]
+            self.deleted.append(key)
+        return len(doomed)
+
+    def delete_object(self, *, key: str) -> None:
+        self.objects.pop(key, None)
+        self.deleted.append(key)
+
+    def keys_under(self, prefix: str) -> list[str]:
+        return sorted(key for key in self.objects if key.startswith(prefix))
+
+
+BUCKET_METHODS = (
+    "is_configured",
+    "presigned_put_url",
+    "create_multipart_upload",
+    "presigned_part_urls",
+    "list_parts",
+    "complete_multipart_upload",
+    "abort_multipart_upload",
+    "head_object",
+    "download_to",
+    "upload_file",
+    "delete_prefix",
+    "delete_object",
+)
+
+
+@pytest.fixture
+def bucket(monkeypatch, settings):
+    """A configured bucket that lives in memory, and the settings that say one exists."""
+    settings.S3_CONFIGURED = True
+    settings.S3_BUCKET_NAME = "test-bucket"
+    settings.S3_ENDPOINT_URL = "https://bucket.test"
+    settings.S3_ACCESS_KEY_ID = "test-key"
+    settings.S3_SECRET_ACCESS_KEY = "test-secret"  # noqa: S105
+
+    fake = FakeBucket()
+    for name in BUCKET_METHODS:
+        monkeypatch.setattr(s3_client, name, getattr(fake, name))
+    return fake
+
+
+@pytest.fixture(scope="session")
+def signing_key_pem() -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(Encoding.PEM, PrivateFormat.TraditionalOpenSSL, NoEncryption()).decode()
 
 
 @pytest.fixture

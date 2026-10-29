@@ -23,9 +23,10 @@ from django_ckeditor_5.widgets import CKEditor5Widget  # type: ignore[import-unt
 
 from apps.accounts.models import User
 from apps.core.models import PublishStatus
-from apps.learning import html, services
+from apps.learning import html, media_processing, media_services, services
 from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
+    UNFINISHED_UPLOAD_STATUSES,
     Chapter,
     ContentType,
     Ebook,
@@ -50,12 +51,23 @@ from apps.learning.models import (
     Sign,
     Subchapter,
     Subtitle,
+    VideoProcessingStatus,
     VideoProgress,
     default_subtitle_language,
 )
 from apps.staff.admin import PermissionRequiredAdminMixin, badge, placeholder
 
 STATUS_TONES = {PublishStatus.PUBLISHED: "success", PublishStatus.DRAFT: "neutral"}
+
+PROCESSING_TONES: dict[str, str] = {
+    VideoProcessingStatus.READY: "success",
+    VideoProcessingStatus.FAILED: "danger",
+    VideoProcessingStatus.CANCELLED: "danger",
+    VideoProcessingStatus.QUEUED: "warning",
+    VideoProcessingStatus.PROCESSING: "warning",
+    VideoProcessingStatus.PENDING_UPLOAD: "warning",
+    VideoProcessingStatus.UPLOADED: "warning",
+}
 
 
 class ContentForm(forms.ModelForm):
@@ -938,10 +950,21 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     """
 
     inlines = [SubtitleInline]
-    list_display = ["title", "kind", "readable_size", "subtitle_languages", "created_at"]
-    list_filter = ["kind", "created_at"]
+    list_display = ["title", "kind", "streaming_state", "readable_size", "subtitle_languages", "created_at"]
+    list_filter = ["kind", "processing_status", "created_at"]
     search_fields = ["title", "file"]
-    readonly_fields = ["size_bytes", "content_type", "uploaded_by", "created_at", "download_link", "content_reference"]
+    actions = ["reprocess_videos", "cancel_unfinished_uploads"]
+    readonly_fields = [
+        "size_bytes",
+        "content_type",
+        "uploaded_by",
+        "created_at",
+        "download_link",
+        "content_reference",
+        "streaming_state",
+        "processing_detail",
+        "media_identifier",
+    ]
     fieldsets = (
         (None, {"fields": ("title", "kind", "file")}),
         (
@@ -949,6 +972,16 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
             {
                 "fields": ("size_bytes", "content_type", "uploaded_by", "created_at", "download_link"),
                 "description": "Taken from the upload itself. The link is signed and expires.",
+            },
+        ),
+        (
+            "Streaming",
+            {
+                "fields": ("streaming_state", "processing_detail", "media_identifier"),
+                "description": (
+                    "Videos uploaded straight to the bucket are turned into adaptive streams in "
+                    "the background. Use the list actions to run processing again."
+                ),
             },
         ),
         (
@@ -994,9 +1027,82 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 
     @admin.display(description="File")
     def download_link(self, asset: MediaAsset) -> SafeString:
-        if not asset.file:
+        if not asset.file or not asset.has_source_file:
             return placeholder()
         return format_html('<a class="adm-btn" href="{}" target="_blank">Open the file</a>', asset.file.url)
+
+    @admin.display(description="Streaming", ordering="processing_status")
+    def streaming_state(self, asset: MediaAsset) -> SafeString:
+        if asset.kind != MediaKind.VIDEO:
+            return placeholder()
+        return badge(asset.get_processing_status_display(), PROCESSING_TONES.get(asset.processing_status, "neutral"))
+
+    @admin.display(description="Processing")
+    def processing_detail(self, asset: MediaAsset) -> SafeString:
+        if asset.pk is None or asset.kind != MediaKind.VIDEO:
+            return placeholder()
+
+        rows = [("Status", asset.get_processing_status_display())]
+        if asset.renditions:
+            rows.append(("Qualities", ", ".join(str(item.get("name", "")) for item in asset.renditions)))
+        if asset.duration_seconds is not None:
+            rows.append(("Length", f"{float(asset.duration_seconds):.0f} seconds"))
+        if asset.source_height:
+            rows.append(("Source", f"{asset.source_width}×{asset.source_height}"))
+        if asset.processing_attempts:
+            rows.append(("Attempts", str(asset.processing_attempts)))
+        if asset.processing_status == VideoProcessingStatus.PROCESSING and asset.processing_heartbeat_at:
+            rows.append(("Last heard from the worker", asset.processing_heartbeat_at.strftime("%d %b %Y, %H:%M:%S")))
+        if asset.processing_finished_at:
+            rows.append(("Finished", asset.processing_finished_at.strftime("%d %b %Y, %H:%M")))
+        if asset.processing_error:
+            rows.append(("Last error", asset.processing_error))
+
+        return format_html_join(
+            mark_safe("<br>"),  # noqa: S308 - fixed markup, no input
+            "<strong>{}:</strong> {}",
+            rows,
+        )
+
+    @admin.display(description="Media id")
+    def media_identifier(self, asset: MediaAsset) -> SafeString:
+        if asset.pk is None:
+            return placeholder()
+        return format_html("<code>{}</code>", str(asset.upload_token))
+
+    @admin.action(description="Run video processing again", permissions=["change"])
+    def reprocess_videos(self, request: HttpRequest, queryset) -> None:
+        queued = skipped = 0
+        for asset in queryset.filter(kind=MediaKind.VIDEO):
+            if media_processing.queue_processing(asset, actor=cast(User, request.user), force=True) is not None:
+                queued += 1
+            else:
+                skipped += 1
+
+        if queued:
+            self.message_user(request, f"Queued {queued} video(s) for processing.", messages.SUCCESS)
+        if skipped:
+            self.message_user(
+                request,
+                f"Left {skipped} alone: they are already being processed, or are not direct uploads.",
+                messages.WARNING,
+            )
+
+    @admin.action(description="Cancel unfinished uploads", permissions=["change"])
+    def cancel_unfinished_uploads(self, request: HttpRequest, queryset) -> None:
+        cancelled = 0
+        for asset in queryset.filter(processing_status__in=UNFINISHED_UPLOAD_STATUSES):
+            try:
+                media_services.cancel_video_upload(
+                    actor=cast(User, request.user), asset=asset, reason="Cancelled in the admin."
+                )
+            except Exception:
+                self.message_user(request, f"Could not cancel the upload on “{asset.title}”.", messages.ERROR)
+            else:
+                cancelled += 1
+
+        if cancelled:
+            self.message_user(request, f"Cancelled {cancelled} unfinished upload(s).", messages.SUCCESS)
 
     def save_model(self, request: HttpRequest, obj: MediaAsset, form, change: bool) -> None:
         # Recorded here because the request knows who is uploading and the model does not.
