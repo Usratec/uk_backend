@@ -30,7 +30,7 @@ Zone = tuple[float, float]
 class Verdict:
     clicks: tuple[float, ...]
     scorable: tuple[float, ...]
-    reason: str | None
+    reason: HazardVoidReason | None
 
     @property
     def voided(self) -> bool:
@@ -42,10 +42,6 @@ def zones_for(windows) -> list[Zone]:
         (float(window.starts_at) - ZONE_OPENS_BEFORE_SECONDS, float(window.ends_at) + ZONE_CLOSES_AFTER_SECONDS)
         for window in windows
     ]
-
-
-def sanitised(clicked_at) -> list[float]:
-    return deduplicated(sorted(_real_seconds(clicked_at)))
 
 
 def deduplicated(clicks: list[float]) -> list[float]:
@@ -82,7 +78,7 @@ def inspect(clicked_at, windows, *, max_clicks: int, duration_seconds=None) -> V
     )
 
 
-def _reason_for(clicks: list[float], zones: list[Zone], max_clicks: int, duration_seconds) -> str | None:
+def _reason_for(clicks: list[float], zones: list[Zone], max_clicks: int, duration_seconds) -> HazardVoidReason | None:
     if len(clicks) > max_clicks:
         return HazardVoidReason.TOO_MANY
     if _burst(clicks):
