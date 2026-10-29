@@ -5,12 +5,15 @@ genuine payment is recorded once and only once, and that nobody can grant themse
 posting their own events.
 """
 
+from decimal import Decimal
+
 import pytest
 from django.urls import reverse
 
 from apps.billing.models import Order, OrderStatus, StripeEvent
+from apps.entitlements.models import Subscription
 from apps.integrations import stripe_client
-from apps.integrations.stripe_client import InvalidWebhookSignatureError
+from apps.integrations.stripe_client import CHECKOUT_CURRENCY, InvalidWebhookSignatureError, to_pence
 
 pytestmark = pytest.mark.django_db
 
@@ -23,10 +26,13 @@ def completed_event(order, event_id="evt_1", payment_status="paid", payment_inte
         "type": "checkout.session.completed",
         "data": {
             "object": {
+                "id": order.stripe_session_id,
                 "metadata": {"order_id": str(order.id)},
                 "client_reference_id": str(order.id),
                 "payment_status": payment_status,
                 "payment_intent": payment_intent,
+                "amount_total": to_pence(order.final_price),
+                "currency": CHECKOUT_CURRENCY,
                 **session,
             }
         },
@@ -161,13 +167,77 @@ class TestDeliveredMoreThanOnce:
         post_webhook(api)
 
         other = Order.objects.create(
-            package=package, email="other@example.com", original_price=package.price, final_price=package.price
+            package=package,
+            email="other@example.com",
+            original_price=package.price,
+            final_price=package.price,
+            stripe_session_id="cs_other",
         )
         stripe_event(completed_event(other, event_id="evt_2", payment_intent="pi_shared"))
         post_webhook(api)
 
         other.refresh_from_db()
         assert other.status == OrderStatus.PENDING
+
+
+class TestPaymentMustMatchTheOrder:
+    """A signed event can name an order. It still has to be that order's session, price and currency."""
+
+    def test_a_lower_amount_does_not_pay_the_order(self, api, order, stripe_event):
+        stripe_event(completed_event(order, amount_total=to_pence(order.final_price) - 1))
+
+        post_webhook(api)
+
+        order.refresh_from_db()
+        assert order.status == OrderStatus.PENDING
+        assert order.paid_at is None
+        assert not Subscription.objects.filter(order=order).exists()
+
+    def test_another_currency_does_not_pay_the_order(self, api, order, stripe_event):
+        stripe_event(completed_event(order, currency="usd"))
+
+        post_webhook(api)
+
+        order.refresh_from_db()
+        assert order.status == OrderStatus.PENDING
+
+    def test_another_checkout_session_does_not_pay_the_order(self, api, order, stripe_event):
+        stripe_event(completed_event(order, id="cs_someone_else"))
+
+        post_webhook(api)
+
+        order.refresh_from_db()
+        assert order.status == OrderStatus.PENDING
+
+    def test_disagreeing_references_do_not_pay_the_order(self, api, order, stripe_event):
+        event = completed_event(order)
+        event["data"]["object"]["client_reference_id"] = "not-this-order"
+        stripe_event(event)
+
+        post_webhook(api)
+
+        order.refresh_from_db()
+        assert order.status == OrderStatus.PENDING
+
+    def test_a_missing_amount_does_not_pay_the_order(self, api, order, stripe_event):
+        event = completed_event(order)
+        del event["data"]["object"]["amount_total"]
+        stripe_event(event)
+
+        post_webhook(api)
+
+        order.refresh_from_db()
+        assert order.status == OrderStatus.PENDING
+
+    def test_the_discounted_price_is_what_must_be_paid(self, api, order, stripe_event):
+        order.final_price = Decimal("26.99")
+        order.save(update_fields=["final_price"])
+        stripe_event(completed_event(order))
+
+        post_webhook(api)
+
+        order.refresh_from_db()
+        assert order.status == OrderStatus.PAID
 
 
 class TestPaymentFailed:

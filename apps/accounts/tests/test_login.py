@@ -97,6 +97,28 @@ class TestRejectedLogin:
         assert response.status_code == 400
         assert response.data["detail"] == "This account uses Google Sign-In. Please sign in with Google."
 
+    def test_repeated_google_probes_are_locked_out(self, api, google_user):
+        """The Google reply says the address is registered, so it must not be free of the lockout."""
+        for _ in range(MAX_FAILED_LOGINS):
+            assert login(api, google_user.email, PASSWORD).status_code == 400
+
+        response = login(api, google_user.email, PASSWORD)
+
+        assert response.status_code == 429
+        assert response.data["detail"] == "Too many attempts. Please try again in 15 minutes."
+
+    def test_scanning_addresses_for_the_google_reply_is_throttled(self, api, django_user_model):
+        from apps.accounts.models import AuthMethod
+
+        for attempt in range(10):
+            email = f"google{attempt}@example.com"
+            django_user_model.objects.create_user(
+                email=email, first_name="G", auth_method=AuthMethod.GOOGLE, google_id=f"gid-{attempt}"
+            )
+            assert login(api, email, PASSWORD).status_code == 400
+
+        assert login(api, "one-too-many@example.com", PASSWORD).status_code == 429
+
     def test_disabled_account_with_the_right_password_returns_403(self, api, user):
         user.is_active = False
         user.save(update_fields=["is_active"])

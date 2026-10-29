@@ -13,6 +13,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.accounts.models import AuthMethod, User
+from apps.accounts.services import send_email_verification
 from apps.billing import emails
 from apps.billing.models import Order, OrderStatus
 from apps.crm import notifications
@@ -61,8 +62,6 @@ def provision_account(order: Order) -> User:
                         first_name=locked_order.first_name or locked_order.email.partition("@")[0],
                         last_name=locked_order.last_name,
                         auth_method=AuthMethod.EMAIL,
-                        # They proved they can read this address by paying from it.
-                        email_verified=True,
                     )
                     created = True
             except IntegrityError:
@@ -106,6 +105,10 @@ def send_welcome(order: Order, user: User) -> None:
     emails.send_welcome(user)
     Order.objects.filter(pk=order.pk).update(welcome_email_sent_at=timezone.now())
     logger.info("Welcomed %s", user.email)
+    # Paying does not prove the person can read the mailbox. The same confirmation link
+    # registration uses is what sets email_verified.
+    if not user.email_verified:
+        send_email_verification(user)
 
 
 def send_order_confirmation(order: Order) -> None:

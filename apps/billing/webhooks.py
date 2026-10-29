@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from apps.billing.models import Order, OrderStatus, StripeEvent
 from apps.entitlements.models import RevocationReason
+from apps.integrations.stripe_client import CHECKOUT_CURRENCY, to_pence
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,12 @@ def _mark_paid(session: dict) -> None:
             logger.info("Order %s is already paid", order_id)
             return
 
+        if not _payment_matches_order(order, session):
+            # A mismatch is permanent: retrying the same event cannot make it this order's payment.
+            # Leaving the event recorded stops Stripe retrying it, and the order stays unpaid.
+            logger.error("Refusing to mark order %s paid: payment does not match the stored order", order.id)
+            return
+
         if payment_intent and Order.objects.filter(transaction_id=payment_intent).exclude(pk=order.pk).exists():
             logger.error("Payment %s is already credited to another order", payment_intent)
             return
@@ -127,6 +134,36 @@ def _mark_paid(session: dict) -> None:
     # Run only once the transaction has committed, so fulfilment cannot read the order before the
     # paid status is visible.
     transaction.on_commit(lambda: _fulfil(str(order_id)))
+
+
+def _payment_matches_order(order: Order, session: dict) -> bool:
+    """Whether this Checkout Session is the payment we opened for this order, at this price.
+
+    The order id in the session only says which row to load. The session id, the amount and the
+    currency are what say the money taken is the money that row recorded.
+    """
+    order_id = str(order.id)
+    metadata_order_id = (session.get("metadata") or {}).get("order_id") or ""
+    reference = session.get("client_reference_id") or ""
+    if metadata_order_id and metadata_order_id != order_id:
+        return False
+    if reference and reference != order_id:
+        return False
+    if not metadata_order_id and not reference:
+        return False
+
+    session_id = session.get("id") or ""
+    if not order.stripe_session_id or session_id != order.stripe_session_id:
+        return False
+
+    currency = session.get("currency")
+    if not isinstance(currency, str) or currency.lower() != CHECKOUT_CURRENCY:
+        return False
+
+    amount_total = session.get("amount_total")
+    if type(amount_total) is not int:
+        return False
+    return amount_total == to_pence(order.final_price)
 
 
 def _fulfil(order_id: str) -> None:

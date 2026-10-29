@@ -6,6 +6,7 @@ confirms the payment, because anything decided in this request could be faked by
 """
 
 import logging
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
@@ -17,6 +18,19 @@ from apps.catalog.models import Package
 from apps.integrations import stripe_client
 
 logger = logging.getLogger(__name__)
+
+# Stripe keeps a Checkout Session for 24 hours when expires_at is omitted, and 24 hours is also
+# the longest session they allow. Passing that value ourselves is unsafe: the request arrives a
+# moment later, and Stripe rejects an expiry more than 24 hours after it creates the session.
+CHECKOUT_SESSION_LIFETIME = timedelta(hours=24)
+
+# Bank debits and similar methods confirm after the customer submits. Stripe documents that as
+# up to 14 days. Counted from the end of the session, not from checkout, so a payment submitted
+# in the last hour can still arrive.
+DELAYED_PAYMENT_WINDOW = timedelta(days=14)
+
+# How long an unpaid or failed order is kept. Paid and refunded orders are never removed.
+UNPAID_ORDER_RETENTION = CHECKOUT_SESSION_LIFETIME + DELAYED_PAYMENT_WINDOW
 
 
 class FreeOrderNotSupportedError(Exception):
@@ -109,7 +123,10 @@ def _claim_promo_slot(code: str) -> None:
 
 
 def _session_expiry(promo_code: PromoCode | None) -> int | None:
-    """When Stripe should stop accepting payment, as a Unix timestamp."""
+    """When Stripe should stop accepting payment, as a Unix timestamp.
+
+    No promo code: return None and leave Stripe's default, which is ``CHECKOUT_SESSION_LIFETIME``.
+    """
     if promo_code is None:
         return None
     return int((timezone.now() + PROMO_HOLD).timestamp())

@@ -30,6 +30,8 @@ from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
+from apps.core import images
+from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import PublishableModel, TimestampedModel
 from apps.learning import html
 
@@ -204,7 +206,7 @@ class MediaAsset(TimestampedModel):
 
     title = models.CharField(max_length=160, help_text="How staff find this again.")
     kind = models.CharField(max_length=10, choices=MediaKind.choices)
-    file = models.FileField(upload_to=media_path)
+    file = SanitizedFileField(upload_to=media_path)
     # Recorded at upload because asking the bucket costs a request, and these are shown in a list.
     size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
     content_type = models.CharField(max_length=100, blank=True, editable=False)
@@ -220,6 +222,9 @@ class MediaAsset(TimestampedModel):
         return self.title
 
     def save(self, *args, **kwargs):
+        if self.file and not self.file._committed:
+            self.file = images.without_metadata_if_image(self.file.file)
+
         # Taken from the upload itself rather than trusted from a form field.
         if self.file:
             self.size_bytes = getattr(self.file, "size", 0) or 0
@@ -675,7 +680,7 @@ class HazardClip(PublishableModel, TimestampedModel):
         related_name="hazard_clips",
         help_text="The video from the media library.",
     )
-    thumbnail = models.ImageField(
+    thumbnail = SanitizedImageField(
         upload_to=hazard_thumbnail_path,
         blank=True,
         help_text="A still shown before the clip plays. Optional — without one the player shows the video itself.",
@@ -814,7 +819,7 @@ class Ebook(PublishableModel, TimestampedModel):
         related_name="ebooks",
         help_text="The document from the media library. Optional for a book that is read section by section.",
     )
-    cover = models.ImageField(
+    cover = SanitizedImageField(
         upload_to=ebook_cover_path,
         blank=True,
         help_text="The cover shown on the shelf. Optional.",

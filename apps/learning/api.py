@@ -478,20 +478,19 @@ class AnswerView(APIView):
         if not entitlements.has_access(student):
             return plan_needed()
 
+        submitted = AnswerRequestSerializer(data=request.data)
+        submitted.is_valid(raise_exception=True)
+
         question = (
             services.live(Question.objects.prefetch_related("options__sign", "options__image"))
-            .filter(pk=request.data.get("questionId"))
+            .filter(pk=submitted.validated_data["questionId"])
             .first()
         )
         if question is None or not entitlements.can_view(student, question):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        selected = request.data.get("selected") or []
-        if not isinstance(selected, list):
-            return Response({"detail": "selected must be a list of option ids."}, status=400)
-
         # Marked on the server: the answer was never in the page for the student to read.
-        marked = services.mark_answer(question, [str(option) for option in selected])
+        marked = services.mark_answer(question, submitted.validated_data["selected"])
         services.record_answer(student, question, marked["correct"])
         return Response(marked)
 
