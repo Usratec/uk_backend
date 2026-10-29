@@ -1,7 +1,7 @@
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from apps.notifications.models import Notification
+from apps.notifications.models import DeviceToken, Notification
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -26,3 +26,11 @@ class NotificationListSerializer(serializers.Serializer):
 
 class MarkAllReadSerializer(serializers.Serializer):
     updated = serializers.IntegerField(help_text="How many notifications this request marked as read.")
+
+
+class DeviceTokenRemoveSerializer(serializers.Serializer):
+    token = serializers.RegexField(r"^[!-~]+$", max_length=2048, trim_whitespace=False, write_only=True)
+
+
+class DeviceTokenSerializer(DeviceTokenRemoveSerializer):
+    platform = serializers.ChoiceField(choices=DeviceToken.Platform.choices)

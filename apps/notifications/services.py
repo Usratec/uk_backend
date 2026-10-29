@@ -47,6 +47,7 @@ def mark_all_read(*, user: User) -> int:
     return for_user(user).unread().update(is_read=True, updated_at=Now())
 
 
+@transaction.atomic
 def notify(
     *,
     user: User,
@@ -58,6 +59,7 @@ def notify(
 ) -> tuple[Notification, bool]:
     if not event_key:
         notification = Notification.objects.create(user=user, kind=kind, title=title, text=text, link=link)
+        _queue_push(notification)
         return notification, True
 
     existing = Notification.objects.filter(user=user, event_key=event_key).first()
@@ -75,7 +77,14 @@ def notify(
             raise
         return raced, False
 
+    _queue_push(notification)
     return notification, True
+
+
+def _queue_push(notification: Notification) -> None:
+    from apps.notifications.push import queue_push
+
+    queue_push(notification)
 
 
 def notify_quietly(create: Callable[[], object], description: str) -> None:

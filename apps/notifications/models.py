@@ -71,3 +71,34 @@ class Notification(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.user_id} | {self.get_kind_display()} | {self.title}"
+
+
+class DeviceToken(TimestampedModel):
+    """One FCM installation, owned by its currently signed-in account."""
+
+    class Platform(models.TextChoices):
+        IOS = "ios", "iOS"
+        ANDROID = "android", "Android"
+
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="push_devices")
+    token = models.CharField(max_length=2048, unique=True)
+    platform = models.CharField(max_length=10, choices=Platform.choices)
+
+    def __str__(self) -> str:
+        return f"Device {self.pk} ({self.platform})"
+
+
+class PushDelivery(TimestampedModel):
+    """Durable outbox: retries do not resend to devices that already succeeded."""
+
+    notification = models.ForeignKey(Notification, on_delete=models.CASCADE, related_name="push_deliveries")
+    device = models.ForeignKey(DeviceToken, on_delete=models.CASCADE, related_name="deliveries")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField()
+    # Only a safe status code, never a provider response or token.
+    last_error = models.CharField(max_length=32, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["notification", "device"], name="push_once_per_device")]
+        indexes = [models.Index(fields=["sent_at", "next_attempt_at"], name="push_delivery_due")]

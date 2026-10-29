@@ -197,6 +197,10 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ACKS_LATE = True
 
 CELERY_BEAT_SCHEDULE = {
+    "deliver-mobile-push": {
+        "task": "apps.notifications.tasks.deliver_pending_push",
+        "schedule": crontab(minute="*"),
+    },
     "send-expiry-reminders": {
         "task": "apps.entitlements.tasks.send_expiry_reminders",
         "schedule": crontab(hour="9", minute="0"),
@@ -244,6 +248,19 @@ STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
 # accepted if it was issued for one of these, so tokens for other apps cannot be replayed here.
 
 GOOGLE_CLIENT_IDS: list[str] = env.list("GOOGLE_CLIENT_IDS", default=[])
+
+# Apple identifiers must belong to the company's registered apps / Services IDs.
+APPLE_CLIENT_IDS: list[str] = env.list("APPLE_CLIENT_IDS", default=[])
+APPLE_TEAM_ID = env.str("APPLE_TEAM_ID", default="")
+APPLE_KEY_ID = env.str("APPLE_KEY_ID", default="")
+APPLE_PRIVATE_KEY = env.str("APPLE_PRIVATE_KEY", default="").replace("\\n", "\n")
+
+# Enable deletion only after the documented payment-data retention policy is approved.
+ACCOUNT_DELETION_ENABLED = env.bool("ACCOUNT_DELETION_ENABLED", default=False)
+
+# Firebase uses Application Default Credentials, supplied through the environment / secret mount.
+FIREBASE_PROJECT_ID = env.str("FIREBASE_PROJECT_ID", default="")
+FIREBASE_PUSH_ENABLED = env.bool("FIREBASE_PUSH_ENABLED", default=False)
 
 # --- Static files --------------------------------------------------------------------------------
 

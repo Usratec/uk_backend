@@ -36,6 +36,7 @@ from apps.accounts.throttling import (
 )
 from apps.core.http import client_ip
 from apps.integrations import google_identity
+from apps.notifications import push
 
 GENERIC_RESET_RESPONSE = "If this email is registered, a reset link has been sent."
 
@@ -43,6 +44,13 @@ refresh_request = inline_serializer(
     name="TokenRefreshRequest",
     fields={"refresh": serializers.CharField()},
 )
+
+
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    device_token = serializers.RegexField(
+        r"^[!-~]+$", max_length=2048, trim_whitespace=False, write_only=True, required=False
+    )
 
 
 def _duplicate_email_response(existing: User | None) -> Response:
@@ -249,9 +257,14 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [AuthUserThrottle]
 
-    @extend_schema(request=refresh_request, responses={200: DetailSerializer}, summary="Sign out")
+    @extend_schema(request=LogoutSerializer, responses={200: DetailSerializer}, summary="Sign out")
     def post(self, request: Request) -> Response:
-        services.blacklist_refresh_token(request.data.get("refresh"))
+        data = LogoutSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        services.blacklist_refresh_token(data.validated_data.get("refresh"))
+        token = data.validated_data.get("device_token")
+        if token:
+            push.remove_device_token(user=request.user, token=token)
         return Response({"detail": "Logged out."}, status=status.HTTP_200_OK)
 
 

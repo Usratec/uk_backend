@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 from apps.accounts.models import SecurityToken, TokenPurpose, User
+from apps.billing.models import Order
 from apps.core import email
 
 # Longer than a password reset: this is the customer's way into the thing they just bought, and
@@ -20,7 +21,16 @@ def send_welcome(user: User) -> None:
     # The code is loaded when the message is sent, so the job arguments do not carry the link.
     from apps.accounts.emails import queue_security_link
 
-    queue_security_link(token, "welcome")
+    pending_orders = list(
+        Order.objects.filter(user=user, welcome_email_required=True, welcome_email_sent_at__isnull=True).values_list(
+            "pk", flat=True
+        )
+    )
+
+    def retry_welcome() -> None:
+        Order.objects.filter(pk__in=pending_orders, user_id=user.pk).update(welcome_email_sent_at=None)
+
+    queue_security_link(token, "welcome", after_commit=True, on_failure=retry_welcome)
 
 
 def send_order_confirmation(order) -> None:
