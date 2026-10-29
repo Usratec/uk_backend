@@ -25,6 +25,7 @@ dependencies = [
     "nh3>=0.3.7",
     "django-storages[s3]>=1.14.6",
     "django-anymail[postmark]>=13.0",
+    "drf-spectacular-sidecar>=2026.1.1",
 ]
 
 [dependency-groups]
