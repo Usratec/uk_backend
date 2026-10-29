@@ -378,6 +378,11 @@ if S3_CONFIGURED:
     STORAGES["default"] = {"BACKEND": "apps.core.storage.SafeS3Storage", "OPTIONS": _s3_options}
 
 
+# Direct video uploads may use their own private bucket without moving existing media.
+# A dedicated bucket always uses the AWS task role, never legacy R2/S3 static keys.
+VIDEO_S3_BUCKET_NAME = env.str("VIDEO_S3_BUCKET_NAME", default="")
+VIDEO_S3_REGION = env.str("VIDEO_S3_REGION", default=S3_REGION)
+
 VIDEO_UPLOAD_PREFIX = env.str("VIDEO_UPLOAD_PREFIX", default="learning/video-source")
 VIDEO_HLS_PREFIX = env.str("VIDEO_HLS_PREFIX", default="learning/video-hls")
 
@@ -628,3 +633,8 @@ CONSTANCE_CONFIG = {
         float,
     ),
 }
+
+# Preserve the original storage for images, documents and legacy video paths.
+if VIDEO_S3_BUCKET_NAME:
+    STORAGES["legacy"] = STORAGES["default"]
+    STORAGES["default"] = {"BACKEND": "apps.integrations.video_storage.VideoStorage"}

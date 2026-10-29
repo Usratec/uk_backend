@@ -35,22 +35,23 @@ class UploadedPart:
 
 
 def is_configured() -> bool:
-    return bool(settings.S3_CONFIGURED)
+    return bool(settings.VIDEO_S3_BUCKET_NAME or settings.S3_CONFIGURED)
 
 
-def _client():
+def _client(*, legacy: bool = False):
     if not is_configured():
         raise NotConfiguredError("No uploads bucket is configured.")
 
+    dedicated = bool(settings.VIDEO_S3_BUCKET_NAME) and not legacy
     options: dict = {
-        "region_name": settings.S3_REGION,
+        "region_name": settings.VIDEO_S3_REGION if dedicated else settings.S3_REGION,
         "config": Config(signature_version="s3v4", retries={"max_attempts": 3, "mode": "standard"}),
     }
     # Left out rather than passed empty, so boto3 derives the AWS endpoint and finds the ECS task
     # role instead of being handed blanks. An endpoint is how R2 and MinIO are reached.
-    if settings.S3_ENDPOINT_URL:
+    if settings.S3_ENDPOINT_URL and not dedicated:
         options["endpoint_url"] = settings.S3_ENDPOINT_URL
-    if settings.S3_ACCESS_KEY_ID and settings.S3_SECRET_ACCESS_KEY:
+    if settings.S3_ACCESS_KEY_ID and settings.S3_SECRET_ACCESS_KEY and not dedicated:
         options["aws_access_key_id"] = settings.S3_ACCESS_KEY_ID
         options["aws_secret_access_key"] = settings.S3_SECRET_ACCESS_KEY
 
@@ -58,7 +59,7 @@ def _client():
 
 
 def _bucket() -> str:
-    return settings.S3_BUCKET_NAME
+    return settings.VIDEO_S3_BUCKET_NAME or settings.S3_BUCKET_NAME
 
 
 def _fail(action: str, error: Exception) -> ObjectStorageError:
@@ -172,7 +173,12 @@ def head_object(*, key: str) -> StoredObject | None:
 
 def download_to(*, key: str, destination: str) -> None:
     try:
-        _client().download_file(Bucket=_bucket(), Key=key, Filename=destination)
+        prefixes = (settings.VIDEO_UPLOAD_PREFIX, settings.VIDEO_HLS_PREFIX)
+        legacy = bool(settings.VIDEO_S3_BUCKET_NAME) and not any(
+            key.startswith(f"{prefix.rstrip('/')}/") for prefix in prefixes
+        )
+        bucket = settings.S3_BUCKET_NAME if legacy else _bucket()
+        _client(legacy=legacy).download_file(Bucket=bucket, Key=key, Filename=destination)
     except (BotoCoreError, ClientError) as error:
         raise _fail("fetch the source video", error) from error
 

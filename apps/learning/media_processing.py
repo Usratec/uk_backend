@@ -328,7 +328,7 @@ def playback_for(*, student, asset: MediaAsset) -> Playback:
             mp4_url=cloudfront.url_for(asset.mp4_key) if asset.mp4_key else "",
         )
 
-    if cloudfront.is_configured():
+    if cloudfront.is_configured() and not settings.VIDEO_S3_BUCKET_NAME:
         return Playback(
             media_id=str(asset.upload_token),
             kind=PLAYBACK_PROGRESSIVE,

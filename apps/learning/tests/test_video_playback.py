@@ -552,3 +552,24 @@ class TestTheLessonPayload:
         monkeypatch.setattr(cloudfront, "signed_url", refuse)
 
         assert learner.get(lesson_url(content.subchapter.slug)).status_code == 200
+
+
+@pytest.mark.django_db
+class TestDedicatedVideoBucket:
+    def test_existing_video_keeps_its_storage_url_when_hls_is_enabled(
+        self, learner, lesson_video, distribution, settings, monkeypatch
+    ):
+        _, asset = lesson_video
+        settings.VIDEO_S3_BUCKET_NAME = "dedicated-video"
+        MediaAsset.objects.filter(pk=asset.pk).update(
+            processing_status=VideoProcessingStatus.LEGACY, hls_master_key="", hls_prefix=""
+        )
+
+        def refuse(**kwargs):
+            raise AssertionError("Legacy media must not be redirected to the HLS bucket")
+
+        monkeypatch.setattr(cloudfront, "signed_url", refuse)
+        response = learner.get(playback_url(asset.upload_token))
+        assert response.status_code == 200
+        assert response.json()["playbackType"] == "progressive"
+        assert DISTRIBUTION not in response.json()["url"]

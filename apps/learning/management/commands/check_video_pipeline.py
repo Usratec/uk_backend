@@ -117,14 +117,15 @@ class Command(BaseCommand):
                 problems.append(message)
             return
 
-        flavour = "S3-compatible endpoint" if settings.S3_ENDPOINT_URL else "AWS S3"
-        credentials = "static keys" if settings.S3_HAS_STATIC_KEYS else "an AWS task role"
-        notes.append(
-            f"bucket:        {settings.S3_BUCKET_NAME} in {settings.S3_REGION} ({flavour}, signing with {credentials})"
-        )
+        dedicated = bool(settings.VIDEO_S3_BUCKET_NAME)
+        flavour = "S3-compatible endpoint" if settings.S3_ENDPOINT_URL and not dedicated else "AWS S3"
+        credentials = "static keys" if settings.S3_HAS_STATIC_KEYS and not dedicated else "an AWS task role"
+        bucket = settings.VIDEO_S3_BUCKET_NAME or settings.S3_BUCKET_NAME
+        region = settings.VIDEO_S3_REGION if dedicated else settings.S3_REGION
+        notes.append(f"bucket:        {bucket} in {region} ({flavour}, signing with {credentials})")
         notes.append(f"prefixes:      {settings.VIDEO_UPLOAD_PREFIX}/ and {settings.VIDEO_HLS_PREFIX}/")
 
-        if not settings.S3_ENDPOINT_URL and settings.S3_REGION in ("", "auto"):
+        if (dedicated or not settings.S3_ENDPOINT_URL) and region in ("", "auto"):
             problems.append("S3_REGION must be the bucket's real region when S3_ENDPOINT_URL is empty")
 
     def _report_playback(self, problems: list[str], notes: list[str]) -> None:
