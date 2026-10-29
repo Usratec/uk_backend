@@ -54,6 +54,9 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
+    # Ships the Swagger UI and ReDoc bundles as static files, so the docs pages do not pull
+    # unpinned scripts from a CDN into our own origin.
+    "drf_spectacular_sidecar",
     "django_ckeditor_5",
     "anymail",
     # Local
@@ -164,6 +167,11 @@ SPECTACULAR_SETTINGS = {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
         "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
     },
+    # Serve the UI bundles from our own static files instead of jsDelivr's `@latest`, which would
+    # run whatever those packages happened to publish inside our origin.
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
 }
 
 # --- Cache ---------------------------------------------------------------------------------------
