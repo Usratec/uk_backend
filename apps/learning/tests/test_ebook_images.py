@@ -60,6 +60,16 @@ class TestUploadingThroughTheEditor:
         assert asset.uploaded_by == editor
         assert response.json() == {"url": f"/api/learning/media/{asset.pk}/"}
 
+    def test_the_picture_is_served_as_an_image_and_not_sniffed(self, editor_client, editor):
+        asset = picture(editor)
+
+        response = editor_client.get(media_url(asset.pk))
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "image/png"
+        assert response["X-Content-Type-Options"] == "nosniff"
+        assert response["Content-Disposition"].startswith("inline;")
+
     def test_a_gif_is_stored_frame_for_frame(self, editor_client):
         content = animated_bytes()
 

@@ -6,7 +6,7 @@ from django.urls import reverse
 
 from apps.core.models import PublishStatus
 from apps.learning.models import ContentType, LearningContent, MediaAsset, MediaKind, Subchapter, VideoProgress
-from apps.learning.tests.conftest import sign_in
+from apps.learning.tests.conftest import mp4_bytes, sign_in
 
 pytestmark = pytest.mark.django_db
 
@@ -25,7 +25,7 @@ def make_video_asset(name: str = "clip.mp4") -> MediaAsset:
     return MediaAsset.objects.create(
         title="A clip",
         kind=MediaKind.VIDEO,
-        file=SimpleUploadedFile(name, b"not really a video", content_type="video/mp4"),
+        file=SimpleUploadedFile(name, mp4_bytes(), content_type="video/mp4"),
     )
 
 

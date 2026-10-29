@@ -52,6 +52,11 @@ def uploaded_image(name: str = "still.png") -> SimpleUploadedFile:
     return SimpleUploadedFile(name, png_bytes(), content_type="image/png")
 
 
+def mp4_bytes() -> bytes:
+    """A real (tiny) MP4 header. The type is read from these bytes, not from the filename."""
+    return b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isomiso2mp41"
+
+
 def staff_member(email: str, role: str | None = None) -> User:
     user = User.objects.create_user(email=email, password=PASSWORD, first_name=email[:3], is_staff=True)
     if role:
@@ -148,7 +153,7 @@ def make_clip(db):
         asset = MediaAsset.objects.create(title=f"{title} video", kind=MediaKind.VIDEO)
         asset.file.save(
             f"{slug}.mp4",
-            SimpleUploadedFile(f"{slug}.mp4", b"video bytes", content_type="video/mp4"),
+            SimpleUploadedFile(f"{slug}.mp4", mp4_bytes(), content_type="video/mp4"),
             save=True,
         )
         clip = HazardClip.objects.create(slug=slug, title=title, media=asset, **fields)

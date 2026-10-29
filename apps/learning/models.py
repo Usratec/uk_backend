@@ -33,6 +33,7 @@ from django.utils.text import slugify
 from apps.core import images
 from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import PublishableModel, TimestampedModel
+from apps.core.uploads import DOCUMENT_TYPES, RASTER_IMAGE_TYPES, VIDEO_TYPES, require_upload
 from apps.learning import html
 
 
@@ -184,6 +185,13 @@ class MediaKind(models.TextChoices):
     IMAGE = "image", "Image"
 
 
+MEDIA_KIND_TYPES = {
+    MediaKind.IMAGE: RASTER_IMAGE_TYPES,
+    MediaKind.VIDEO: VIDEO_TYPES,
+    MediaKind.DOCUMENT: DOCUMENT_TYPES,
+}
+
+
 def media_path(instance, filename: str) -> str:
     """Where an upload is stored: a folder per kind, the name it was given kept.
 
@@ -222,13 +230,26 @@ class MediaAsset(TimestampedModel):
         return self.title
 
     def save(self, *args, **kwargs):
-        if self.file and not self.file._committed:
+        # The browser's declared type is ignored. The bytes decide, and they have to match the kind.
+        # A picture is rewritten without metadata first, so that check reads the file that is stored.
+        allowed = MEDIA_KIND_TYPES[MediaKind(self.kind)]
+        if self.file and not getattr(self.file, "_committed", True):
             self.file = images.without_metadata_if_image(self.file.file)
-
-        # Taken from the upload itself rather than trusted from a form field.
+            self.content_type = require_upload(self.file, allowed)
+        elif self.file and not self.content_type:
+            # file.save() writes the bytes before this runs, so the type is already checked
+            # against the bucket allow-list. Copy it when it is still on the upload, and read
+            # the stored bytes when opening the file again has dropped it.
+            inner = getattr(self.file, "file", None)
+            sniffed = getattr(inner, "content_type", "") if inner is not None else ""
+            if sniffed in allowed:
+                self.content_type = sniffed
+            elif sniffed:
+                raise ValidationError({"file": "This file is not a format this kind of upload accepts."})
+            else:
+                self.content_type = require_upload(self.file, allowed)
         if self.file:
             self.size_bytes = getattr(self.file, "size", 0) or 0
-            self.content_type = getattr(getattr(self.file, "file", None), "content_type", "") or self.content_type
         super().save(*args, **kwargs)
 
 
