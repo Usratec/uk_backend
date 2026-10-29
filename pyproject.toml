@@ -25,6 +25,8 @@ dependencies = [
     "nh3>=0.3.7",
     "django-storages[s3]>=1.14.6",
     "django-anymail[postmark]>=13.0",
+    "boto3>=1.40",
+    "cryptography>=46",
 ]
 
 [dependency-groups]
