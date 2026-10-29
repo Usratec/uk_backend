@@ -10,7 +10,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('learning', '0026_video_progress_roles'),
+        ('learning', '0027_sanitized_media_fields'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
