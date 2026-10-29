@@ -5,8 +5,12 @@ reached the browser, the test would be a formality — so these tests check the 
 check that the scoring happens on the server.
 """
 
+from decimal import Decimal
+
 import pytest
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.urls import reverse
 
 from apps.accounts.models import User
@@ -125,6 +129,156 @@ class TestClickingThroughIsRefused:
 
         assert result["voided"] is False
         assert result["score"] == 5
+
+    def test_the_limit_defaults_to_fifteen(self, clip):
+        assert clip.max_clicks == 15
+
+    def test_too_many_clicks_say_so(self, clip):
+        result = services.score_clip(clip, [float(n) / 10 for n in range(160)])
+
+        assert result["voidReason"] == "too_many"
+
+    def test_a_staff_set_limit_is_what_counts(self, clip):
+        clip.max_clicks = 2
+        clip.save(update_fields=["max_clicks"])
+
+        assert services.score_clip(clip, [10.0, 11.0])["voided"] is False
+        assert services.score_clip(clip, [10.0, 11.0, 12.0])["voidReason"] == "too_many"
+
+
+class TestUnacceptableClicking:
+    def test_a_regular_pattern_of_clicks_scores_nothing(self, clip):
+        result = services.score_clip(clip, [2.0, 3.0, 4.0, 5.0, 6.0])
+
+        assert result["voidReason"] == "pattern"
+        assert result["score"] == 0
+        assert all(not hazard["spotted"] for hazard in result["hazards"])
+
+    def test_clicking_rapidly_scores_nothing(self, clip):
+        result = services.score_clip(clip, [5.0, 5.2, 5.4, 5.6, 6.0])
+
+        assert result["voidReason"] == "burst"
+        assert result["score"] == 0
+
+    def test_clicking_through_a_clip_whose_length_is_known_scores_nothing(self, clip):
+        HazardWindow.objects.create(clip=clip, label="Child runs out", starts_at="24.00", ends_at="28.00", order=2)
+        clip.duration_seconds = 30
+        clip.save(update_fields=["duration_seconds"])
+
+        result = services.score_clip(clip, [1.0, 6.0, 11.0, 17.0, 22.0, 29.0])
+
+        assert result["voidReason"] == "spread"
+
+    def test_the_same_clicks_count_when_the_length_is_unknown(self, clip):
+        HazardWindow.objects.create(clip=clip, label="Child runs out", starts_at="24.00", ends_at="28.00", order=2)
+
+        result = services.score_clip(clip, [1.0, 6.0, 11.0, 17.0, 22.0, 29.0])
+
+        assert result["voided"] is False
+        assert result["voidReason"] is None
+
+    def test_making_sure_about_one_hazard_still_scores(self, clip):
+        result = services.score_clip(clip, [10.0, 11.0, 12.0, 13.0, 14.0])
+
+        assert result["voided"] is False
+        assert result["score"] == 5
+
+    def test_an_attempt_that_is_not_voided_has_no_reason(self, clip):
+        assert services.score_clip(clip, [10.5])["voidReason"] is None
+
+
+class TestTidyingUpWhatWasSubmitted:
+    def test_clicks_out_of_order_are_scored_the_same(self, clip):
+        assert services.score_clip(clip, [12.0, 10.5])["score"] == services.score_clip(clip, [10.5, 12.0])["score"]
+
+    def test_one_press_recorded_twice_counts_once(self, clip):
+        clip.max_clicks = 1
+        clip.save(update_fields=["max_clicks"])
+
+        assert services.score_clip(clip, [10.5, 10.53])["voided"] is False
+
+    def test_a_press_recorded_twice_across_the_start_of_a_window_still_scores(self, clip):
+        result = services.score_clip(clip, [9.99, 10.02])
+
+        assert result["voided"] is False
+        assert result["score"] == 5
+
+    def test_a_press_recorded_twice_across_the_end_of_a_window_still_scores(self, clip):
+        result = services.score_clip(clip, [14.98, 15.02])
+
+        assert result["score"] == 1
+
+    def test_the_duplicate_still_does_not_count_towards_the_limit(self, clip):
+        clip.max_clicks = 1
+        clip.save(update_fields=["max_clicks"])
+
+        assert services.score_clip(clip, [9.99, 10.02])["voided"] is False
+
+    def test_impossible_click_times_are_ignored(self, clip):
+        result = services.score_clip(clip, [float("nan"), float("inf"), float("-inf"), -3.0, 10.5])
+
+        assert result["voided"] is False
+        assert result["score"] == 5
+
+    def test_a_click_two_seconds_after_the_last_hazard_still_counts(self, clip):
+        clip.max_clicks = 1
+        clip.save(update_fields=["max_clicks"])
+
+        assert services.score_clip(clip, [10.5, 17.0])["voidReason"] == "too_many"
+
+    def test_a_click_any_later_is_ignored(self, clip):
+        clip.max_clicks = 1
+        clip.save(update_fields=["max_clicks"])
+
+        result = services.score_clip(clip, [10.5, 17.01])
+
+        assert result["voided"] is False
+        assert result["score"] == 5
+
+    def test_a_clip_with_no_hazards_is_scored_without_crashing(self, clip_video):
+        bare = HazardClip.objects.create(slug="bare", title="Bare", media=clip_video)
+
+        result = services.score_clip(bare, [1.0, 400.0])
+
+        assert result == {"score": 0, "topScore": 0, "voided": False, "voidReason": None, "hazards": []}
+
+
+class TestTheClipsLength:
+    def test_a_clip_without_a_length_is_published_with_a_warning(self, clip):
+        assert services.problems_with_clip(clip) == []
+        assert "spread evenly" in services.warnings_about(clip)[0]
+
+    def test_a_clip_with_a_length_has_nothing_to_warn_about(self, clip):
+        clip.duration_seconds = 40
+        clip.save(update_fields=["duration_seconds"])
+
+        assert services.warnings_about(clip) == []
+
+    def test_a_length_of_zero_is_refused(self, clip):
+        clip.duration_seconds = 0
+
+        with pytest.raises(ValidationError):
+            clip.full_clean()
+
+    def test_a_negative_length_is_refused(self, clip):
+        clip.duration_seconds = -1
+
+        with pytest.raises(ValidationError):
+            clip.full_clean()
+
+    def test_the_shortest_length_the_field_holds_is_allowed(self, clip):
+        clip.duration_seconds = Decimal("0.01")
+        clip.full_clean()
+        clip.save(update_fields=["duration_seconds"])
+
+        clip.refresh_from_db()
+        assert clip.duration_seconds == Decimal("0.01")
+
+    def test_the_database_refuses_a_length_of_zero_too(self, clip):
+        clip.duration_seconds = 0
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            clip.save(update_fields=["duration_seconds"])
 
 
 class TestWhatMakesAClipUsable:
@@ -299,6 +453,54 @@ class TestAttemptsAreRemembered:
         sign_in(api, learner).post(attempt_url("country-lane"), {"clicks": clicks}, format="json")
 
         assert HazardAttempt.objects.get(student=learner).voided is True
+
+    @pytest.mark.parametrize(
+        ("clicks", "reason"),
+        [
+            ([float(n) / 10 for n in range(160)], "too_many"),
+            ([5.0, 5.2, 5.4, 5.6, 6.0], "burst"),
+            ([2.0, 3.0, 4.0, 5.0, 6.0], "pattern"),
+        ],
+    )
+    def test_why_an_attempt_was_voided_is_remembered(self, api, student, live_clip, clicks, reason):
+        learner = student()
+
+        response = sign_in(api, learner).post(attempt_url("country-lane"), {"clicks": clicks}, format="json")
+
+        assert response.data["voidReason"] == reason
+        assert HazardAttempt.objects.get(student=learner).void_reason == reason
+
+    def test_an_attempt_that_counted_has_no_reason(self, api, student, live_clip):
+        learner = student()
+
+        response = sign_in(api, learner).post(attempt_url("country-lane"), {"clicks": [10.5]}, format="json")
+
+        assert response.data["voidReason"] is None
+        assert HazardAttempt.objects.get(student=learner).void_reason == ""
+
+
+class TestTooMuchToSubmit:
+    def test_more_than_five_hundred_clicks_are_refused(self, api, student, live_clip):
+        clicks = [float(n) / 100 for n in range(501)]
+
+        response = sign_in(api, student()).post(attempt_url("country-lane"), {"clicks": clicks}, format="json")
+
+        assert response.status_code == 400
+        assert not HazardAttempt.objects.exists()
+
+    def test_five_hundred_clicks_are_scored_as_usual(self, api, student, live_clip):
+        clicks = [float(n) / 100 for n in range(500)]
+
+        response = sign_in(api, student()).post(attempt_url("country-lane"), {"clicks": clicks}, format="json")
+
+        assert response.status_code == 200
+        assert response.data["voidReason"] == "too_many"
+
+    @pytest.mark.parametrize("click", ["nan", "Infinity", "-Infinity"])
+    def test_a_click_time_that_is_not_a_real_number_is_refused(self, api, student, live_clip, click):
+        response = sign_in(api, student()).post(attempt_url("country-lane"), {"clicks": [click]}, format="json")
+
+        assert response.status_code == 400
 
     def test_a_past_score_does_not_move_when_a_hazard_is_retimed(self, api, student, live_clip):
         """Retiming a hazard should not rewrite what a student already achieved."""
