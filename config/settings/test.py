@@ -40,3 +40,8 @@ WHITENOISE_AUTOREFRESH = True
 
 # Hashing cost is irrelevant to what tests verify, and dominates their runtime.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# Tests never inherit deployed browser push credentials or contact push services.
+WEB_PUSH_VAPID_PUBLIC_KEY = ""
+WEB_PUSH_VAPID_PRIVATE_KEY = ""
+WEB_PUSH_VAPID_SUBJECT = ""

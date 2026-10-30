@@ -247,6 +247,12 @@ LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 STRIPE_SECRET_KEY = env.str("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
 
+# --- Browser Web Push ----------------------------------------------------------------------------
+# Empty keys disable push until each deployment has its own stable VAPID pair.
+WEB_PUSH_VAPID_PUBLIC_KEY = env.str("WEB_PUSH_VAPID_PUBLIC_KEY", default="")
+WEB_PUSH_VAPID_PRIVATE_KEY = env.str("WEB_PUSH_VAPID_PRIVATE_KEY", default="")
+WEB_PUSH_VAPID_SUBJECT = env.str("WEB_PUSH_VAPID_SUBJECT", default="mailto:info@1theory.co.uk")
+
 # --- Google sign-in ------------------------------------------------------------------------------
 # Every OAuth client id the frontends use (web, and a mobile app later). A Google ID token is only
 # accepted if it was issued for one of these, so tokens for other apps cannot be replayed here.

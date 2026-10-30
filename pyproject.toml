@@ -26,6 +26,7 @@ dependencies = [
     "django-storages[s3]>=1.14.6",
     "django-anymail[postmark]>=13.0",
     "drf-spectacular-sidecar>=2026.1.1",
+    "pywebpush>=2.0.3,<3",
 ]
 
 [dependency-groups]
@@ -88,7 +89,7 @@ check_untyped_defs = true
 exclude = ["/migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["environ", "environ.*", "constance", "constance.*", "corsheaders.*"]
+module = ["environ", "environ.*", "constance", "constance.*", "corsheaders.*", "pywebpush"]
 ignore_missing_imports = true
 
 [tool.django-stubs]

@@ -68,3 +68,29 @@ def notify_expired_packages() -> int:
     if told:
         logger.info("Told %d learner(s) that their access ended", told)
     return told
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def send_notification_push(self, notification_id: int, subscription_ids: list[int] | None = None) -> None:
+    from apps.notifications.models import Notification, PushSubscription
+    from apps.notifications.push import configured, deliver
+
+    if not configured():
+        return
+    notification = Notification.objects.filter(pk=notification_id, user__is_active=True).first()
+    if notification is None:
+        return
+    subscriptions = PushSubscription.objects.filter(user_id=notification.user_id)
+    if subscription_ids is not None:
+        subscriptions = subscriptions.filter(pk__in=subscription_ids)
+
+    retry_ids = []
+    for subscription in subscriptions.iterator():
+        if deliver(notification, subscription):
+            retry_ids.append(subscription.pk)
+    if retry_ids:
+        # Already successful browsers must not receive duplicates on a temporary provider failure.
+        raise self.retry(
+            kwargs={"notification_id": notification_id, "subscription_ids": retry_ids},
+            countdown=60 * (2**self.request.retries),
+        )

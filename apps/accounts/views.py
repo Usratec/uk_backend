@@ -36,6 +36,8 @@ from apps.accounts.throttling import (
 )
 from apps.core.http import client_ip
 from apps.integrations import google_identity
+from apps.notifications.push_subscriptions import remove_subscription
+from apps.notifications.serializers import PushLogoutSerializer
 
 GENERIC_RESET_RESPONSE = "If this email is registered, a reset link has been sent."
 
@@ -249,9 +251,13 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [AuthUserThrottle]
 
-    @extend_schema(request=refresh_request, responses={200: DetailSerializer}, summary="Sign out")
+    @extend_schema(request=PushLogoutSerializer, responses={200: DetailSerializer}, summary="Sign out")
     def post(self, request: Request) -> Response:
-        services.blacklist_refresh_token(request.data.get("refresh"))
+        data = PushLogoutSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        services.blacklist_refresh_token(data.validated_data.get("refresh"))
+        if endpoint := data.validated_data.get("push_endpoint"):
+            remove_subscription(user=cast(User, request.user), endpoint=endpoint)
         return Response({"detail": "Logged out."}, status=status.HTTP_200_OK)
 
 
