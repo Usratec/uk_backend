@@ -87,4 +87,4 @@ class TestWhenTheBucketIsFullyConfigured:
             show_backend="1",
         )
 
-        assert "storages.backends.s3.S3Storage" in result.stdout, result.stderr
+        assert "apps.core.storage.SafeS3Storage" in result.stdout, result.stderr

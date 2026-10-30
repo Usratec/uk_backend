@@ -13,6 +13,7 @@ from typing import cast
 
 from django import forms
 from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, render
@@ -23,9 +24,11 @@ from django_ckeditor_5.widgets import CKEditor5Widget  # type: ignore[import-unt
 
 from apps.accounts.models import User
 from apps.core.models import PublishStatus
+from apps.core.uploads import require_upload
 from apps.learning import html, services
 from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
+    MEDIA_KIND_TYPES,
     Chapter,
     ContentType,
     Ebook,
@@ -929,6 +932,24 @@ class SubtitleInline(admin.TabularInline):
         return format_html('<a class="adm-btn" href="{}" target="_blank">Open the .vtt</a>', track.file.url)
 
 
+class MediaAssetForm(forms.ModelForm):
+    class Meta:
+        model = MediaAsset
+        fields = ["title", "kind", "file"]
+
+    def clean(self):
+        super().clean()
+        cleaned = self.cleaned_data
+        upload = cleaned.get("file")
+        kind = cleaned.get("kind")
+        if isinstance(upload, UploadedFile) and kind:
+            try:
+                require_upload(upload, MEDIA_KIND_TYPES[MediaKind(kind)])
+            except ValidationError as error:
+                self.add_error("file", error)
+        return cleaned
+
+
 @admin.register(MediaAsset)
 class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     """The media library: files staff have uploaded, used by reference from content.
@@ -937,6 +958,7 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     credentials stay on the server and nothing arrives in it that staff did not put there.
     """
 
+    form = MediaAssetForm
     inlines = [SubtitleInline]
     list_display = ["title", "kind", "readable_size", "subtitle_languages", "created_at"]
     list_filter = ["kind", "created_at"]
@@ -1071,10 +1093,12 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
         (
             "Scoring",
             {
-                "fields": ("max_clicks",),
+                "fields": ("max_clicks", "duration_seconds"),
                 "description": (
                     "Each hazard below is worth 5 down to 1, depending on how early in its window "
-                    "the student clicks. Clicking more often than the limit scores nothing at all."
+                    "the student clicks. Clicking more often than the limit scores nothing at all, "
+                    "as does clicking in a regular pattern, in rapid bursts, or evenly across the "
+                    "whole clip. The length is only needed for that last check."
                 ),
             },
         ),
@@ -1105,8 +1129,8 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
 
 @admin.register(HazardAttempt)
 class HazardAttemptAdmin(ReadOnlyAdmin):
-    list_display = ["student", "clip", "result", "voided", "created_at"]
-    list_filter = ["voided", "clip", "created_at"]
+    list_display = ["student", "clip", "result", "voided", "void_reason", "created_at"]
+    list_filter = ["voided", "void_reason", "clip", "created_at"]
     search_fields = ["student__email", "clip__title"]
     list_select_related = ["student", "clip"]
     date_hierarchy = "created_at"

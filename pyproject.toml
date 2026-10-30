@@ -12,7 +12,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "whitenoise>=6.9",
     "gunicorn>=26.2.0",
-    "djangorestframework>=3.18.1",
+    "djangorestframework>=3.18.3",
     "djangorestframework-simplejwt>=5.5.1",
     "drf-spectacular>=0.30.0",
     "redis>=8.1.0",
@@ -25,6 +25,8 @@ dependencies = [
     "nh3>=0.3.7",
     "django-storages[s3]>=1.14.6",
     "django-anymail[postmark]>=13.0",
+    "drf-spectacular-sidecar>=2026.1.1",
+    "pywebpush>=2.0.3,<3",
 ]
 
 [dependency-groups]
@@ -41,6 +43,10 @@ dev = [
 
 [tool.uv]
 package = false
+constraint-dependencies = [
+    "pillow>=13.0.0",
+    "certifi>=2026.10.19",
+]
 
 [tool.ruff]
 line-length = 119
@@ -83,7 +89,7 @@ check_untyped_defs = true
 exclude = ["/migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["environ", "environ.*", "constance", "constance.*", "corsheaders.*"]
+module = ["environ", "environ.*", "constance", "constance.*", "corsheaders.*", "pywebpush"]
 ignore_missing_imports = true
 
 [tool.django-stubs]

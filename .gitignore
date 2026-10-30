@@ -49,3 +49,8 @@ coverage.xml
 
 # OS
 Thumbs.db
+
+# Cursor local stuff
+.cursor/
+.agents
+skills-lock.json

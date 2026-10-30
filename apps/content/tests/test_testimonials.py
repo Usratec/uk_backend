@@ -159,6 +159,32 @@ class TestAdmin:
         testimonial.refresh_from_db()
         assert testimonial.avatar.name.startswith("testimonials/")
 
+    def test_an_uploaded_avatar_loses_its_location(self, client, root):
+        from PIL import Image
+
+        from apps.core.tests.test_images import GPS_IFD, MAKE, photo_with_gps
+
+        testimonial = make_testimonial()
+        client.force_login(root)
+
+        client.post(
+            reverse("admin:content_testimonial_change", args=[testimonial.pk]),
+            {
+                "first_name": "Ellie",
+                "age_range": "17-18",
+                "quote": "It showed me where I was weak.",
+                "rating": "5",
+                "avatar": photo_with_gps("JPEG"),
+                "sort_order": "0",
+                "is_published": "on",
+            },
+        )
+
+        testimonial.refresh_from_db()
+        with Image.open(testimonial.avatar) as image:
+            assert dict(image.getexif().get_ifd(GPS_IFD)) == {}
+            assert MAKE not in dict(image.getexif())
+
     def test_the_actions_publish_and_unpublish(self, client, root):
         testimonial = make_testimonial()
         client.force_login(root)

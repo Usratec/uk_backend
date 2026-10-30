@@ -189,6 +189,33 @@ class TestPhoto:
         user.refresh_from_db()
         assert user.photo
 
+    def test_a_stored_photo_carries_no_location(self, authenticated_api, user):
+        from PIL import Image
+
+        from apps.core.tests.test_images import GPS_IFD, photo_with_gps
+
+        authenticated_api.post(PHOTO_URL, {"photo": photo_with_gps("JPEG")}, format="multipart")
+
+        user.refresh_from_db()
+        with Image.open(user.photo) as stored:
+            assert dict(stored.getexif()) == {}
+            assert dict(stored.getexif().get_ifd(GPS_IFD)) == {}
+
+    def test_a_sideways_photo_is_stored_the_right_way_up(self, authenticated_api, user):
+        from PIL import Image
+
+        from apps.core.tests.test_images import photo_with_gps
+
+        authenticated_api.post(
+            PHOTO_URL,
+            {"photo": photo_with_gps("JPEG", orientation=6, size=(40, 20))},
+            format="multipart",
+        )
+
+        user.refresh_from_db()
+        with Image.open(user.photo) as stored:
+            assert stored.size == (20, 40)
+
     def test_the_url_of_the_photo_comes_back_with_the_profile(self, authenticated_api):
         response = authenticated_api.post(PHOTO_URL, {"photo": uploaded_image()}, format="multipart")
 

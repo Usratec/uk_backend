@@ -139,6 +139,8 @@ gunicorn worker serves the whole site and each one may be 10 MB. The file is sto
 bucket in production, where URLs are signed and short-lived), under a random name in a directory
 per account, and the file behind a replaced or removed photo is deleted so nothing is orphaned.
 
+What is stored is never the file that arrived. See **Uploaded pictures carry no metadata** below.
+
 ### Learner order history
 
 `GET /api/cabinet/orders/` returns the signed-in learner's own orders, newest first, as
@@ -261,6 +263,68 @@ sent so the customer is not emailed twice.
 
 There is no theory-test-date reminder. The profile now records `theory_test_date`, but nothing
 reads it to schedule a notification; that is a decision for whoever adds the reminder.
+
+### PWA Web Push
+
+Browser push is separate from native-app Firebase tokens. Generate one stable VAPID pair per
+environment (outside the checkout), then put the file contents into that environment's secret
+settings. Do not rotate keys on every deploy: browser subscriptions are tied to the public key.
+
+```bash
+uv run python manage.py generate_vapid_keys --output-dir ~/.config/1theory/web-push-dev
+```
+
+The command writes `vapid-public.key` and `vapid-private.key` with owner-only permissions and
+prints only their paths. Set `WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY` and
+`WEB_PUSH_VAPID_SUBJECT` (a support contact, for example `mailto:support@1theory.co.uk`) on both
+web and worker services. The private setting is the generated base64 DER content, not its path.
+Run migrations and restart the web and Celery worker after deploying. Empty keys disable push;
+internal notifications continue to work.
+
+Frontend contract for UK-253:
+
+| Request | Body / response |
+|---|---|
+| `GET /api/notifications/push/public-key/` (public) | `{"public_key": "<applicationServerKey>"}`; 503 while unconfigured |
+| `POST /api/notifications/push/subscriptions/` (authenticated) | Browser `PushSubscription.toJSON()`: `{"endpoint": "https://…", "keys": {"p256dh": "…", "auth": "…"}}`; 200 on save |
+| `DELETE /api/notifications/push/subscriptions/` (authenticated) | `{"endpoint": "https://…"}`; 204, including when already removed |
+| `POST /api/auth/logout/` (authenticated) | Existing `refresh` plus `push_endpoint` for this browser, so logout removes only its subscription |
+
+Ask for notification permission from a user action, subscribe using the public key, and save the
+browser subscription after login. The API checks actual P-256/auth keys and accepts HTTPS
+endpoints from Google, Mozilla, Apple and Windows browser push services. A browser subscription
+can move to a different signed-in account only with its existing keys; otherwise POST answers
+409 and the browser should unsubscribe and create a fresh subscription. DELETE can only remove
+the signed-in user's own subscription. Account deletion cascades to its subscriptions.
+Blank, null or invalid logout `push_endpoint` values are ignored; refresh-token revocation still
+runs first and logout succeeds.
+
+New internal notifications queue Web Push after the database transaction commits. The JSON
+payload is `{"title": "…", "body": "…", "link": "/my-package"}` (the link defaults to `/`).
+The service worker must display the notification and open the frontend route on click. Delivery
+covers every saved subscription; 404/410 responses remove stale subscriptions, while temporary
+failures retry only the affected subscriptions, up to three times. A stable `Topic` header
+collapses retries still queued by the provider, but cannot undo an already displayed notification.
+Windows endpoints also receive `X-WNS-Type: wns/raw`. A worker missing VAPID settings logs an error. Queue/provider failures do
+not fail the purchase or internal notification. No browser endpoints or encryption keys are
+included in task arguments or application logs.
+
+Welcome and payment confirmation emails include the home-screen prompt. Stripe success and
+cancel URLs already use `FRONTEND_BASE_URL`; set it to the installed PWA's frontend domain.
+Device QA with UK-253 must confirm push display/click, current-device logout, and payment return
+on installed iPhone and Android PWAs. Backend URL checks alone cannot prove that the browser
+will reopen the installed PWA window.
+
+### Uploaded pictures carry no metadata
+
+A phone photograph carries the GPS fix of wherever it was taken, so a selfie taken at home is the
+learner's address, and an image link hands that to anyone who opens it — staff included. Nothing
+uploaded is therefore stored as it arrived: `apps.core.images.without_metadata` rewrites every
+picture from its pixels and keeps only what affects how it renders (transparency, gamma, DPI, ICC
+profile, compression, resolution, loop count and frame timing — handed to the encoder by name,
+because most of Pillow's writers never read them off the image). EXIF, the GPS IFD, camera make
+and model, timestamps, XMP and PNG text chunks are all gone because nothing carries them into the
+new file.
 
 ### Running without Docker
 

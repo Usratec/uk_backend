@@ -16,9 +16,9 @@ from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
-from apps.core import audit
+from apps.core import audit, images
 from apps.core.models import PublishStatus
-from apps.learning import html
+from apps.learning import hazard_detection, html
 from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
     Chapter,
@@ -222,6 +222,9 @@ def warnings_about(instance) -> list[str]:
     if isinstance(instance, Ebook):
         if instance.file_id is None and not ebook_sections(instance).exists():
             return ["No section of this book is published yet and it has no document, so students will see it empty."]
+    if isinstance(instance, HazardClip):
+        if instance.duration_seconds is None:
+            return ["This clip has no length, so clicking spread evenly across it will not be spotted."]
     return []
 
 
@@ -471,13 +474,19 @@ def image_asset_from_upload(*, upload, uploaded_by=None, title: str = "") -> Med
     check_image_upload(upload)
     _verify_is_an_image(upload)
 
+    original_name = upload.name
+    try:
+        upload = images.without_metadata(upload)
+    except images.ImageMetadataError as error:
+        raise ImageUploadError(str(error)) from error
+
     checksum = _checksum_of(upload)
     existing = MediaAsset.objects.filter(checksum=checksum, kind=MediaKind.IMAGE).order_by("pk").first()
     if existing is not None:
         return existing
 
     asset = MediaAsset(
-        title=(title or upload.name or "Picture")[:160],
+        title=(title or original_name or "Picture")[:160],
         kind=MediaKind.IMAGE,
         file=upload,
         uploaded_by=uploaded_by,
@@ -1082,6 +1091,7 @@ def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds
             score=clip["score"],
             top_score=clip["topScore"],
             voided=clip["voided"],
+            void_reason=clip.get("voidReason") or "",
         )
         for clip in result["clips"]
     )
@@ -1453,12 +1463,15 @@ def score_clip(clip: HazardClip, clicked_at: list[float]) -> dict:
     passing as perception.
     """
     windows = list(clip.windows.all())
-    voided = len(clicked_at) > clip.max_clicks
+    verdict = hazard_detection.inspect(
+        clicked_at, windows, max_clicks=clip.max_clicks, duration_seconds=clip.duration_seconds
+    )
+    voided = verdict.voided
 
     hazards: list[dict] = []
     score = 0
     for window in windows:
-        best = 0 if voided else max((window.score_for(moment) for moment in clicked_at), default=0)
+        best = 0 if voided else max((window.score_for(moment) for moment in verdict.scorable), default=0)
         score += best
         hazards.append(
             {
@@ -1474,6 +1487,7 @@ def score_clip(clip: HazardClip, clicked_at: list[float]) -> dict:
         "score": score,
         "topScore": clip.top_score,
         "voided": voided,
+        "voidReason": verdict.reason or None,
         # Revealed now the attempt is over, so the student can see what they missed and when.
         "hazards": hazards,
     }
@@ -1487,6 +1501,7 @@ def record_hazard_attempt(student, clip: HazardClip, result: dict) -> None:
         score=result["score"],
         top_score=result["topScore"],
         voided=result["voided"],
+        void_reason=result.get("voidReason") or "",
     )
 
 
