@@ -144,6 +144,7 @@ REST_FRAMEWORK = {
         "profile_photo": "20/hour",
         "checkout": "30/hour",
         "promo_code": "60/hour",
+        "order_status": "60/hour",
     },
 }
 
