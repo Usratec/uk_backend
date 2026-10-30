@@ -77,6 +77,9 @@ INSTALLED_APPS = [
 AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
+    # Outermost, so the policy also reaches the responses that are returned before the rest of the
+    # stack runs: SecurityMiddleware's HTTPS redirect and the health probe's short circuit.
+    "apps.core.middleware.ContentSecurityPolicyMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "apps.core.middleware.HealthCheckMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
