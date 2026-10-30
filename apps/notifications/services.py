@@ -58,6 +58,7 @@ def notify(
 ) -> tuple[Notification, bool]:
     if not event_key:
         notification = Notification.objects.create(user=user, kind=kind, title=title, text=text, link=link)
+        _queue_push_on_commit(notification)
         return notification, True
 
     existing = Notification.objects.filter(user=user, event_key=event_key).first()
@@ -75,7 +76,14 @@ def notify(
             raise
         return raced, False
 
+    _queue_push_on_commit(notification)
     return notification, True
+
+
+def _queue_push_on_commit(notification: Notification) -> None:
+    from apps.notifications.push import queue_notification
+
+    transaction.on_commit(lambda: queue_notification(notification.pk))
 
 
 def notify_quietly(create: Callable[[], object], description: str) -> None:
