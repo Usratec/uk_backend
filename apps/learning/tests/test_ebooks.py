@@ -7,7 +7,7 @@ from apps.accounts.models import User
 from apps.core.models import PublishStatus
 from apps.learning import services
 from apps.learning.models import Ebook, EbookSection, EbookSectionProgress, MediaAsset, MediaKind
-from apps.learning.tests.conftest import sign_in, uploaded_image
+from apps.learning.tests.conftest import mp4_bytes, sign_in, uploaded_image
 from apps.staff.authz import PermissionDeniedError
 
 pytestmark = pytest.mark.django_db
@@ -238,7 +238,7 @@ class TestReadingInSections:
         video = MediaAsset.objects.create(
             title="Junctions",
             kind=MediaKind.VIDEO,
-            file=SimpleUploadedFile("junctions.mp4", b"video", content_type="video/mp4"),
+            file=SimpleUploadedFile("junctions.mp4", mp4_bytes(), content_type="video/mp4"),
         )
         services.publish(
             actor=publisher,

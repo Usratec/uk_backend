@@ -2,8 +2,6 @@
 
 from datetime import timedelta
 
-from django.conf import settings
-
 from apps.accounts.models import SecurityToken, TokenPurpose, User
 from apps.core import email
 
@@ -19,16 +17,10 @@ def send_welcome(user: User) -> None:
     ordinary password-reset token, so the same page and endpoint handle it.
     """
     token = SecurityToken.objects.issue(TokenPurpose.PASSWORD_RESET, user, ACCOUNT_SETUP_VALID_FOR)
-    email.send(
-        template="welcome",
-        subject="Welcome to 1Theory — set up your account",
-        to=user.email,
-        context={
-            "first_name": user.first_name,
-            "email": user.email,
-            "setup_url": f"{settings.FRONTEND_BASE_URL}auth/reset-password?token={token}",
-        },
-    )
+    # The code is loaded when the message is sent, so the job arguments do not carry the link.
+    from apps.accounts.emails import queue_security_link
+
+    queue_security_link(token, "welcome")
 
 
 def send_order_confirmation(order) -> None:

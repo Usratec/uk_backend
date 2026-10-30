@@ -11,16 +11,18 @@ from django.urls import reverse
 from apps.core.models import PublishStatus
 from apps.learning import services
 from apps.learning.models import ContentType, LearningContent, MediaAsset, MediaKind
-from apps.learning.tests.conftest import sign_in
+from apps.learning.tests.conftest import mp4_bytes, sign_in
 
 pytestmark = pytest.mark.django_db
 
 
 def upload(kind=MediaKind.VIDEO, name="clip.mp4", title="A clip", **fields) -> MediaAsset:
+    content = b"%PDF-1.4\n" if kind == MediaKind.DOCUMENT else mp4_bytes()
+    # The declared type is deliberately wrong. The stored type has to come from the bytes.
     return MediaAsset.objects.create(
         title=title,
         kind=kind,
-        file=SimpleUploadedFile(name, b"not really a video", content_type="video/mp4"),
+        file=SimpleUploadedFile(name, content, content_type="text/html"),
         **fields,
     )
 
@@ -49,7 +51,8 @@ def media_content(subchapter, asset, content_type=ContentType.VIDEO, **fields) -
 class TestTheLibrary:
     def test_an_upload_records_what_it_is(self, video):
         """Taken from the file itself rather than trusted from a form field."""
-        assert video.size_bytes == len(b"not really a video")
+        assert video.size_bytes == len(mp4_bytes())
+        # Declared as text/html on the way in. The bytes are what is recorded.
         assert video.content_type == "video/mp4"
 
     def test_the_same_file_can_be_used_in_two_lessons(self, subchapter, video):
@@ -185,7 +188,7 @@ class TestTheAdmin:
         page = editor_client.get(reverse("admin:learning_mediaasset_changelist")).content.decode()
 
         assert video.title in page
-        assert "18 bytes" in page
+        assert f"{video.size_bytes} bytes" in page
 
     def test_the_uploader_is_recorded(self, editor_client, editor):
         editor_client.post(
@@ -193,7 +196,7 @@ class TestTheAdmin:
             {
                 "title": "Uploaded in the admin",
                 "kind": MediaKind.DOCUMENT,
-                "file": SimpleUploadedFile("notes.pdf", b"pdf bytes", content_type="application/pdf"),
+                "file": SimpleUploadedFile("notes.pdf", b"%PDF-1.4\n", content_type="text/html"),
                 "subtitles-TOTAL_FORMS": "1",
                 "subtitles-INITIAL_FORMS": "0",
                 "subtitles-MIN_NUM_FORMS": "0",
@@ -202,6 +205,24 @@ class TestTheAdmin:
         )
 
         assert MediaAsset.objects.get(title="Uploaded in the admin").uploaded_by == editor
+
+    def test_a_file_whose_bytes_are_not_the_declared_type_is_refused(self, editor_client):
+        response = editor_client.post(
+            reverse("admin:learning_mediaasset_add"),
+            {
+                "title": "Not a document",
+                "kind": MediaKind.DOCUMENT,
+                "file": SimpleUploadedFile("notes.pdf", b"<html>not a pdf</html>", content_type="application/pdf"),
+                "subtitles-TOTAL_FORMS": "0",
+                "subtitles-INITIAL_FORMS": "0",
+                "subtitles-MIN_NUM_FORMS": "0",
+                "subtitles-MAX_NUM_FORMS": "1000",
+            },
+        )
+
+        assert response.status_code == 200
+        assert MediaAsset.objects.filter(title="Not a document").exists() is False
+        assert "not a format" in response.content.decode().lower()
 
     def test_the_content_form_offers_the_media_field(self, editor_client, content):
         page = editor_client.get(reverse("admin:learning_learningcontent_change", args=[content.pk])).content.decode()

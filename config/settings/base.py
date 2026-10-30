@@ -54,6 +54,9 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
+    # Ships the Swagger UI and ReDoc bundles as static files, so the docs pages do not pull
+    # unpinned scripts from a CDN into our own origin.
+    "drf_spectacular_sidecar",
     "django_ckeditor_5",
     "anymail",
     # Local
@@ -74,6 +77,9 @@ INSTALLED_APPS = [
 AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
+    # Outermost, so the policy also reaches the responses that are returned before the rest of the
+    # stack runs: SecurityMiddleware's HTTPS redirect and the health probe's short circuit.
+    "apps.core.middleware.ContentSecurityPolicyMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "apps.core.middleware.HealthCheckMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -141,6 +147,7 @@ REST_FRAMEWORK = {
         "profile_photo": "20/hour",
         "checkout": "30/hour",
         "promo_code": "60/hour",
+        "order_status": "60/hour",
     },
 }
 
@@ -164,6 +171,11 @@ SPECTACULAR_SETTINGS = {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
         "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
     },
+    # Serve the UI bundles from our own static files instead of jsDelivr's `@latest`, which would
+    # run whatever those packages happened to publish inside our origin.
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
 }
 
 # --- Cache ---------------------------------------------------------------------------------------
@@ -239,6 +251,12 @@ LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 STRIPE_SECRET_KEY = env.str("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
 
+# --- Browser Web Push ----------------------------------------------------------------------------
+# Empty keys disable push until each deployment has its own stable VAPID pair.
+WEB_PUSH_VAPID_PUBLIC_KEY = env.str("WEB_PUSH_VAPID_PUBLIC_KEY", default="")
+WEB_PUSH_VAPID_PRIVATE_KEY = env.str("WEB_PUSH_VAPID_PRIVATE_KEY", default="")
+WEB_PUSH_VAPID_SUBJECT = env.str("WEB_PUSH_VAPID_SUBJECT", default="mailto:info@1theory.co.uk")
+
 # --- Google sign-in ------------------------------------------------------------------------------
 # Every OAuth client id the frontends use (web, and a mobile app later). A Google ID token is only
 # accepted if it was issued for one of these, so tokens for other apps cannot be replayed here.
@@ -251,7 +269,7 @@ STATIC_URL = "/api/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 STORAGES: dict[str, dict] = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "default": {"BACKEND": "apps.core.storage.SafeFileSystemStorage"},
     # WhiteNoise serves static files from the app itself and stores a gzipped copy of each file
     # next to it during `collectstatic`. The same backend is used in every environment, so the
     # files collected when the Docker image is built are exactly what a deployed container serves.
@@ -302,7 +320,7 @@ if S3_BUCKET_NAME and not S3_CONFIGURED:
 
 if S3_CONFIGURED:
     STORAGES["default"] = {
-        "BACKEND": "storages.backends.s3.S3Storage",
+        "BACKEND": "apps.core.storage.SafeS3Storage",
         "OPTIONS": {
             "bucket_name": S3_BUCKET_NAME,
             "endpoint_url": S3_ENDPOINT_URL,

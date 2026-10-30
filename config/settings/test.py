@@ -32,7 +32,7 @@ CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"
 # leaves nothing behind on disk.
 STORAGES = {  # noqa: F405
     **STORAGES,  # noqa: F405
-    "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+    "default": {"BACKEND": "apps.core.storage.SafeInMemoryStorage"},
 }
 
 # Tests never run collectstatic; let WhiteNoise find files on demand instead of from STATIC_ROOT.
@@ -40,3 +40,8 @@ WHITENOISE_AUTOREFRESH = True
 
 # Hashing cost is irrelevant to what tests verify, and dominates their runtime.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# Tests never inherit deployed browser push credentials or contact push services.
+WEB_PUSH_VAPID_PUBLIC_KEY = ""
+WEB_PUSH_VAPID_PRIVATE_KEY = ""
+WEB_PUSH_VAPID_SUBJECT = ""

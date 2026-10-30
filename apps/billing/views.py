@@ -13,7 +13,6 @@ from rest_framework.views import APIView
 from apps.accounts.models import User
 from apps.accounts.serializers import DetailSerializer
 from apps.billing import checkout, history, pricing, webhooks
-from apps.billing.models import Order
 from apps.billing.serializers import (
     CheckoutResponseSerializer,
     CheckoutSerializer,
@@ -23,7 +22,7 @@ from apps.billing.serializers import (
     PromoCodeValidateSerializer,
     PromoCodeValidSerializer,
 )
-from apps.billing.throttling import CheckoutThrottle, PromoCodeThrottle
+from apps.billing.throttling import CheckoutThrottle, OrderStatusThrottle, PromoCodeThrottle
 from apps.catalog.models import Package
 from apps.integrations import stripe_client
 
@@ -130,14 +129,16 @@ class CheckoutView(APIView):
 class OrderStatusView(APIView):
     """Polled by the storefront after payment, until the status turns to paid."""
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [OrderStatusThrottle]
 
     @extend_schema(
         responses={200: OrderStatusSerializer},
         summary="Check an order",
     )
     def get(self, request: Request, order_id: str) -> Response:
-        order = Order.objects.filter(pk=order_id).select_related("package").first()
+        user = cast(User, request.user)
+        order = history.readable_by(user).filter(pk=order_id).select_related("package").first()
         if order is None:
             return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(OrderStatusSerializer(order).data)

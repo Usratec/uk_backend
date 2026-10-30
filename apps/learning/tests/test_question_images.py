@@ -185,7 +185,9 @@ class TestEveryFormatWeClaimToSupport:
             ("junction.gif", image_bytes("GIF"), "image/gif", "GIF"),
         ],
     )
-    def test_a_still_arrives_unchanged(self, editor_client, chapter, name, content, content_type, expected_format):
+    def test_a_still_keeps_its_format_and_its_picture(
+        self, editor_client, chapter, name, content, content_type, expected_format
+    ):
         from PIL import Image
 
         response = editor_client.post(
@@ -195,9 +197,23 @@ class TestEveryFormatWeClaimToSupport:
         assert response.status_code == 302
         asset = MediaAsset.objects.get()
         stored = asset.file.read()
-        assert stored == content
         assert asset.content_type == content_type
-        assert Image.open(BytesIO(stored)).format == expected_format
+        with Image.open(BytesIO(stored)) as image, Image.open(BytesIO(content)) as sent:
+            assert image.format == expected_format
+            assert image.size == sent.size
+            assert dict(image.getexif()) == {}
+
+    def test_a_photograph_loses_its_location(self, editor_client, chapter):
+        from PIL import Image
+
+        from apps.core.tests.test_images import GPS_IFD, MAKE, photo_with_gps
+
+        editor_client.post(ADD_URL, question_form(chapter, upload_image=photo_with_gps("JPEG")))
+
+        stored = MediaAsset.objects.get().file.read()
+        with Image.open(BytesIO(stored)) as image:
+            assert dict(image.getexif().get_ifd(GPS_IFD)) == {}
+            assert MAKE not in dict(image.getexif())
 
     @pytest.mark.parametrize(("name", "image_format"), [("moving.gif", "GIF"), ("moving.webp", "WEBP")])
     def test_an_animation_is_still_moving_afterwards(self, editor_client, chapter, name, image_format):
@@ -208,8 +224,8 @@ class TestEveryFormatWeClaimToSupport:
         editor_client.post(ADD_URL, question_form(chapter, upload_image=upload(name, content, f"image/{name[-3:]}")))
 
         stored = MediaAsset.objects.get().file.read()
-        assert stored == content
-        assert getattr(Image.open(BytesIO(stored)), "n_frames", 1) == 3
+        with Image.open(BytesIO(stored)) as image:
+            assert getattr(image, "n_frames", 1) == 3
 
 
 class TestUploadingForEachAnswer:

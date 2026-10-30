@@ -2,7 +2,9 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.db import models
 
+from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import TimestampedModel
+from apps.core.uploads import RASTER_IMAGE_TYPES, SVG_TYPE, VIDEO_TYPES, require_upload
 
 IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "svg"]
 VIDEO_EXTENSIONS = ["mp4", "webm", "mov"]
@@ -55,12 +57,12 @@ class LandingText(TimestampedModel):
 class LandingMedia(TimestampedModel):
     title = models.CharField(max_length=160, verbose_name="name / title")
     media_type = models.CharField(max_length=10, choices=LandingMediaType.choices, default=LandingMediaType.IMAGE)
-    file = models.FileField(
+    file = SanitizedFileField(
         upload_to=landing_media_path,
         validators=[FileExtensionValidator(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS)],
         help_text="Images: JPG, PNG, or SVG. Videos: MP4 (H.264) plays everywhere; WebM/MOV also accepted.",
     )
-    poster = models.ImageField(
+    poster = SanitizedImageField(
         upload_to=landing_poster_path,
         blank=True,
         verbose_name="video thumbnail / poster",
@@ -107,7 +109,21 @@ class LandingMedia(TimestampedModel):
     def __str__(self) -> str:
         return self.title
 
+    def _check_file(self) -> None:
+        if not self.file or getattr(self.file, "_committed", True):
+            return
+        allowed = RASTER_IMAGE_TYPES | {SVG_TYPE} if self.media_type == LandingMediaType.IMAGE else VIDEO_TYPES
+        try:
+            require_upload(self.file, allowed)
+        except ValidationError as error:
+            raise ValidationError({"file": error.messages}) from error
+
     def clean(self) -> None:
         super().clean()
         if self.media_type == LandingMediaType.IMAGE and not self.alt_text.strip():
             raise ValidationError({"alt_text": "Alt text is required for images."})
+        self._check_file()
+
+    def save(self, *args, **kwargs):
+        self._check_file()
+        super().save(*args, **kwargs)
