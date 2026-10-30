@@ -130,3 +130,17 @@ def test_invalid_keys_are_rejected(signed_in, subscription_data, field, value):
     subscription_data["keys"][field] = value
     assert signed_in.post(URL, subscription_data, format="json").status_code == 400
     assert not PushSubscription.objects.exists()
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://updates.push.services.mozilla.com/wpush/v2/browser",
+        "https://web.push.apple.com/browser",
+        "https://wns2-example.notify.windows.com/w/?token=browser",
+    ],
+)
+def test_supported_provider_endpoints_are_accepted(signed_in, subscription_data, endpoint):
+    subscription_data["endpoint"] = endpoint
+    assert signed_in.post(URL, subscription_data, format="json").status_code == 200
+    assert PushSubscription.objects.get().endpoint == endpoint

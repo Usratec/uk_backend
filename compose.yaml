@@ -33,6 +33,9 @@ services:
       DATABASE_URL: postgres://postgres:postgres@db:5432/uk_backend
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
+      WEB_PUSH_VAPID_PUBLIC_KEY: ${WEB_PUSH_VAPID_PUBLIC_KEY:-}
+      WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:-}
+      WEB_PUSH_VAPID_SUBJECT: ${WEB_PUSH_VAPID_SUBJECT:-mailto:info@1theory.co.uk}
       # Read from .env by compose. Empty means uploads go to the local filesystem.
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}

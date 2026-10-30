@@ -178,3 +178,35 @@ def test_generated_key_pair_signs_and_verifies_vapid_token(tmp_path):
     verifier = Vapid.from_raw_public(public.encode("ascii"))
     assert verifier.verify_token(claims.encode("ascii"), signature)
     assert authorization.endswith(f",k={public}")
+
+
+@pytest.mark.parametrize(
+    "endpoint,is_windows",
+    [
+        ("https://fcm.googleapis.com/fcm/send/browser", False),
+        ("https://updates.push.services.mozilla.com/wpush/v2/browser", False),
+        ("https://web.push.apple.com/browser", False),
+        ("https://wns2-example.notify.windows.com/w/?token=browser", True),
+    ],
+)
+def test_provider_headers_and_retry_topic(notification, subscription, push_settings, endpoint, is_windows):
+    subscription.endpoint = endpoint
+    with patch("apps.notifications.push.webpush") as send:
+        deliver(notification, subscription)
+        deliver(notification, subscription)
+    headers = send.call_args.kwargs["headers"]
+    assert headers["Topic"] == str(notification.pk)
+    assert len(headers["Topic"]) <= 32
+    assert send.call_args_list[0].kwargs["headers"] == headers
+    if is_windows:
+        assert headers["X-WNS-Type"] == "wns/raw"
+    else:
+        assert "X-WNS-Type" not in headers
+
+
+def test_unconfigured_worker_logs_delivery_failure(notification, caplog):
+    with patch("apps.notifications.push.deliver") as send:
+        with caplog.at_level("ERROR", logger="apps.notifications.tasks"):
+            send_notification_push(notification.pk)
+    send.assert_not_called()
+    assert "worker VAPID settings are missing" in caplog.text

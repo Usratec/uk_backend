@@ -2,6 +2,7 @@
 
 import json
 import logging
+from urllib.parse import urlsplit
 
 import requests
 from django.conf import settings
@@ -35,6 +36,12 @@ def deliver(notification: Notification, subscription: PushSubscription) -> bool:
         logger.warning("Refused invalid push endpoint for subscription %s", subscription.pk)
         return False
 
+    # A stable topic collapses retries while a provider still has the message queued.
+    headers = {"Topic": str(notification.pk)}
+    host = urlsplit(subscription.endpoint).hostname or ""
+    if host == "notify.windows.com" or host.endswith(".notify.windows.com"):
+        headers["X-WNS-Type"] = "wns/raw"
+
     try:
         with NoRedirectSession() as session:
             webpush(
@@ -48,6 +55,7 @@ def deliver(notification: Notification, subscription: PushSubscription) -> bool:
                 vapid_private_key=settings.WEB_PUSH_VAPID_PRIVATE_KEY,
                 # pywebpush mutates claims to add aud/exp; each endpoint needs a fresh dict.
                 vapid_claims={"sub": settings.WEB_PUSH_VAPID_SUBJECT},
+                headers=headers,
                 ttl=86400,
                 timeout=10,
                 requests_session=session,

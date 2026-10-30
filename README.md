@@ -296,12 +296,16 @@ endpoints from Google, Mozilla, Apple and Windows browser push services. A brows
 can move to a different signed-in account only with its existing keys; otherwise POST answers
 409 and the browser should unsubscribe and create a fresh subscription. DELETE can only remove
 the signed-in user's own subscription. Account deletion cascades to its subscriptions.
+Blank, null or invalid logout `push_endpoint` values are ignored; refresh-token revocation still
+runs first and logout succeeds.
 
 New internal notifications queue Web Push after the database transaction commits. The JSON
 payload is `{"title": "…", "body": "…", "link": "/my-package"}` (the link defaults to `/`).
 The service worker must display the notification and open the frontend route on click. Delivery
 covers every saved subscription; 404/410 responses remove stale subscriptions, while temporary
-failures retry only the affected subscriptions, up to three times. Queue/provider failures do
+failures retry only the affected subscriptions, up to three times. A stable `Topic` header
+collapses retries still queued by the provider, but cannot undo an already displayed notification.
+Windows endpoints also receive `X-WNS-Type: wns/raw`. A worker missing VAPID settings logs an error. Queue/provider failures do
 not fail the purchase or internal notification. No browser endpoints or encryption keys are
 included in task arguments or application logs.
 

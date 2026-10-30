@@ -62,9 +62,9 @@ class PushSubscriptionSerializer(PushEndpointSerializer):
 
 class PushLogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    push_endpoint = serializers.CharField(required=False, max_length=2048)
+    push_endpoint = serializers.CharField(required=False, max_length=2048, allow_blank=True, allow_null=True)
 
     def validate_push_endpoint(self, value: str) -> str:
         from apps.notifications.push_subscriptions import validate_endpoint
 
-        return validate_endpoint(value)
+        return validate_endpoint(value) if value else value

@@ -76,6 +76,7 @@ def send_notification_push(self, notification_id: int, subscription_ids: list[in
     from apps.notifications.push import configured, deliver
 
     if not configured():
+        logger.error("Cannot deliver push for notification %s: worker VAPID settings are missing", notification_id)
         return
     notification = Notification.objects.filter(pk=notification_id, user__is_active=True).first()
     if notification is None:

@@ -253,10 +253,10 @@ class LogoutView(APIView):
 
     @extend_schema(request=PushLogoutSerializer, responses={200: DetailSerializer}, summary="Sign out")
     def post(self, request: Request) -> Response:
+        # Optional browser cleanup must never prevent revoking the session.
+        services.blacklist_refresh_token(request.data.get("refresh"))
         data = PushLogoutSerializer(data=request.data)
-        data.is_valid(raise_exception=True)
-        services.blacklist_refresh_token(data.validated_data.get("refresh"))
-        if endpoint := data.validated_data.get("push_endpoint"):
+        if data.is_valid() and (endpoint := data.validated_data.get("push_endpoint")):
             remove_subscription(user=cast(User, request.user), endpoint=endpoint)
         return Response({"detail": "Logged out."}, status=status.HTTP_200_OK)
 

@@ -109,6 +109,15 @@ class TestLogout:
         assert response.data["detail"] == "Logged out."
         assert authenticated_api.post(REFRESH_URL, tokens, format="json").status_code == 401
 
+    @pytest.mark.parametrize("endpoint", ["", None, "https://untrusted.example/push", "x" * 2049, {}])
+    def test_invalid_optional_push_endpoint_does_not_prevent_logout(self, authenticated_api, user, endpoint):
+        refresh = str(RefreshToken.for_user(user))
+
+        response = authenticated_api.post(LOGOUT_URL, {"refresh": refresh, "push_endpoint": endpoint}, format="json")
+
+        assert response.status_code == 200
+        assert authenticated_api.post(REFRESH_URL, {"refresh": refresh}, format="json").status_code == 401
+
     def test_succeeds_even_with_an_unusable_token(self, authenticated_api):
         response = authenticated_api.post(LOGOUT_URL, {"refresh": "rubbish"}, format="json")
 
