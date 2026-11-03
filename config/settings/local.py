@@ -15,6 +15,8 @@ DATABASES = {
     "default": database(env.str("DATABASE_URL", default="postgres://postgres:postgres@localhost:5432/uk_backend"))
 }
 
+VIDEO_ALLOW_UNSIGNED_PLAYBACK = env.bool("VIDEO_ALLOW_UNSIGNED_PLAYBACK", default=True)
+
 # Run background work in the web process, so no worker is needed to try a purchase locally.
 # `docker compose up` does start a worker, which takes over when this is set to False.
 CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
