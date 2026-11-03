@@ -44,9 +44,10 @@ existing task role and receives a supplementary policy for those prefixes.
    role and a matching key policy. AWS-managed Secrets Manager keys need no
    additional KMS policy here.
 7. Populate a runtime JSON secret with `SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`
-   and `CELERY_BROKER_URL`. Match the current web runtime exactly. For an ordinary
-   worker, extend its task definition with the existing email/payment/integration
-   settings and secrets before opting into `CreateGeneralWorker=true`.
+   `CELERY_BROKER_URL`, `FRONTEND_BASE_URL`, `STRIPE_SECRET_KEY`,
+   `STRIPE_WEBHOOK_SECRET` and `POSTMARK_SERVER_TOKEN`. Match the current web
+   runtime exactly. Include any additional integration settings and secrets
+   needed by ordinary jobs before opting into `CreateGeneralWorker=true`.
 
 ## Deploy the infrastructure
 
