@@ -269,6 +269,18 @@ Videos no longer pass through Django. The browser is given short-lived permissio
 object into the private bucket, the backend checks what actually arrived, and a Celery worker turns
 it into an HLS ladder with ffmpeg. Playback is authorized per learner and served by CloudFront.
 
+Each run produces two things under one run-scoped prefix: the adaptive ladder (`master.m3u8` plus a
+360p/720p/1080p variant per rung the source is big enough for) and a single `video.mp4` written with
+`-movflags +faststart`, so its `moov` atom is at the front and a player can start before the file
+has finished downloading. `GET /api/learn/media/<id>/playback/` returns the manifest as `url` and
+that file as `mp4Url`; the signed cookies on that response cover the whole prefix, so they cover
+both.
+
+**The frame rate is never changed.** A hazard clip's hazard windows are counted in frames, so the
+pipeline encodes every output at exactly the rate the source arrived at — `fps=30000/1001` stays
+`30000/1001`, not 30 — and a rate outside `VIDEO_MIN_FRAME_RATE`–`VIDEO_MAX_FRAME_RATE` is refused
+with a message saying what to re-export at, rather than being quietly halved or capped to fit.
+
 
 ### Uploaded pictures carry no metadata
 

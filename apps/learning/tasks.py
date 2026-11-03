@@ -110,9 +110,21 @@ def transcode_video(self, asset_id: int, job: str) -> str:
                 renditions=renditions,
             )
 
+            transcode.to_mp4(
+                source_path=source_path,
+                output_path=str(output_dir / transcode.PROGRESSIVE_MP4_NAME),
+                source=source,
+                rendition=transcode.mp4_rendition_for(source),
+            )
+
             s3_client.delete_prefix(prefix=prefix)
-            master_key = media_processing.store_hls_output(directory=str(output_dir), prefix=prefix)
-            media_processing.verify_hls_output(master_key=master_key, renditions=output.renditions, prefix=prefix)
+            stored = media_processing.store_hls_output(directory=str(output_dir), prefix=prefix)
+            media_processing.verify_hls_output(
+                master_key=stored.master_key,
+                renditions=output.renditions,
+                prefix=prefix,
+                mp4_key=stored.mp4_key,
+            )
 
     except transcode.ProbeError as error:
         media_processing.mark_processing_failed(asset=asset, job=job_id, reason=str(error))
@@ -150,11 +162,13 @@ def transcode_video(self, asset_id: int, job: str) -> str:
         asset=asset,
         job=job_id,
         prefix=prefix,
-        master_key=master_key,
+        master_key=stored.master_key,
         renditions=output.renditions,
         duration_seconds=source.duration_seconds,
         width=source.width,
         height=source.height,
+        mp4_key=stored.mp4_key,
+        frame_rate=source.frame_rate,
     )
     if not published:
         logger.warning("Discarding the output of superseded run %s for asset %s", job, asset_id)
@@ -163,7 +177,12 @@ def transcode_video(self, asset_id: int, job: str) -> str:
 
     media_processing.discard_run_output(prefix=published.previous_prefix, published_prefix=prefix)
 
-    logger.info("Asset %s is ready to stream with %d renditions", asset_id, len(output.renditions))
+    logger.info(
+        "Asset %s is ready to stream with %d renditions and a progressive MP4, at %s fps",
+        asset_id,
+        len(output.renditions),
+        transcode.preserved_frame_rate(source) or "an unknown rate",
+    )
     return "ready"
 
 

@@ -262,6 +262,7 @@ class MediaPlaybackView(APIView):
                 "mediaId": playback.media_id,
                 "playbackType": playback.kind,
                 "url": playback.url,
+                "mp4Url": playback.mp4_url,
                 "expiresAt": playback.expires_at,
                 "qualities": playback.qualities,
                 "withCredentials": signed,

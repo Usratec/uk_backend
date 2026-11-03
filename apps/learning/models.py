@@ -260,12 +260,26 @@ class MediaAsset(TimestampedModel):
     )
     hls_prefix = models.CharField(max_length=255, blank=True, editable=False)
     hls_master_key = models.CharField(max_length=255, blank=True, editable=False)
+    mp4_key = models.CharField(
+        max_length=255,
+        blank=True,
+        editable=False,
+        help_text="The single optimized MP4, for a player that cannot take the HLS ladder.",
+    )
     renditions = models.JSONField(
         default=list, blank=True, editable=False, help_text="The quality levels that were produced."
     )
     duration_seconds = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, editable=False)
     source_width = models.PositiveIntegerField(default=0, editable=False)
     source_height = models.PositiveIntegerField(default=0, editable=False)
+    source_frame_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="The frame rate the file was uploaded at, which every output is encoded at.",
+    )
     processing_job = models.UUIDField(
         null=True, blank=True, editable=False, help_text="The processing run that owns this file right now."
     )

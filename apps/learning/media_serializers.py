@@ -91,6 +91,13 @@ class PlaybackResponseSerializer(serializers.Serializer):
         help_text="`hls` means an adaptive master playlist; `progressive` means a single file.",
     )
     url = serializers.URLField(help_text="Where to play from. Short-lived — fetch it again rather than storing it.")
+    mp4Url = serializers.CharField(  # noqa: N815
+        allow_blank=True,
+        help_text=(
+            "A single fast-start MP4 of the same video, for a player that cannot take the ladder. "
+            "Empty unless `playbackType` is `hls`. The cookies on this response cover it too."
+        ),
+    )
     expiresAt = serializers.DateTimeField(help_text="When this authorization stops working.")  # noqa: N815
     qualities = serializers.ListField(
         child=serializers.CharField(), help_text="The quality levels in the manifest, for a player's menu."

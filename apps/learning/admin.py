@@ -1049,6 +1049,10 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
             rows.append(("Length", f"{float(asset.duration_seconds):.0f} seconds"))
         if asset.source_height:
             rows.append(("Source", f"{asset.source_width}×{asset.source_height}"))
+        if asset.source_frame_rate is not None:
+            rows.append(("Frame rate", f"{float(asset.source_frame_rate):g} fps, kept in every output"))
+        if asset.mp4_key:
+            rows.append(("Progressive MP4", "produced, with fast start"))
         if asset.processing_attempts:
             rows.append(("Attempts", str(asset.processing_attempts)))
         if asset.processing_status == VideoProcessingStatus.PROCESSING and asset.processing_heartbeat_at:

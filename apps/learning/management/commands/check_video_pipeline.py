@@ -80,6 +80,11 @@ class Command(BaseCommand):
             else:
                 problems.append(f"{name} is not installed, and VIDEO_TRANSCODING_ENABLED is true")
 
+        notes.append(
+            f"frame rate:    kept as the source's; {settings.VIDEO_MIN_FRAME_RATE:g}–"
+            f"{settings.VIDEO_MAX_FRAME_RATE:g} fps accepted, anything else refused"
+        )
+
         if report["missing_encoders"]:
             problems.append(f"ffmpeg has no {', '.join(report['missing_encoders'])} encoder")
         elif report["encoders"]:

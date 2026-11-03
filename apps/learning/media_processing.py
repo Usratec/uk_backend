@@ -26,7 +26,7 @@ from apps.learning.models import (
     Subchapter,
     VideoProcessingStatus,
 )
-from apps.learning.transcode import MASTER_PLAYLIST_NAME, VARIANT_PLAYLIST_NAME
+from apps.learning.transcode import MASTER_PLAYLIST_NAME, PROGRESSIVE_MP4_NAME, VARIANT_PLAYLIST_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,9 @@ MANIFEST_CONTENT_TYPE = "application/vnd.apple.mpegurl"
 
 
 SEGMENT_CONTENT_TYPE = "video/mp2t"
+
+
+MP4_CONTENT_TYPE = "video/mp4"
 
 
 MANIFEST_CACHE_CONTROL = "private, max-age=60"
@@ -71,6 +74,12 @@ class Published:
 
 
 @dataclass(frozen=True)
+class StoredOutput:
+    master_key: str
+    mp4_key: str
+
+
+@dataclass(frozen=True)
 class Playback:
     media_id: str
     kind: str
@@ -78,6 +87,7 @@ class Playback:
     cookies: dict[str, str]
     expires_at: datetime
     qualities: list[str]
+    mp4_url: str = ""
 
 
 def queue_processing(asset: MediaAsset, *, actor=None, force: bool = False) -> UUID | None:
@@ -158,6 +168,8 @@ def mark_processing_ready(
     duration_seconds: float,
     width: int,
     height: int,
+    mp4_key: str = "",
+    frame_rate: float = 0.0,
 ) -> Published | None:
     with transaction.atomic():
         previous = (
@@ -176,10 +188,12 @@ def mark_processing_ready(
             processing_status=VideoProcessingStatus.READY,
             hls_prefix=prefix,
             hls_master_key=master_key,
+            mp4_key=mp4_key,
             renditions=renditions,
             duration_seconds=round(duration_seconds, 2),
             source_width=width,
             source_height=height,
+            source_frame_rate=round(frame_rate, 3) if frame_rate > 0 else None,
             processing_error="",
             processing_finished_at=timezone.now(),
         )
@@ -204,9 +218,10 @@ def mark_processing_failed(*, asset: MediaAsset, job: UUID, reason: str) -> bool
     return bool(updated)
 
 
-def store_hls_output(*, directory: str, prefix: str) -> str:
+def store_hls_output(*, directory: str, prefix: str) -> StoredOutput:
     root = Path(directory)
     master_key = ""
+    mp4_key = ""
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -218,6 +233,12 @@ def store_hls_output(*, directory: str, prefix: str) -> str:
             )
             if relative == MASTER_PLAYLIST_NAME:
                 master_key = key
+        elif path.suffix == ".mp4":
+            s3_client.upload_file(
+                key=key, path=str(path), content_type=MP4_CONTENT_TYPE, cache_control=SEGMENT_CACHE_CONTROL
+            )
+            if relative == PROGRESSIVE_MP4_NAME:
+                mp4_key = key
         else:
             s3_client.upload_file(
                 key=key, path=str(path), content_type=SEGMENT_CONTENT_TYPE, cache_control=SEGMENT_CACHE_CONTROL
@@ -225,12 +246,17 @@ def store_hls_output(*, directory: str, prefix: str) -> str:
 
     if not master_key:
         raise OutputVerificationError("The processed output has no master playlist.")
-    return master_key
+    if not mp4_key:
+        raise OutputVerificationError("The processed output has no progressive MP4.")
+    return StoredOutput(master_key=master_key, mp4_key=mp4_key)
 
 
-def verify_hls_output(*, master_key: str, renditions: list[dict], prefix: str) -> None:
+def verify_hls_output(*, master_key: str, renditions: list[dict], prefix: str, mp4_key: str = "") -> None:
     if s3_client.head_object(key=master_key) is None:
         raise OutputVerificationError("The master playlist is not in the bucket.")
+
+    if mp4_key and s3_client.head_object(key=mp4_key) is None:
+        raise OutputVerificationError("The progressive MP4 is not in the bucket.")
 
     for rendition in renditions:
         playlist = f"{prefix}/{rendition['name']}/{VARIANT_PLAYLIST_NAME}"
@@ -299,6 +325,7 @@ def playback_for(*, student, asset: MediaAsset) -> Playback:
             cookies=cloudfront.signed_cookies(key_prefix=prefix, expires_at=int(expires_at.timestamp())),
             expires_at=expires_at,
             qualities=[str(item.get("name", "")) for item in asset.renditions or []],
+            mp4_url=cloudfront.url_for(asset.mp4_key) if asset.mp4_key else "",
         )
 
     if cloudfront.is_configured():

@@ -1,7 +1,9 @@
 import json
 import logging
+import math
 import shutil
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 MASTER_PLAYLIST_NAME = "master.m3u8"
 VARIANT_PLAYLIST_NAME = "index.m3u8"
+PROGRESSIVE_MP4_NAME = "video.mp4"
 
 SUPPORTED_VIDEO_CODECS = frozenset({"h264", "hevc", "vp8", "vp9", "av1", "mpeg4", "mpeg2video", "prores"})
 
@@ -25,6 +28,10 @@ class TranscodeError(Exception):
 
 class ToolMissingError(TranscodeError):
     """ffmpeg or ffprobe is not installed on this machine."""
+
+
+class UnsupportedFrameRateError(ProbeError):
+    """The video runs at a frame rate this pipeline will not encode, and it is never changed."""
 
 
 @dataclass(frozen=True)
@@ -73,13 +80,18 @@ class HlsOutput:
     renditions: list[dict]
 
 
+@dataclass(frozen=True)
+class Mp4Output:
+    name: str
+    height: int
+    video_kbps: int
+    audio_kbps: int
+    frame_rate: str
+
+
 REQUIRED_ENCODERS = ("libx264", "aac")
 
-MAX_FRAME_RATE = 30
-
 FRAME_RATE_TOLERANCE = 0.5
-
-MIN_HALVED_FRAME_RATE = 24
 
 
 def tool_report() -> dict:
@@ -135,22 +147,39 @@ def make_test_clip(
     return path
 
 
-def output_frame_rate(source: SourceVideo) -> str:
-    rate = source.frame_rate
-    if rate <= 0 or rate != rate or rate == float("inf"):  # noqa: PLR0124 - NaN compares unequal to itself
-        return ""
-    if rate <= MAX_FRAME_RATE + FRAME_RATE_TOLERANCE:
-        return ""
+def check_frame_rate(*, frame_rate: float) -> None:
+    lowest = float(settings.VIDEO_MIN_FRAME_RATE)
+    highest = float(settings.VIDEO_MAX_FRAME_RATE)
 
-    halved = rate / 2
-    if not MIN_HALVED_FRAME_RATE <= halved <= MAX_FRAME_RATE + FRAME_RATE_TOLERANCE:
-        # Halving would still be too fast (120 fps) or would stutter (34 fps), so cap instead.
-        return str(MAX_FRAME_RATE)
+    if not _is_usable(frame_rate):
+        raise UnsupportedFrameRateError(
+            "The video does not report a usable frame rate, so it cannot be processed without "
+            "guessing at one. Export it again with a constant frame rate."
+        )
+    if frame_rate < lowest - FRAME_RATE_TOLERANCE:
+        raise UnsupportedFrameRateError(
+            f"The video runs at {frame_rate:g} frames per second, below the {lowest:g} fps this site "
+            f"accepts. Export it again at between {lowest:g} and {highest:g} fps."
+        )
+    if frame_rate > highest + FRAME_RATE_TOLERANCE:
+        raise UnsupportedFrameRateError(
+            f"The video runs at {frame_rate:g} frames per second, above the {highest:g} fps this site "
+            f"accepts. Its frame rate is kept exactly as it arrives rather than being changed to fit, "
+            f"so export it again at {highest:g} fps or less."
+        )
 
+
+def preserved_frame_rate(source: SourceVideo) -> str:
     numerator, denominator = _ratio_of(source)
     if numerator and denominator:
-        return f"{numerator}/{denominator * 2}"
-    return f"{halved:g}"
+        return f"{numerator}/{denominator}"
+    if not _is_usable(source.frame_rate):
+        return ""
+    return f"{source.frame_rate:g}"
+
+
+def _is_usable(frame_rate: float) -> bool:
+    return math.isfinite(frame_rate) and frame_rate > 0
 
 
 def _ratio_of(source: SourceVideo) -> tuple[int, int]:
@@ -225,6 +254,9 @@ def probe(path: str) -> SourceVideo:
     if maximum and duration > maximum:
         raise ProbeError(f"The video is longer than the {maximum // 60} minutes allowed.")
 
+    frame_rate = _frame_rate(video.get("r_frame_rate"))
+    check_frame_rate(frame_rate=frame_rate)
+
     return SourceVideo(
         duration_seconds=duration,
         width=width,
@@ -232,7 +264,7 @@ def probe(path: str) -> SourceVideo:
         video_codec=codec,
         audio_codec=str(audio.get("codec_name") or "") if audio else "",
         container=str(container.get("format_name") or ""),
-        frame_rate=_frame_rate(video.get("r_frame_rate")),
+        frame_rate=frame_rate,
         frame_rate_ratio=str(video.get("r_frame_rate") or ""),
     )
 
@@ -256,7 +288,7 @@ def to_hls(*, source_path: str, output_dir: str, source: SourceVideo, renditions
         "-i",
         source_path,
         "-filter_complex",
-        _filter_graph(renditions, frame_rate=output_frame_rate(source)),
+        _filter_graph(renditions, frame_rate=preserved_frame_rate(source)),
     ]
 
     for index, rendition in enumerate(renditions):
@@ -341,6 +373,107 @@ def to_hls(*, source_path: str, output_dir: str, source: SourceVideo, renditions
         )
 
     return HlsOutput(master_name=MASTER_PLAYLIST_NAME, renditions=produced)
+
+
+def mp4_rendition_for(source: SourceVideo) -> Rendition:
+    return renditions_for(source)[-1]
+
+
+def to_mp4(*, source_path: str, output_path: str, source: SourceVideo, rendition: Rendition) -> Mp4Output:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    frame_rate = preserved_frame_rate(source)
+    filters = [f"fps={frame_rate}"] if frame_rate else []
+    filters.append(f"scale=-2:{rendition.height}")
+
+    command = [
+        _tool(settings.FFMPEG_PATH),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        source_path,
+        "-map",
+        "0:v:0",
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        rendition.profile,
+        "-b:v",
+        f"{rendition.video_kbps}k",
+        "-maxrate",
+        f"{rendition.maximum_kbps}k",
+        "-bufsize",
+        f"{rendition.buffer_kbps}k",
+        "-preset",
+        settings.VIDEO_FFMPEG_PRESET,
+        "-threads",
+        str(max(0, settings.VIDEO_FFMPEG_THREADS)),
+        "-pix_fmt",
+        "yuv420p",
+    ]
+    if source.has_audio:
+        command += ["-map", "0:a:0", "-c:a", "aac", "-b:a", f"{rendition.audio_kbps}k", "-ac", "2"]
+    else:
+        command += ["-an"]
+    command += ["-movflags", "+faststart", "-f", "mp4", str(destination)]
+
+    _run(command, timeout=settings.VIDEO_TRANSCODE_TIMEOUT_SECONDS, failure=TranscodeError)
+
+    if not destination.is_file() or destination.stat().st_size == 0:
+        raise TranscodeError("ffmpeg finished without writing the progressive MP4.")
+    if not has_fast_start(str(destination)):
+        raise TranscodeError(
+            "The progressive MP4 was written with its metadata at the end, so a player would have "
+            "to download the whole file before it could start."
+        )
+
+    return Mp4Output(
+        name=destination.name,
+        height=rendition.height,
+        video_kbps=rendition.video_kbps,
+        audio_kbps=rendition.audio_kbps if source.has_audio else 0,
+        frame_rate=frame_rate,
+    )
+
+
+def has_fast_start(path: str) -> bool:
+    for name in _top_level_atoms(path):
+        if name == "moov":
+            return True
+        if name == "mdat":
+            return False
+    return False
+
+
+def _top_level_atoms(path: str) -> Iterator[str]:
+    with Path(path).open("rb") as handle:
+        while True:
+            header = handle.read(8)
+            if len(header) < 8:
+                return
+
+            size = int.from_bytes(header[:4], "big")
+            yield header[4:8].decode("ascii", "replace")
+
+            if size == 1:
+                extended = handle.read(8)
+                if len(extended) < 8:
+                    return
+                size = int.from_bytes(extended, "big") - 16
+            elif size == 0:
+                return
+            else:
+                size -= 8
+
+            if size < 0:
+                return
+            handle.seek(size, 1)
 
 
 def _filter_graph(renditions: list[Rendition], *, frame_rate: str = "") -> str:

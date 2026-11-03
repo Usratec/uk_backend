@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -179,37 +180,9 @@ class TestTheToolReport:
         assert report["missing_encoders"] == []
 
 
-class TestTheFrameRateCeiling:
-    def test_a_25_fps_source_is_left_alone(self, tmp_path):
-        source = clip(tmp_path, height=360, rate="25")
-
-        assert transcode.output_frame_rate(transcode.probe(source)) == ""
-
-    def test_a_30_fps_source_is_left_alone(self, tmp_path):
-        source = clip(tmp_path, height=360, rate="30")
-
-        assert transcode.output_frame_rate(transcode.probe(source)) == ""
-
-    def test_a_29_97_fps_source_is_left_alone(self, tmp_path):
-        source = clip(tmp_path, height=360, rate="30000/1001")
-
-        probed = transcode.probe(source)
-        assert probed.frame_rate == pytest.approx(29.97, abs=0.01)
-        assert transcode.output_frame_rate(probed) == ""
-
-    @pytest.mark.parametrize(("rate", "expected"), [("50", 25.0), ("60", 30.0), ("60000/1001", 29.97)])
-    def test_a_fast_source_is_halved_to_the_ceiling(self, tmp_path, rate, expected):
-        probed = transcode.probe(clip(tmp_path, height=360, rate=rate))
-
-        forced = transcode.output_frame_rate(probed)
-
-        assert forced
-        numerator, _, denominator = forced.partition("/")
-        actual = float(numerator) / float(denominator) if denominator else float(numerator)
-        assert actual == pytest.approx(expected, abs=0.01)
-
-    @pytest.mark.parametrize("rate", ["25", "30", "50", "60", "30000/1001", "60000/1001"])
-    def test_every_rendition_comes_out_at_or_below_thirty(self, tmp_path, rate):
+class TestTheFrameRateSurvivesARealEncode:
+    @pytest.mark.parametrize(("rate", "expected"), [("25", 25.0), ("30", 30.0), ("50", 50.0), ("60", 60.0)])
+    def test_every_rendition_comes_out_at_the_rate_it_went_in_at(self, tmp_path, rate, expected):
         source = clip(tmp_path, seconds=2, height=720, rate=rate)
 
         _, renditions, output, _ = encode(tmp_path, source)
@@ -218,63 +191,50 @@ class TestTheFrameRateCeiling:
         for rendition in renditions:
             segment = next((output / rendition.name).glob("segment_*.ts"))
             measured = transcode.probe(str(segment)).frame_rate
-            assert measured <= transcode.MAX_FRAME_RATE + transcode.FRAME_RATE_TOLERANCE, (
+            assert measured == pytest.approx(expected, abs=0.1), (
                 f"{rendition.name} came out at {measured} fps from a {rate} fps source"
             )
 
-    def test_halving_keeps_the_audio_in_step(self, tmp_path):
+    @pytest.mark.parametrize(("rate", "expected"), [("30000/1001", 29.97), ("60000/1001", 59.94)])
+    def test_a_fractional_rate_is_kept_exactly_rather_than_rounded(self, tmp_path, rate, expected):
+        source = clip(tmp_path, seconds=2, height=360, rate=rate)
+
+        probed, renditions, output, _ = encode(tmp_path, source)
+
+        assert probed.frame_rate == pytest.approx(expected, abs=0.01)
+        segment = next((output / renditions[0].name).glob("segment_*.ts"))
+        assert transcode.probe(str(segment)).frame_rate == pytest.approx(expected, abs=0.01)
+
+    def test_a_fifty_fps_source_is_not_halved_any_more(self, tmp_path):
+        probed = transcode.probe(clip(tmp_path, seconds=2, height=360, rate="50"))
+
+        assert transcode.preserved_frame_rate(probed) == "50/1"
+
+    def test_the_audio_stays_in_step_at_a_high_rate(self, tmp_path):
         source = clip(tmp_path, seconds=4, height=360, rate="60")
 
-        _, renditions, output, _ = encode(tmp_path, source)
+        probed, renditions, output, _ = encode(tmp_path, source)
 
         segment = next((output / renditions[0].name).glob("segment_*.ts"))
-        probed = transcode.probe(str(segment))
-        assert probed.has_audio
-        assert probed.duration_seconds > 0
+        measured = transcode.probe(str(segment))
+        assert measured.has_audio
+        assert measured.duration_seconds > 0
 
-    def test_a_source_whose_rate_cannot_be_read_is_not_resampled(self):
-        unknown = transcode.SourceVideo(
-            duration_seconds=10.0,
-            width=1280,
-            height=720,
-            video_codec="h264",
-            audio_codec="aac",
-            container="mp4",
-            frame_rate=0.0,
-            frame_rate_ratio="0/0",
-        )
+    def test_a_rate_above_the_range_is_refused_at_probe_time(self, tmp_path, settings):
+        settings.VIDEO_MAX_FRAME_RATE = 30.0
+        source = clip(tmp_path, seconds=1, height=360, rate="60")
 
-        assert transcode.output_frame_rate(unknown) == ""
+        with pytest.raises(transcode.UnsupportedFrameRateError, match="above the 30 fps"):
+            transcode.probe(source)
 
-    @pytest.mark.parametrize(
-        ("frame_rate", "ratio", "expected"),
-        [
-            (0.0, "", ""),
-            (-5.0, "bad", ""),
-            (float("nan"), "", ""),
-            (100.0, "100/1", "30"),
-            (120.0, "120/1", "30"),
-            (34.0, "34/1", "30"),
-            (48.0, "48/1", "48/2"),
-            (60.0, "60/1", "60/2"),
-            (59.94, "60000/1001", "60000/2002"),
-        ],
-    )
-    def test_the_policy_handles_every_reported_shape(self, frame_rate, ratio, expected):
-        source = transcode.SourceVideo(
-            duration_seconds=10.0,
-            width=1280,
-            height=720,
-            video_codec="h264",
-            audio_codec="aac",
-            container="mp4",
-            frame_rate=frame_rate,
-            frame_rate_ratio=ratio,
-        )
+    def test_a_rate_below_the_range_is_refused_at_probe_time(self, tmp_path, settings):
+        settings.VIDEO_MIN_FRAME_RATE = 24.0
+        source = clip(tmp_path, seconds=1, height=360, rate="15")
 
-        assert transcode.output_frame_rate(source) == expected
+        with pytest.raises(transcode.UnsupportedFrameRateError, match="below the 24 fps"):
+            transcode.probe(source)
 
-    def test_a_resampled_encode_still_produces_the_whole_ladder(self, tmp_path):
+    def test_a_high_rate_encode_still_produces_the_whole_ladder(self, tmp_path):
         source = clip(tmp_path, seconds=2, height=1080, rate="60")
 
         _, renditions, output, _ = encode(tmp_path, source)
@@ -282,6 +242,123 @@ class TestTheFrameRateCeiling:
         assert [rendition.name for rendition in renditions] == ["360p", "720p", "1080p"]
         assert (output / "master.m3u8").read_text().count("#EXT-X-STREAM-INF") == 3
         for rendition in renditions:
-            assert (
-                transcode.probe(str(next((output / rendition.name).glob("segment_*.ts")))).height == rendition.height
+            segment = transcode.probe(str(next((output / rendition.name).glob("segment_*.ts"))))
+            assert segment.height == rendition.height
+            assert segment.frame_rate == pytest.approx(60, abs=0.1)
+
+
+class TestARealProgressiveMp4:
+    def make(self, tmp_path, *, rate: str = "25", height: int = 720, with_audio: bool = True):
+        source = clip(tmp_path, seconds=2, height=height, rate=rate, with_audio=with_audio)
+        probed = transcode.probe(source)
+        path = tmp_path / "out" / transcode.PROGRESSIVE_MP4_NAME
+        produced = transcode.to_mp4(
+            source_path=source,
+            output_path=str(path),
+            source=probed,
+            rendition=transcode.mp4_rendition_for(probed),
+        )
+        return probed, produced, path
+
+    def test_it_writes_a_playable_mp4(self, tmp_path):
+        probed, produced, path = self.make(tmp_path)
+
+        assert path.is_file()
+        assert path.stat().st_size > 0
+        assert produced.name == "video.mp4"
+
+        measured = transcode.probe(str(path))
+        assert measured.video_codec == "h264"
+        assert measured.container.startswith("mov,mp4")
+        assert measured.duration_seconds == pytest.approx(probed.duration_seconds, abs=0.5)
+
+    def test_its_metadata_is_at_the_front_so_playback_can_start_early(self, tmp_path):
+        _, _, path = self.make(tmp_path)
+
+        assert transcode.has_fast_start(str(path)) is True
+
+    def test_the_moov_atom_really_does_come_before_the_media(self, tmp_path):
+        _, _, path = self.make(tmp_path)
+
+        atoms = [name for name in transcode._top_level_atoms(str(path)) if name in ("moov", "mdat")]
+
+        assert atoms[0] == "moov"
+
+    def test_a_file_whose_metadata_is_at_the_end_is_not_mistaken_for_one(self, tmp_path):
+        source = clip(tmp_path, seconds=2, height=360)
+        slow = tmp_path / "metadata-last.mp4"
+        subprocess.run(  # noqa: S603
+            [shutil.which(settings.FFMPEG_PATH), "-hide_banner", "-loglevel", "error", "-y", "-i", source]
+            + ["-c", "copy", str(slow)],
+            check=True,
+            timeout=120,
+        )
+
+        assert transcode.has_fast_start(str(slow)) is False
+
+    @pytest.mark.parametrize(("rate", "expected"), [("25", 25.0), ("30", 30.0), ("50", 50.0), ("30000/1001", 29.97)])
+    def test_it_keeps_the_frame_rate_of_the_source(self, tmp_path, rate, expected):
+        _, _, path = self.make(tmp_path, rate=rate, height=360)
+
+        assert transcode.probe(str(path)).frame_rate == pytest.approx(expected, abs=0.02)
+
+    def test_it_is_cut_at_the_best_quality_the_ladder_would_produce(self, tmp_path):
+        _, produced, path = self.make(tmp_path, height=720)
+
+        assert produced.height == 720
+        assert transcode.probe(str(path)).height == 720
+
+    def test_a_small_source_is_not_upscaled_into_the_mp4(self, tmp_path):
+        _, produced, path = self.make(tmp_path, height=240)
+
+        assert produced.height == 240
+        assert transcode.probe(str(path)).height == 240
+
+    def test_the_audio_survives_into_the_mp4(self, tmp_path):
+        _, produced, path = self.make(tmp_path)
+
+        assert produced.audio_kbps > 0
+        assert transcode.probe(str(path)).has_audio is True
+
+    def test_a_silent_source_makes_a_silent_mp4(self, tmp_path):
+        _, produced, path = self.make(tmp_path, height=360, with_audio=False)
+
+        assert produced.audio_kbps == 0
+        assert transcode.probe(str(path)).has_audio is False
+
+    def test_an_unreadable_source_fails_rather_than_leaving_half_a_file(self, tmp_path):
+        rubbish = tmp_path / "rubbish.mp4"
+        rubbish.write_bytes(b"\x00" * 4096)
+
+        with pytest.raises(transcode.TranscodeError):
+            transcode.to_mp4(
+                source_path=str(rubbish),
+                output_path=str(tmp_path / "out" / transcode.PROGRESSIVE_MP4_NAME),
+                source=transcode.SourceVideo(
+                    duration_seconds=3.0,
+                    width=640,
+                    height=360,
+                    video_codec="h264",
+                    audio_codec="aac",
+                    container="mp4",
+                    frame_rate=25.0,
+                    frame_rate_ratio="25/1",
+                ),
+                rendition=transcode.LADDER[0],
             )
+
+    def test_the_hls_ladder_is_still_produced_beside_it(self, tmp_path):
+        source = clip(tmp_path, seconds=2, height=720)
+        probed, renditions, output, result = encode(tmp_path, source)
+        transcode.to_mp4(
+            source_path=source,
+            output_path=str(output / transcode.PROGRESSIVE_MP4_NAME),
+            source=probed,
+            rendition=transcode.mp4_rendition_for(probed),
+        )
+
+        assert (output / "master.m3u8").is_file()
+        assert (output / transcode.PROGRESSIVE_MP4_NAME).is_file()
+        for rendition in renditions:
+            assert (output / rendition.name / "index.m3u8").is_file()
+            assert list((output / rendition.name).glob("segment_*.ts"))

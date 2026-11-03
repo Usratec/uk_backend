@@ -1,6 +1,7 @@
 import shutil
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,7 @@ from django.utils import timezone
 from apps.learning import media_processing, media_services, transcode
 from apps.learning.models import MediaAsset, VideoProcessingStatus
 from apps.learning.tasks import Heartbeat, transcode_video
-from apps.learning.tests.test_video_processing import SOURCE_1080, write_fake_output
+from apps.learning.tests.test_video_processing import SOURCE_1080, write_fake_mp4, write_fake_output
 
 pytestmark = pytest.mark.django_db
 
@@ -23,8 +24,12 @@ def ffmpeg(monkeypatch):
     def fake_to_hls(*, source_path, output_dir, source, renditions):
         return write_fake_output(output_dir, renditions)
 
+    def fake_to_mp4(*, source_path, output_path, source, rendition):
+        return write_fake_mp4(str(Path(output_path).parent), rendition)
+
     monkeypatch.setattr(transcode, "probe", fake_probe)
     monkeypatch.setattr(transcode, "to_hls", fake_to_hls)
+    monkeypatch.setattr(transcode, "to_mp4", fake_to_mp4)
 
 
 @pytest.fixture
@@ -174,6 +179,11 @@ class TestFailedOutputIsCleanedUp:
             transcode,
             "to_hls",
             lambda **kwargs: write_fake_output(kwargs["output_dir"], kwargs["renditions"]),
+        )
+        monkeypatch.setattr(
+            transcode,
+            "to_mp4",
+            lambda **kwargs: write_fake_mp4(str(Path(kwargs["output_path"]).parent), kwargs["rendition"]),
         )
 
         with pytest.raises(media_processing.OutputVerificationError):
