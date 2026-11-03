@@ -25,7 +25,7 @@ def drop_upload_tokens(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("learning", "0027_sanitized_media_fields"),
+        ("learning", "0028_hazard_click_detection"),
     ]
 
     operations = [

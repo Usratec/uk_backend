@@ -5,9 +5,11 @@ property that matters most here: Stripe redelivers events and workers get killed
 """
 
 from datetime import timedelta
+from typing import cast
 
 import pytest
 from django.core import mail
+from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
 from apps.accounts.models import AuthMethod, SecurityToken, TokenPurpose, User
@@ -86,6 +88,17 @@ class TestNewCustomer:
             "Welcome to 1Theory — set up your account",
             "Your order has been confirmed",
         ]
+
+    @pytest.mark.parametrize("subject", ["Welcome to 1Theory — set up your account", "Your order has been confirmed"])
+    def test_purchase_emails_invite_installation_in_text_and_html(self, paid_order, subject):
+        fulfil(paid_order)
+
+        message = cast(EmailMultiAlternatives, next(message for message in mail.outbox if message.subject == subject))
+        invitation = "Add 1Theory to your home screen"
+        assert invitation in message.body
+        html = next(content for content, mimetype in message.alternatives if mimetype == "text/html")
+        assert isinstance(html, str)
+        assert invitation in html
 
     def test_the_welcome_link_lets_them_set_a_password(self, api, paid_order):
         """No password is ever put in an email; the link is single-use and expires in 7 days."""

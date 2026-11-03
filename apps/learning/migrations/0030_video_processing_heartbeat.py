@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("learning", "0028_video_pipeline"),
+        ("learning", "0029_video_pipeline"),
     ]
 
     operations = [

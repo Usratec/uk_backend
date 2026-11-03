@@ -144,7 +144,9 @@ class Command(BaseCommand):
         media = MediaAsset.objects.filter(title="Demo clip").first()
         if media is None:
             media = MediaAsset(title="Demo clip", kind=MediaKind.VIDEO)
-            media.file.save("demo.mp4", ContentFile(b"demo clip"), save=False)
+            # A real MP4 header. The upload check reads the bytes, not the filename.
+            header = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isomiso2mp41"
+            media.file.save("demo.mp4", ContentFile(header), save=False)
             media.save()
         clips = []
         for slug, title in (("demo-country-lane", "Country lane bend"), ("demo-highway", "Highway")):

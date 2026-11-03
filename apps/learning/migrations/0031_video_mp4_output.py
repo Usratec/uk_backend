@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('learning', '0029_video_processing_heartbeat'),
+        ('learning', '0030_video_processing_heartbeat'),
     ]
 
     operations = [

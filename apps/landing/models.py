@@ -4,6 +4,7 @@ from django.db import models
 
 from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import TimestampedModel
+from apps.core.uploads import RASTER_IMAGE_TYPES, SVG_TYPE, VIDEO_TYPES, require_upload
 
 IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "svg"]
 VIDEO_EXTENSIONS = ["mp4", "webm", "mov"]
@@ -108,7 +109,21 @@ class LandingMedia(TimestampedModel):
     def __str__(self) -> str:
         return self.title
 
+    def _check_file(self) -> None:
+        if not self.file or getattr(self.file, "_committed", True):
+            return
+        allowed = RASTER_IMAGE_TYPES | {SVG_TYPE} if self.media_type == LandingMediaType.IMAGE else VIDEO_TYPES
+        try:
+            require_upload(self.file, allowed)
+        except ValidationError as error:
+            raise ValidationError({"file": error.messages}) from error
+
     def clean(self) -> None:
         super().clean()
         if self.media_type == LandingMediaType.IMAGE and not self.alt_text.strip():
             raise ValidationError({"alt_text": "Alt text is required for images."})
+        self._check_file()
+
+    def save(self, *args, **kwargs):
+        self._check_file()
+        super().save(*args, **kwargs)

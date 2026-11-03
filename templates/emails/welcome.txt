@@ -7,4 +7,6 @@ start studying straight away:
 
 The link works once and expires in 7 days. You will sign in with {{ email }}.
 
+Add 1Theory to your home screen for quick access to your learning.
+
 The 1Theory team

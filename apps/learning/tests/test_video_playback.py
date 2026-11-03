@@ -517,11 +517,13 @@ class TestTheLessonPayload:
     def test_a_legacy_video_keeps_working_exactly_as_before(self, learner, published_tree, distribution):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
+        from apps.learning.tests.conftest import mp4_bytes
+
         _, subchapter, _ = published_tree
         asset = MediaAsset.objects.create(
             title="An old clip",
             kind=MediaKind.VIDEO,
-            file=SimpleUploadedFile("old.mp4", b"video bytes", content_type="video/mp4"),
+            file=SimpleUploadedFile("old.mp4", mp4_bytes(), content_type="video/mp4"),
         )
         LearningContent.objects.create(
             subchapter=subchapter,

@@ -35,13 +35,25 @@ class TestSendingHappensInAWorker:
 
         with patch("apps.core.tasks.send_email.delay") as queued:
             email.send(
-                template="email_verification",
-                subject="Please confirm your email address",
+                template="password_changed",
+                subject="Your password has been changed",
                 to="sam@example.com",
-                context={"first_name": "Sam", "verification_url": "https://example.test/verify?token=abc"},
+                context={"first_name": "Sam"},
             )
 
         json.dumps(queued.call_args.kwargs)
+
+    def test_a_security_code_is_not_queued_with_the_message(self):
+        with patch("apps.core.tasks.send_email.delay") as queued:
+            with pytest.raises(ValueError):
+                email.send(
+                    template="email_verification",
+                    subject="Please confirm your email address",
+                    to="sam@example.com",
+                    context={"verification_url": "https://example.test/verify?token=abc"},
+                )
+
+        queued.assert_not_called()
 
     def test_a_queue_that_is_down_falls_back_to_sending_here(self):
         """An email that never arrives is worse than a slow request, and the wait is bounded."""
@@ -99,7 +111,7 @@ class TestRegistration:
 
     def test_the_request_does_not_wait_for_the_mail_server(self, client):
         """The regression: the send is queued from inside the request, not performed in it."""
-        with patch("apps.core.tasks.send_email.delay") as queued:
+        with patch("apps.accounts.tasks.send_security_link.delay") as queued:
             client.post(
                 REGISTER_URL,
                 {
@@ -113,3 +125,5 @@ class TestRegistration:
 
         queued.assert_called_once()
         assert mail.outbox == []
+        assert "token=" not in str(queued.call_args.kwargs)
+        assert queued.call_args.kwargs["template"] == "email_verification"

@@ -29,7 +29,9 @@ def uploaded_image(name: str = "hero.png") -> SimpleUploadedFile:
 
 
 def uploaded_video(name: str = "demo.mp4") -> SimpleUploadedFile:
-    return SimpleUploadedFile(name, b"not really a video", content_type="video/mp4")
+    # A real MP4 header. The declared type is wrong on purpose: the bytes are what is stored.
+    header = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isomiso2mp41"
+    return SimpleUploadedFile(name, header, content_type="text/html")
 
 
 def make_text(key: str = "hero_title", value: str = "Your theory test, made simple.", **fields) -> LandingText:
@@ -45,11 +47,13 @@ def make_media(
     **fields,
 ) -> LandingMedia:
     fields.setdefault("alt_text", "A learner holding an L plate" if media_type == LandingMediaType.IMAGE else "")
+    if file is None:
+        file = uploaded_video() if media_type == LandingMediaType.VIDEO else uploaded_image()
     return LandingMedia.objects.create(
         title=title,
         media_type=media_type,
         section=section,
         is_active=is_active,
-        file=file if file is not None else uploaded_image(),
+        file=file,
         **fields,
     )

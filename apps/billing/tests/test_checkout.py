@@ -86,6 +86,19 @@ class TestSuccessfulCheckout:
         assert str(order.id) in stripe[0]["success_url"]
         assert str(order.id) in stripe[0]["cancel_url"]
 
+    def test_payment_returns_to_the_configured_frontend(self, api, package, stripe, settings):
+        settings.FRONTEND_BASE_URL = "https://app.1theory.test/"
+        checkout(
+            api,
+            package,
+            success_url="https://other.example/success",
+            cancel_url="https://other.example/cancel",
+        )
+
+        order = Order.objects.get()
+        assert stripe[0]["success_url"] == f"https://app.1theory.test/payment/success?order_id={order.id}"
+        assert stripe[0]["cancel_url"] == f"https://app.1theory.test/checkout?order_id={order.id}&cancelled=1"
+
     def test_the_stripe_session_is_recorded_on_the_order(self, api, package, stripe):
         checkout(api, package)
 

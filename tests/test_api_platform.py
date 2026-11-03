@@ -1,6 +1,8 @@
 """The shared API behaviour every endpoint relies on: health, docs and default permissions."""
 
 import pytest
+from django.contrib.staticfiles import finders
+from django.templatetags.static import static
 from django.urls import reverse
 
 from apps.accounts.models import User
@@ -76,6 +78,35 @@ class TestOpenApiSchema:
         response = client.get(reverse(name))
 
         assert response.status_code == 200
+
+    @pytest.mark.parametrize("name", ["swagger-ui", "redoc"])
+    def test_documentation_pages_load_no_script_from_a_cdn(self, client, name):
+        html = client.get(reverse(name)).content.decode()
+
+        assert "cdn.jsdelivr.net" not in html
+        assert "@latest" not in html
+
+    @pytest.mark.parametrize(
+        ("name", "assets"),
+        [
+            (
+                "swagger-ui",
+                [
+                    "drf_spectacular_sidecar/swagger-ui-dist/swagger-ui-bundle.js",
+                    "drf_spectacular_sidecar/swagger-ui-dist/swagger-ui-standalone-preset.js",
+                    "drf_spectacular_sidecar/swagger-ui-dist/swagger-ui.css",
+                ],
+            ),
+            ("redoc", ["drf_spectacular_sidecar/redoc/bundles/redoc.standalone.js"]),
+        ],
+    )
+    def test_documentation_pages_reference_assets_we_serve_ourselves(self, client, name, assets):
+        html = client.get(reverse(name)).content.decode()
+
+        for asset in assets:
+            assert static(asset) in html
+            # What collectstatic will put behind that URL when the image is built.
+            assert finders.find(asset) is not None
 
 
 @pytest.mark.django_db

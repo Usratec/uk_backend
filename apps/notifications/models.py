@@ -71,3 +71,14 @@ class Notification(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.user_id} | {self.get_kind_display()} | {self.title}"
+
+
+class PushSubscription(TimestampedModel):
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="push_subscriptions")
+    endpoint = models.URLField(max_length=2048, unique=True)
+    p256dh = models.CharField(max_length=100)
+    auth = models.CharField(max_length=32)
+
+    def __str__(self) -> str:
+        # The endpoint and auth key are bearer secrets, so keep them out of logs/admin labels.
+        return f"Browser subscription {self.pk} for user {self.user_id}"

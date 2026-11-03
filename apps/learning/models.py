@@ -22,6 +22,7 @@ Content is addressed by ``slug`` because that is what the API asks for, so a slu
 the public contract once published.
 """
 
+from decimal import Decimal
 from uuid import uuid4
 
 from django.conf import settings
@@ -33,6 +34,7 @@ from django.utils.text import slugify
 from apps.core import images
 from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import PublishableModel, TimestampedModel
+from apps.core.uploads import DOCUMENT_TYPES, RASTER_IMAGE_TYPES, VIDEO_TYPES, require_upload
 from apps.learning import html
 
 
@@ -184,6 +186,13 @@ class MediaKind(models.TextChoices):
     IMAGE = "image", "Image"
 
 
+MEDIA_KIND_TYPES = {
+    MediaKind.IMAGE: RASTER_IMAGE_TYPES,
+    MediaKind.VIDEO: VIDEO_TYPES,
+    MediaKind.DOCUMENT: DOCUMENT_TYPES,
+}
+
+
 def media_path(instance, filename: str) -> str:
     """Where an upload is stored: a folder per kind, the name it was given kept.
 
@@ -328,12 +337,29 @@ class MediaAsset(TimestampedModel):
         return self.is_streaming
 
     def save(self, *args, **kwargs):
-        if self.file and not self.file._committed:
+        # The browser's declared type is ignored. The bytes decide, and they have to match the kind.
+        # A picture is rewritten without metadata first, so that check reads the file that is stored.
+        allowed = MEDIA_KIND_TYPES[MediaKind(self.kind)]
+        if self.file and not getattr(self.file, "_committed", True):
             self.file = images.without_metadata_if_image(self.file.file)
+            self.content_type = require_upload(self.file, allowed)
+        elif self.file and not self.content_type:
+            # file.save() writes the bytes before this runs, so the type is already checked
+            # against the bucket allow-list. Copy it when it is still on the upload, and read
+            # the stored bytes when opening the file again has dropped it.
+            inner = getattr(self.file, "file", None)
+            sniffed = getattr(inner, "content_type", "") if inner is not None else ""
+            if sniffed in allowed:
+                self.content_type = sniffed
+            elif sniffed:
+                raise ValidationError({"file": "This file is not a format this kind of upload accepts."})
+            else:
+                self.content_type = require_upload(self.file, allowed)
 
+        # Only a file that came through Django has its size read here. A direct upload's object
+        # may not exist yet, and asking the bucket for it would be a network call per save.
         if self.file and self.processing_status == VideoProcessingStatus.LEGACY:
             self.size_bytes = getattr(self.file, "size", 0) or 0
-            self.content_type = getattr(getattr(self.file, "file", None), "content_type", "") or self.content_type
         super().save(*args, **kwargs)
 
 
@@ -762,6 +788,13 @@ def hazard_thumbnail_path(instance, filename: str) -> str:
     return f"learning/hazard-thumbnail/{filename}"
 
 
+class HazardVoidReason(models.TextChoices):
+    PATTERN = "pattern", "Clicked in a regular pattern"
+    BURST = "burst", "Clicked rapidly"
+    SPREAD = "spread", "Clicked evenly throughout the clip"
+    TOO_MANY = "too_many", "Clicked more often than the clip allows"
+
+
 class HazardClip(PublishableModel, TimestampedModel):
     """A video with hazards in it for a student to spot.
 
@@ -789,11 +822,28 @@ class HazardClip(PublishableModel, TimestampedModel):
         default=15,
         help_text="Clicking more often than this scores nothing for the clip, as in the real test.",
     )
+    duration_seconds = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text=(
+            "How long the video runs. Needed to spot clicking spread evenly across the whole "
+            "clip — leave empty and that one check is skipped for this clip."
+        ),
+    )
     order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         ordering = ["order", "title"]
         permissions = [("publish_hazardclip", "Can publish and unpublish hazard clips")]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(duration_seconds__isnull=True) | models.Q(duration_seconds__gt=0),
+                name="hazard_clip_duration_is_positive",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.title
@@ -864,6 +914,13 @@ class HazardAttempt(TimestampedModel):
     score = models.PositiveSmallIntegerField()
     top_score = models.PositiveSmallIntegerField(help_text="The most that was available at the time.")
     voided = models.BooleanField(default=False, help_text="True when the clip was clicked through too often.")
+    void_reason = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        choices=HazardVoidReason.choices,
+        help_text="Why the attempt was voided. Empty when it counted.",
+    )
 
     class Meta:
         ordering = ["-created_at"]

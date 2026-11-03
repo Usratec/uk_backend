@@ -420,6 +420,58 @@ class TestMarkingTheClips:
             body["hazardClicks"] = clicks
         return sign_in(api, student).post(submit_url(exam.slug), body, format="json")
 
+    def test_unacceptable_clicking_voids_only_the_clip_it_happened_in(self, api, student, mock_with_clips):
+        response = self.submit(
+            api,
+            student(),
+            mock_with_clips,
+            clicks={"country-lane": [2.0, 3.0, 4.0, 5.0, 6.0], "school-run": [10.0]},
+        )
+
+        reported = {clip["slug"]: clip for clip in response.data["clips"]}
+        assert reported["country-lane"]["voidReason"] == "pattern"
+        assert reported["school-run"]["voided"] is False
+        assert response.data["hazardTotalScore"] == 5
+
+    def test_sixteen_clicks_in_one_clip_are_too_many(self, api, student, mock_with_clips):
+        response = self.submit(
+            api, student(), mock_with_clips, clicks={"country-lane": [float(tick) for tick in range(16)]}
+        )
+
+        reported = {clip["slug"]: clip for clip in response.data["clips"]}
+        assert reported["country-lane"]["voidReason"] == "too_many"
+
+    def test_the_reason_a_clip_was_voided_is_recorded(self, api, student, mock_with_clips):
+        learner = student()
+
+        self.submit(api, learner, mock_with_clips, clicks={"country-lane": [5.0, 5.2, 5.4, 5.6, 6.0]})
+
+        attempt = HazardAttempt.objects.get(student=learner, clip__slug="country-lane")
+        assert (attempt.voided, attempt.void_reason) == (True, "burst")
+        assert HazardAttempt.objects.get(student=learner, clip__slug="school-run").void_reason == ""
+
+    def test_a_clip_is_judged_the_same_sat_alone_or_in_a_mock(self, api, student, mock_with_clips):
+        clicks = [2.0, 3.0, 4.0, 5.0, 6.0]
+        clip = next(clip for clip in services.clips_in_exam(mock_with_clips) if clip.slug == "country-lane")
+
+        response = self.submit(api, student(), mock_with_clips, clicks={"country-lane": clicks})
+
+        reported = next(item for item in response.data["clips"] if item["slug"] == "country-lane")
+        alone = services.score_clip(clip, clicks)
+        assert (reported["voided"], reported["voidReason"], reported["score"]) == (
+            alone["voided"],
+            alone["voidReason"],
+            alone["score"],
+        )
+
+    def test_more_than_five_hundred_clicks_in_a_clip_are_refused(self, api, student, mock_with_clips):
+        response = self.submit(
+            api, student(), mock_with_clips, clicks={"country-lane": [float(n) / 100 for n in range(501)]}
+        )
+
+        assert response.status_code == 400
+        assert not MockAttempt.objects.exists()
+
     def test_spotting_both_hazards_early_scores_full_marks(self, api, student, mock_with_clips):
         response = self.submit(api, student(), mock_with_clips, clicks={"country-lane": [10.0], "school-run": [10.0]})
 

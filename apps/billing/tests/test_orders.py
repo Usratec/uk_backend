@@ -11,14 +11,32 @@ from apps.billing.models import OrderStatus
 
 pytestmark = pytest.mark.django_db
 
+PASSWORD = "Riverbank42"
+
 
 def status_url(order_id):
     return reverse("order-status", args=[str(order_id)])
 
 
+@pytest.fixture
+def buyer(db):
+    return User.objects.create_user(email="buyer@example.com", password=PASSWORD, first_name="Bea")
+
+
+@pytest.fixture
+def stranger(db):
+    return User.objects.create_user(email="alex@example.com", password=PASSWORD, first_name="Alex")
+
+
+@pytest.fixture
+def signed_in(api, buyer):
+    api.force_authenticate(buyer)
+    return api
+
+
 class TestOrderStatus:
-    def test_returns_the_documented_fields(self, api, order):
-        response = api.get(status_url(order.id))
+    def test_returns_the_documented_fields(self, signed_in, order):
+        response = signed_in.get(status_url(order.id))
 
         assert response.status_code == 200
         assert set(response.data) == {
@@ -33,37 +51,92 @@ class TestOrderStatus:
             "created_at",
         }
 
-    def test_does_not_reveal_the_buyer_email(self, api, order):
-        """The order id is a capability URL, so the response must not include the mailbox."""
-        response = api.get(status_url(order.id))
+    def test_does_not_reveal_the_buyer_email(self, signed_in, order):
+        response = signed_in.get(status_url(order.id))
 
         assert response.status_code == 200
         assert "email" not in response.data
         assert order.email.encode() not in response.content
 
-    def test_shows_the_package_details(self, api, order):
-        response = api.get(status_url(order.id))
+    def test_shows_the_package_details(self, signed_in, order):
+        response = signed_in.get(status_url(order.id))
 
         assert response.data["package_name"] == "30 day access"
         assert response.data["package_duration_days"] == 30
 
-    def test_shows_the_payment_once_it_lands(self, api, order):
-        assert api.get(status_url(order.id)).data["status"] == "pending"
+    def test_shows_the_payment_once_it_lands(self, signed_in, order):
+        assert signed_in.get(status_url(order.id)).data["status"] == "pending"
 
         order.status = OrderStatus.PAID
         order.save(update_fields=["status"])
 
-        assert api.get(status_url(order.id)).data["status"] == "paid"
+        assert signed_in.get(status_url(order.id)).data["status"] == "paid"
 
-    def test_unknown_order_returns_404(self, api):
-        response = api.get(status_url(uuid.uuid4()))
+    def test_an_order_linked_to_the_account_is_readable(self, signed_in, buyer, order):
+        order.user = buyer
+        order.email = "someone-else@example.com"
+        order.save(update_fields=["user", "email"])
+
+        assert signed_in.get(status_url(order.id)).status_code == 200
+
+    def test_unknown_order_returns_404(self, signed_in):
+        response = signed_in.get(status_url(uuid.uuid4()))
 
         assert response.status_code == 404
         assert response.data["detail"] == "Order not found."
 
-    def test_needs_no_sign_in(self, api, order):
-        """The customer is polling right after paying, before any account exists."""
-        assert api.get(status_url(order.id)).status_code == 200
+
+class TestOrderStatusAccess:
+    def test_an_anonymous_caller_is_refused(self, api, order):
+        response = api.get(status_url(order.id))
+
+        assert response.status_code == 401
+
+    def test_an_anonymous_caller_is_refused_before_the_order_is_looked_up(self, api):
+        response = api.get(status_url(uuid.uuid4()))
+
+        assert response.status_code == 401
+
+    def test_somebody_elses_order_is_not_found(self, api, stranger, order):
+        api.force_authenticate(stranger)
+
+        response = api.get(status_url(order.id))
+
+        assert response.status_code == 404
+        assert response.data["detail"] == "Order not found."
+        assert order.email.encode() not in response.content
+
+    def test_somebody_elses_linked_order_is_not_found(self, api, buyer, stranger, order):
+        order.user = buyer
+        order.save(update_fields=["user"])
+        api.force_authenticate(stranger)
+
+        assert api.get(status_url(order.id)).status_code == 404
+
+    def test_a_paid_guest_order_claimed_by_another_account_is_not_found(self, api, buyer, stranger, order):
+        order.user = buyer
+        order.email = stranger.email
+        order.status = OrderStatus.PAID
+        order.save(update_fields=["user", "email", "status"])
+        api.force_authenticate(stranger)
+
+        assert api.get(status_url(order.id)).status_code == 404
+
+    def test_polling_an_unpaid_guest_checkout_keeps_working(self, signed_in, order):
+        assert order.user_id is None
+
+        response = signed_in.get(status_url(order.id))
+
+        assert response.status_code == 200
+        assert response.data["status"] == "pending"
+
+    def test_the_sixty_first_poll_in_an_hour_is_throttled(self, signed_in, order):
+        for _ in range(60):
+            assert signed_in.get(status_url(order.id)).status_code == 200
+
+        response = signed_in.get(status_url(order.id))
+
+        assert response.status_code == 429
 
 
 class TestOrdersAdmin:

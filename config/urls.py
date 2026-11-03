@@ -27,7 +27,19 @@ urlpatterns = [
 
 if settings.DEBUG and not settings.S3_BUCKET_NAME:
     # Only for the filesystem fallback. With a bucket configured, files are served from it by
-    # signed URL and Django never sees the request.
-    from django.conf.urls.static import static
+    # signed URL and Django never sees the request. The view still refuses to let the browser
+    # sniff a type we did not choose.
+    from django.views.static import serve
 
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    from apps.core.uploads import delivery_headers
+
+    def guarded_media(request, path):
+        response = serve(request, path, document_root=str(settings.MEDIA_ROOT))
+        headers = delivery_headers(response.get("Content-Type", "").split(";")[0], path)
+        for key, value in headers.items():
+            response[key] = value
+        return response
+
+    urlpatterns += [
+        path(f"{settings.MEDIA_URL.lstrip('/')}<path:path>", guarded_media),
+    ]
