@@ -199,9 +199,12 @@ DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="1Theory <info@1theor
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
 
 # --- Background work -----------------------------------------------------------------------------
-# Redis is both the cache and the Celery queue; different database numbers keep them apart.
-
+# Local Redis uses a separate database for Celery. Deployed environments can use a dedicated broker.
 CELERY_BROKER_URL = env.str("CELERY_BROKER_URL", default="redis://localhost:6379/1")
+if CELERY_BROKER_URL.startswith("amqps://"):
+    # Kombu fills in the current broker hostname for TLS verification.
+    CELERY_BROKER_USE_SSL = {"server_hostname": None}
+    CELERY_BROKER_TRANSPORT_OPTIONS = {"confirm_publish": True}
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
