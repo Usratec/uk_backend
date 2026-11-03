@@ -204,6 +204,8 @@ CELERY_BROKER_URL = env.str("CELERY_BROKER_URL", default="redis://localhost:6379
 if CELERY_BROKER_URL.startswith("amqps://"):
     # Kombu fills in the current broker hostname for TLS verification.
     CELERY_BROKER_USE_SSL = {"server_hostname": None}
+    CELERY_TASK_DEFAULT_QUEUE_TYPE = "quorum"
+    CELERY_TASK_CREATE_MISSING_QUEUE_TYPE = "quorum"
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
