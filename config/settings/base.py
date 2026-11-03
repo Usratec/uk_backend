@@ -204,7 +204,6 @@ CELERY_BROKER_URL = env.str("CELERY_BROKER_URL", default="redis://localhost:6379
 if CELERY_BROKER_URL.startswith("amqps://"):
     # Kombu fills in the current broker hostname for TLS verification.
     CELERY_BROKER_USE_SSL = {"server_hostname": None}
-    CELERY_BROKER_TRANSPORT_OPTIONS = {"confirm_publish": True}
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
@@ -428,6 +427,9 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
         "CELERY_VISIBILITY_TIMEOUT_SECONDS", default=VIDEO_TRANSCODE_TIMEOUT_SECONDS + 60 * 60
     )
 }
+if CELERY_BROKER_URL.startswith("amqps://"):
+    CELERY_BROKER_TRANSPORT_OPTIONS["confirm_publish"] = True
+
 
 if VIDEO_MULTIPART_PART_BYTES < 5 * 1024**2:
     import warnings
