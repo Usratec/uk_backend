@@ -7,7 +7,7 @@ import pytest
 from django.urls import reverse
 
 from apps.core.models import PublishStatus
-from apps.learning.models import LearningContent
+from apps.learning.models import LearningContent, Subchapter
 
 from .conftest import CONTENT
 
@@ -75,6 +75,12 @@ class TestPublishAction:
         url = reverse(f"admin:{meta.app_label}_{meta.model_name}_changelist")
         return client.post(url, {"action": action, "_selected_action": [instance.pk]}, follow=True)
 
+    def publish_all(self, client, instances, action="publish_selected"):
+        meta = instances[0]._meta
+        url = reverse(f"admin:{meta.app_label}_{meta.model_name}_changelist")
+        selected = [instance.pk for instance in instances]
+        return client.post(url, {"action": action, "_selected_action": selected}, follow=True)
+
     def test_a_publisher_can_publish_from_the_list(self, publisher_client, subchapter, content):
         subchapter.status = PublishStatus.PUBLISHED
         subchapter.save(update_fields=["status"])
@@ -104,6 +110,41 @@ class TestPublishAction:
         assert "not published" in response.content.decode()
         content.refresh_from_db()
         assert content.status == PublishStatus.DRAFT
+
+    def test_an_empty_lesson_is_refused_and_stays_a_draft(self, publisher_client, chapter, subchapter):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        response = self.publish(publisher_client, subchapter)
+
+        assert "nothing in this lesson" in response.content.decode()
+        assert "Published 1 item(s)." not in response.content.decode()
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+
+    def test_publishing_a_mixed_selection_leaves_the_empty_lesson_behind(
+        self, publisher_client, chapter, subchapter, content
+    ):
+        """Bulk publishing is item by item: the sound one goes live, the empty one is reported."""
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+        empty = Subchapter.objects.create(chapter=chapter, slug="nothing-here", title="Nothing here", order=2)
+
+        response = self.publish_all(publisher_client, [subchapter, empty])
+
+        assert "nothing in this lesson" in response.content.decode()
+        subchapter.refresh_from_db()
+        empty.refresh_from_db()
+        assert subchapter.status == PublishStatus.PUBLISHED
+        assert empty.status == PublishStatus.DRAFT
+
+    def test_the_readiness_column_says_a_lesson_is_empty(self, publisher_client, chapter, subchapter):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        page = publisher_client.get(change_url(subchapter)).content.decode()
+
+        assert "nothing in this lesson" in page
 
     def test_unpublishing_takes_it_off_the_site(self, publisher_client, published_tree):
         _, _, content = published_tree
