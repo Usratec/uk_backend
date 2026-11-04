@@ -28,6 +28,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
+from django.utils import timezone
 from django.utils.text import slugify
 
 from apps.core import images
@@ -537,15 +538,48 @@ class QuestionAttempt(TimestampedModel):
 
     Keeping every attempt is what makes "questions I got wrong" and "questions I keep getting
     wrong" answerable later; a single row per question would lose that the moment they retried.
+
+    ``answered_at`` records when the student answered, while ``created_at`` records when the
+    answer was saved. Offline answers keep their original date, so streaks, mistakes, and
+    mastery are calculated correctly.
     """
 
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="question_attempts")
     question = models.ForeignKey(Question, on_delete=models.CASCADE, related_name="attempts")
     was_correct = models.BooleanField()
+    answered_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="When the student answered. The same as created_at unless it was answered offline.",
+    )
+    # Scoped to the student by the constraint below, so two people may both send "answer-1".
+    client_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="The id the PWA gave this answer, so synchronising it twice records it once. Empty when online.",
+    )
+    client_payload = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        editable=False,
+        help_text="A digest of what was synchronised under that id, so the same id sent with a different answer "
+        "is refused rather than quietly ignored.",
+    )
 
     class Meta:
-        ordering = ["-created_at"]
-        indexes = [models.Index(fields=["student", "question", "-created_at"])]
+        ordering = ["-answered_at"]
+        indexes = [
+            models.Index(fields=["student", "question", "-answered_at"]),
+            models.Index(fields=["student", "-answered_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student", "client_id"],
+                condition=~models.Q(client_id=""),
+                name="one_attempt_per_client_id_per_student",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.student} · {self.question.key} · {'right' if self.was_correct else 'wrong'}"

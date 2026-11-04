@@ -21,8 +21,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
+from apps.accounts.serializers import DetailSerializer
 from apps.entitlements import services as entitlements
-from apps.learning import services
+from apps.learning import offline, services
 from apps.learning.models import (
     Chapter,
     EbookSection,
@@ -53,6 +54,9 @@ from apps.learning.serializers import (
     HazardClipListResponseSerializer,
     HazardClipSerializer,
     LessonDetailResponseSerializer,
+    OfflineAnswerBatchResponseSerializer,
+    OfflineAnswerRequestSerializer,
+    OfflinePackResponseSerializer,
     PracticeSetResponseSerializer,
     ProgressSummaryResponseSerializer,
     ReadResponseSerializer,
@@ -67,6 +71,8 @@ PLAN_NEEDED = "An active plan is needed for this"
 # The modes the practice endpoint accepts. The ones that depend on past attempts are accepted
 # but practise everything, because progress is not recorded yet.
 MODES = ["random", "topic", "mistakes", "weak", "saved", "review"]
+BATCH_NOT_A_LIST = "Send a JSON array of answers, or an object with an `answers` array."
+BATCH_TOO_LARGE = f"Send at most {offline.MAX_BATCH_ITEMS} answers per request."
 
 
 def plan_needed() -> Response:
@@ -441,6 +447,130 @@ class PracticeSetView(APIView):
                 "saved": services.saved_question_keys(student),
             }
         )
+
+
+class OfflinePracticePackView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="getOfflinePracticePack",
+        summary="Download the offline practice pack",
+        description=(
+            "Requires a bearer token and an active plan (402 if missing). Returns all available "
+            "questions, answers and explanations for offline practice.\n\n"
+            "**Versioning:** Compare `version` to detect pack changes.\n\n"
+            "**Paging:** Returns the full pack by default. Use `limit` and `nextAfter` to paginate."
+        ),
+        parameters=[
+            OpenApiParameter(
+                "limit",
+                int,
+                OpenApiParameter.QUERY,
+                required=False,
+                description=f"Questions per page, 1–{offline.MAX_PAGE_SIZE}. Omit for the whole pack at once.",
+            ),
+            OpenApiParameter(
+                "after",
+                int,
+                OpenApiParameter.QUERY,
+                required=False,
+                description="A question id to continue after — the previous page's `nextAfter`.",
+            ),
+        ],
+        responses={200: OfflinePackResponseSerializer, 402: DetailSerializer},
+    )
+    def get(self, request: Request) -> Response:
+        student = cast(User, request.user)
+        if not entitlements.has_access(student):
+            return plan_needed()
+
+        questions = offline.practice_questions(student)
+        page, next_after = offline.pack_page(
+            questions,
+            after=_positive_int(request.query_params.get("after")),
+            limit=_page_size_from(request.query_params.get("limit")),
+        )
+
+        return Response(
+            {
+                **offline.pack_stamp(student, questions),
+                "total": questions.count(),
+                "questions": [offline.question_with_its_answer(question) for question in page],
+                "signs": sign_map(offline.sign_codes_in(page)),
+                "nextAfter": next_after,
+            }
+        )
+
+
+def _page_size_from(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None
+    return max(1, min(limit, offline.MAX_PAGE_SIZE))
+
+
+def _positive_int(raw: str | None) -> int | None:
+    try:
+        value = int(raw) if raw else None
+    except ValueError:
+        return None
+    return value if value is not None and value > 0 else None
+
+
+class OfflineAnswerBatchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="syncOfflineAnswers",
+        summary="Synchronise answers given offline",
+        description=(
+            "Requires authentication and an active plan (402 if missing). Accepts up to "
+            f"{offline.MAX_BATCH_ITEMS} answers per request.\n\n"
+            "Each answer is validated independently. `answeredAt` determines the study date "
+            "and requires a timezone offset. `clientId` prevents duplicate submissions."
+        ),
+        request=OfflineAnswerRequestSerializer(many=True),
+        responses={200: OfflineAnswerBatchResponseSerializer, 400: DetailSerializer, 402: DetailSerializer},
+    )
+    def post(self, request: Request) -> Response:
+        student = cast(User, request.user)
+        if not entitlements.has_access(student):
+            return plan_needed()
+
+        sent = request.data.get("answers") if isinstance(request.data, dict) else request.data
+        if not isinstance(sent, list):
+            return Response({"detail": BATCH_NOT_A_LIST}, status=status.HTTP_400_BAD_REQUEST)
+        if len(sent) > offline.MAX_BATCH_ITEMS:
+            return Response({"detail": BATCH_TOO_LARGE}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"results": offline.sync(student, [_submitted(item) for item in sent])})
+
+
+def _submitted(item) -> offline.Answer | dict:
+    if not isinstance(item, dict):
+        return offline.rejected("", offline.Error.MALFORMED)
+
+    submitted = OfflineAnswerRequestSerializer(data=item)
+    if not submitted.is_valid():
+        sent = item.get("clientId")
+        client_id = sent if isinstance(sent, str) else ""
+        code = (
+            offline.Error.ANSWERED_AT_NOT_AWARE
+            if offline.Error.ANSWERED_AT_NOT_AWARE in str(submitted.errors.get("answeredAt", ""))
+            else offline.Error.MALFORMED
+        )
+        return offline.rejected(client_id[:64], code, detail=submitted.errors)
+
+    valid = submitted.validated_data
+    return offline.Answer(
+        client_id=valid["clientId"],
+        question_id=valid["questionId"],
+        selected=valid["selected"],
+        answered_at=valid["answeredAt"],
+    )
 
 
 def _count_from(raw: str | None) -> int:
