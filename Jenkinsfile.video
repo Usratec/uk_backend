@@ -1,0 +1,41 @@
+// Point a dedicated Jenkins Pipeline-from-SCM job at this file and the PR branch.
+// Initial infrastructure/broker/scheduler bootstrap is described in infrastructure/video/README.md.
+pipeline {
+    agent any
+    options { disableConcurrentBuilds(); timestamps() }
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'stage'], description: 'UK environment')
+        string(name: 'STACK_NAME', defaultValue: '', description: 'Bootstrapped video stack')
+        string(name: 'CLUSTER', defaultValue: '', description: 'Existing UK ECS cluster name')
+        string(name: 'WEB_SERVICE', defaultValue: '', description: 'Existing UK backend ECS service')
+        string(name: 'WEB_CONTAINER', defaultValue: '', description: 'Backend container name')
+        string(name: 'IMAGE_DIGEST', defaultValue: '', description: 'Validated image: UK ECR repository@sha256:digest')
+        string(name: 'API_HOST', defaultValue: '', description: 'API hostname without scheme')
+        string(name: 'COOKIE_DOMAIN', defaultValue: '', description: 'Parent domain shared by API and media')
+    }
+    stages {
+        stage('Check release') {
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+set +x
+uv sync --frozen
+uv run python -m scripts.rollout_video_aws --environment "$ENVIRONMENT" --stack "$STACK_NAME" --cluster "$CLUSTER" \
+  --web-service "$WEB_SERVICE" --container "$WEB_CONTAINER" --image "$IMAGE_DIGEST" \
+  --api-host "$API_HOST" --cookie-domain "$COOKIE_DOMAIN"
+'''
+            }
+        }
+        stage('Release web and workers') {
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+set +x
+uv run python -m scripts.rollout_video_aws --environment "$ENVIRONMENT" --stack "$STACK_NAME" --cluster "$CLUSTER" \
+  --web-service "$WEB_SERVICE" --container "$WEB_CONTAINER" --image "$IMAGE_DIGEST" \
+  --api-host "$API_HOST" --cookie-domain "$COOKIE_DOMAIN" --apply
+'''
+            }
+        }
+    }
+}

@@ -12,7 +12,7 @@ def copy_created_at_onto_answered_at(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("learning", "0028_hazard_click_detection"),
+        ("learning", "0031_video_mp4_output"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
