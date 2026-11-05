@@ -348,35 +348,44 @@ def _url(name: str, args=None) -> str | None:
 
 def report_rows(filters):
     paying = common.paying_student_ids(filters)
-    active = common.active_student_ids(filters)
-    published = Subchapter.objects.filter(status=PublishStatus.PUBLISHED).count()
 
     completions = dict(
         common.by_students(LessonProgress.objects.filter(subchapter__status=PublishStatus.PUBLISHED))
         .values_list("student_id")
         .annotate(total=Count("id"))
     )
-    spend = {
-        row["user_id"]: row["total"]
-        for row in common.orders(filters)
-        .filter(status__in=common.COMPLETED_STATUSES, user__isnull=False)
-        .values("user_id")
-        .annotate(total=Sum("final_price"))
-    }
-    current = set(common.active_subscriptions(filters).values_list("user_id", flat=True))
-    now = timezone.now()
+    current = _current_access(filters)
+    seen = common.last_activity(filters)
 
     for student_id, joined in common.registered_students(filters).values_list("id", "date_joined"):
-        completed = completions.get(student_id, 0)
+        package_name, expires_at = current.get(student_id, ("", None))
+        last_seen = seen.get(student_id)
         yield {
             "student_id": student_id,
             "registered_on": timezone.localtime(joined).date().isoformat(),
-            "has_paid": "yes" if student_id in paying else "no",
-            "total_paid": spend.get(student_id) or common.ZERO,
-            "access": "current" if student_id in current else "none",
-            "studied_in_range": "yes" if student_id in active else "no",
-            "lessons_completed": completed,
-            "lessons_published": published,
-            "lesson_progress_percent": common.percentage(completed, published) or 0,
-            "as_at": now.date().isoformat(),
+            "has_paid": "Yes" if student_id in paying else "No",
+            "current_package": package_name,
+            "access_ends": _local_day(expires_at),
+            "last_active": _local_day(last_seen),
+            "lessons_completed": completions.get(student_id, 0),
         }
+
+
+def _current_access(filters) -> dict[int, tuple[str, datetime]]:
+    found: dict[int, tuple[str, datetime]] = {}
+    rows = (
+        common.active_subscriptions(filters)
+        .values_list("user_id", "package__name", "package_expires_at")
+        .order_by("package_expires_at")
+    )
+    for user_id, package_name, expires_at in rows:
+        if user_id is None:
+            continue
+        found[user_id] = (package_name, expires_at)
+    return found
+
+
+def _local_day(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return timezone.localtime(value).date().isoformat()
