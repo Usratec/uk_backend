@@ -135,7 +135,7 @@ def test_no_payload_reaches_the_browser_as_markup(db, superuser, hostile):
         reverse(DASHBOARD) + "?student=" + XSS,
         reverse("admin:analytics_student", args=[hostile.pk]),
     ):
-        body = client.get(url).content.decode()
+        body = client.get(url, follow=True).content.decode()
         assert "<script>alert(1)</script>" not in body, url
         assert "<img src=x" not in body, url
         assert "<svg/onload" not in body, url
