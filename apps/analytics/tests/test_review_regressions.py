@@ -83,8 +83,8 @@ def test_package_csv_money_is_a_plain_number(db, client, superuser, package, stu
     client.force_login(superuser)
     rows = _read(client.get(reverse("admin:analytics_export", args=["packages"])))
 
-    header, first = rows[0], rows[1]
-    gross = first[header.index("Gross")]
+    header, first = rows[1], rows[2]
+    gross = first[header.index("Gross (£)")]
     assert gross == "5000.00", "no pound sign and no thousands separator"
     assert Decimal(gross) == Decimal("5000.00")
 
@@ -96,8 +96,8 @@ def test_a_negative_total_is_still_a_number(db, client, superuser, package, othe
 
     client.force_login(superuser)
     rows = _read(client.get(reverse("admin:analytics_export", args=["packages"])))
-    header = rows[0]
-    nets = [row[header.index("Net")] for row in rows[1:]]
+    header = rows[1]
+    nets = [row[header.index("Net (£)")] for row in rows[2:]]
     assert "-44.95" in nets
     for value in nets:
         assert not value.startswith("'"), f"{value} is text, not a number"
@@ -111,10 +111,10 @@ def test_a_cell_that_would_run_as_a_formula_is_neutralised(db, client, superuser
     assert exports._safe(-5) == -5
 
 
-def test_every_export_says_which_clock_its_times_are_on(db, client, superuser):
+def test_every_export_says_the_range_it_covers(db, client, superuser):
     client.force_login(superuser)
     rows = _read(client.get(reverse("admin:analytics_export", args=["payments"])))
-    assert rows[0][1].endswith(f"({timezone.get_current_timezone_name()})")
+    assert rows[0] == ["1THEORY payments report", exports.date_range(filter_utils.parse({}))]
 
 
 def test_mock_bands_make_sense_when_the_pass_mark_is_low(db, student):
@@ -226,9 +226,9 @@ def test_the_learning_csv_leaves_an_unanswered_chapter_blank(db, client, superus
     make_course()
     client.force_login(superuser)
     rows = _read(client.get(reverse("admin:analytics_export", args=["learning"])))
-    header, first = rows[0], rows[1]
+    header, first = rows[1], rows[2]
     assert first[header.index("Practice answers in range")] == "0"
-    assert first[header.index("Accuracy %")] == "", "no answers is not nought per cent"
+    assert first[header.index("Accuracy (%)")] == "", "no answers is not nought per cent"
 
 
 def test_an_empty_bucket_breaks_the_line_rather_than_being_drawn_through(db, package, student):

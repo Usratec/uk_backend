@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from django.db.models import DecimalField, Exists, OuterRef, Q, QuerySet, Sum
+from django.db.models import DecimalField, Exists, Max, OuterRef, Q, QuerySet, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
@@ -124,6 +124,28 @@ def activity_days(filters) -> list[tuple[date, int]]:
 
 def active_student_ids(filters) -> set[int]:
     return {student_id for _, student_id in activity_days(filters)}
+
+
+def last_activity(filters) -> dict[int, datetime]:
+    found: dict[int, datetime] = {}
+    for model, column in ACTIVITY_SOURCES:
+        rows = (
+            model.objects.filter(
+                student__is_staff=False,
+                student__is_superuser=False,
+                **{f"{column}__lt": filters.end_at},
+            )
+            .values("student_id")
+            .annotate(seen=Max(column))
+        )
+        for row in rows:
+            seen = row["seen"]
+            if seen is None:
+                continue
+            known = found.get(row["student_id"])
+            if known is None or seen > known:
+                found[row["student_id"]] = seen
+    return found
 
 
 def students_active_since(since: datetime) -> set[int]:
