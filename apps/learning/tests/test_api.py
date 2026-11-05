@@ -146,6 +146,41 @@ class TestLesson:
     def test_an_unknown_lesson_is_not_found(self, api, student):
         assert sign_in(api, student()).get(lesson_url("no-such-lesson")).status_code == 404
 
+    def test_a_lesson_under_a_draft_chapter_is_not_found(self, api, live_tree, student, chapter):
+        chapter.status = PublishStatus.DRAFT
+        chapter.save(update_fields=["status"])
+
+        response = sign_in(api, student()).get(lesson_url("warning-signs"))
+
+        assert response.status_code == 404
+
+    def test_a_lesson_under_a_chapter_scheduled_for_later_is_not_found(self, api, live_tree, student, chapter):
+        chapter.publish_from = timezone.now() + timedelta(days=1)
+        chapter.save(update_fields=["publish_from"])
+
+        response = sign_in(api, student()).get(lesson_url("warning-signs"))
+
+        assert response.status_code == 404
+
+    def test_unpublishing_the_topic_shuts_its_lessons_at_once(self, api, live_tree, student, publisher, chapter):
+        from apps.learning import services
+
+        learner = sign_in(api, student())
+        assert learner.get(lesson_url("warning-signs")).status_code == 200
+
+        services.unpublish(actor=publisher, instance=chapter)
+
+        assert learner.get(lesson_url("warning-signs")).status_code == 404
+        assert learner.get(lesson_url("warning-signs")).status_code == 404
+
+    def test_a_lesson_under_a_draft_chapter_cannot_be_marked_done(self, api, live_tree, student, chapter):
+        chapter.status = PublishStatus.DRAFT
+        chapter.save(update_fields=["status"])
+
+        response = sign_in(api, student()).post(reverse("learn-lesson-complete", args=["warning-signs"]))
+
+        assert response.status_code == 404
+
     def test_draft_material_inside_a_live_lesson_is_left_out(self, api, live_tree, student, subchapter):
         LearningContent.objects.create(
             subchapter=subchapter, slug="draft-piece", title="Draft piece", body_html="<p>Later.</p>"

@@ -5,7 +5,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from apps.accounts.models import User
-from apps.analytics.tests.conftest import PASSWORD, answer, give_access, make_course, make_order, study
+from apps.analytics.tests.conftest import PASSWORD, answer, give_access, make_course, make_order, study, watch
 
 
 @pytest.fixture
@@ -71,6 +71,21 @@ def test_it_renders_with_an_empty_database(client, superuser, url):
 
 
 @pytest.mark.django_db
+def test_the_video_backed_metrics_render_their_own_numbers(client, superuser, student, url):
+    _chapter, lessons, _questions = make_course(lessons=2)
+    study(student, lessons[0])
+    watch(student, lessons[1], position=53, duration=100)
+    client.login(email=superuser.email, password=PASSWORD)
+
+    body = client.get(url).content.decode()
+
+    assert "All time: 1 completed of 2 started" in body
+    assert "Average saved position vs lesson length" in body
+    assert "Lessons often left unfinished" in body
+    assert "Would need an event when a lesson is opened" not in body
+
+
+@pytest.mark.django_db
 def test_bad_filters_do_not_break_the_page(client, superuser, url):
     client.login(email=superuser.email, password=PASSWORD)
 
@@ -112,7 +127,7 @@ def test_a_student_page_opens_from_the_dashboard(client, superuser, student, pac
     response = client.get(reverse("admin:analytics_student", args=[student.pk]))
 
     assert response.status_code == 200
-    assert f"Student {student.pk}".encode() in response.content
+    assert f"Student analytics: {student.get_full_name()}".encode() in response.content
 
 
 @pytest.mark.django_db

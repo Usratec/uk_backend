@@ -79,8 +79,19 @@ def live(queryset, at=None):
     )
 
 
+def live_subchapters(queryset=None, at=None):
+    at = at or timezone.now()
+    subchapters = Subchapter.objects.all() if queryset is None else queryset
+    return live(subchapters, at).filter(chapter__in=live(Chapter.objects.all(), at))
+
+
 def live_subchapters_of(chapter: Chapter, at=None):
     return live(chapter.subchapters.all(), at)
+
+
+def live_lesson(slug: str, at=None):
+    """The one lesson a student may open at this address, or None."""
+    return live_subchapters(Subchapter.objects.select_related("chapter"), at).filter(slug=slug).first()
 
 
 def live_content_of(subchapter: Subchapter, at=None):
@@ -187,9 +198,24 @@ def _problems_with_chapter(chapter: Chapter) -> list[str]:
 
 
 def _problems_with_subchapter(subchapter: Subchapter) -> list[str]:
+    problems = []
+
     if not subchapter.chapter.is_published:
-        return [f"Its chapter '{subchapter.chapter.title}' is not published, so students cannot reach it."]
-    return []
+        problems.append(f"Its chapter '{subchapter.chapter.title}' is not published, so students cannot reach it.")
+
+    if not _anything_to_serve_in(subchapter):
+        problems.append(
+            "There is nothing in this lesson for a student to read yet. "
+            "Add a block with something in it — text, a video, a question or a clip — and publish the lesson after."
+        )
+
+    return problems
+
+
+def _anything_to_serve_in(subchapter: Subchapter) -> bool:
+    """Whether at least one block in this lesson would actually show a student something."""
+    blocks = subchapter.content.select_related("media", "question", "hazard_clip")
+    return any(not _problems_with_content_body(block) for block in blocks)
 
 
 def warnings_about(instance) -> list[str]:
@@ -201,12 +227,14 @@ def warnings_about(instance) -> list[str]:
     publish anything at all: the chapter wanted a live subchapter, the subchapter wanted a live
     chapter, and neither could go first.
 
-    So "there is nothing in here yet" is said rather than enforced. It costs nothing to be wrong
-    about, because the API only ever returns live children: an empty published chapter shows
+    So "nothing in here is published yet" is said rather than enforced. It costs nothing to be
+    wrong about, because the API only ever returns live children: an empty published chapter shows
     students no lessons rather than a broken one.
 
     What stays a refusal is the other direction — publishing something students could not reach,
     because its parent is still a draft. That one cannot be worked around by filling it in later.
+    A lesson with no block in it at all is refused too: unlike a published child, a draft block
+    can be written before the lesson goes live, so asking for one deadlocks nothing.
     """
     if isinstance(instance, Chapter):
         if not live_subchapters_of(instance).exists():
@@ -305,6 +333,16 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
 
 
 def _problems_with_content(content: LearningContent) -> list[str]:
+    problems = _problems_with_content_body(content)
+
+    if not content.subchapter.is_published:
+        problems.append(f"Its subchapter '{content.subchapter.title}' is not published, so students cannot reach it.")
+
+    return problems
+
+
+def _problems_with_content_body(content: LearningContent) -> list[str]:
+    """What would make this block unusable in itself, leaving its parent out of it."""
     problems = []
 
     if content.content_type not in AVAILABLE_CONTENT_TYPES:
@@ -340,9 +378,6 @@ def _problems_with_content(content: LearningContent) -> list[str]:
             f"The text shows pictures that are no longer in the media library (assets {listed}). "
             "Remove them from the text, or upload them again."
         )
-
-    if not content.subchapter.is_published:
-        problems.append(f"Its subchapter '{content.subchapter.title}' is not published, so students cannot reach it.")
 
     return problems
 
@@ -1169,8 +1204,7 @@ def _seconds(value) -> Decimal | None:
 def live_video(slug: str, at=None):
     at = at or timezone.now()
     contents = live(LearningContent.objects.select_related("subchapter__chapter", "media"), at).filter(
-        subchapter__in=live(Subchapter.objects.all(), at),
-        subchapter__chapter__in=live(Chapter.objects.all(), at),
+        subchapter__in=live_subchapters(at=at),
     )
     return contents.filter(slug=slug, content_type=ContentType.VIDEO, media__isnull=False).first()
 

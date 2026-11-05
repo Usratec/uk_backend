@@ -40,13 +40,9 @@ def tables(filters) -> list[dict]:
             "rows": _least_completed_chapters(),
         },
         {
-            "title": "Lessons often left unfinished (no progress for 7+ days)",
-            "columns": ["Lesson", "Started", "Left unfinished"],
-            "rows": [],
-            "tracking_required": (
-                "Would need an event when a lesson is opened. Only finishing a lesson is recorded, "
-                "so a lesson left part-way through looks the same as one never opened."
-            ),
+            "title": "Lessons often left unfinished (all time)",
+            "columns": ["Lesson", "Started", "Completed", "Left unfinished", "Unfinished rate"],
+            "rows": _unfinished_lessons(),
         },
         {
             "title": f"Hazard clips with the lowest average score (at least {MIN_CLIP_ATTEMPTS} attempts)",
@@ -124,6 +120,48 @@ def _least_completed_chapters() -> list[dict]:
             "values": [f"{published[chapter.pk]:,}", f"{min(share, 100):.1f}%"],
         }
         for share, chapter in ranked[:TABLE_LIMIT]
+    ]
+
+
+def _unfinished_lessons() -> list[dict]:
+    unfinished = dict(
+        common.unfinished_video_progress()
+        .values_list("content__subchapter_id")
+        .order_by()
+        .annotate(students=Count("student_id", distinct=True))
+    )
+    if not unfinished:
+        return []
+
+    completed = dict(
+        common.completed_lessons()
+        .values_list("subchapter_id")
+        .order_by()
+        .annotate(students=Count("student_id", distinct=True))
+    )
+    lessons = {lesson.pk: lesson for lesson in Subchapter.objects.filter(pk__in=unfinished).select_related("chapter")}
+
+    ranked = sorted(
+        (
+            (left, common.percentage(left, left + completed.get(lesson_id, 0)) or 0.0, lesson_id)
+            for lesson_id, left in unfinished.items()
+            if lesson_id in lessons
+        ),
+        key=lambda row: (-row[0], -row[1]),
+    )
+    return [
+        {
+            "label": lessons[lesson_id].title,
+            "meta": lessons[lesson_id].chapter.title,
+            "url": _admin_link("learning", "subchapter", lesson_id),
+            "values": [
+                f"{left + completed.get(lesson_id, 0):,}",
+                f"{completed.get(lesson_id, 0):,}",
+                f"{left:,}",
+                _percent(rate),
+            ],
+        }
+        for left, rate, lesson_id in ranked[:TABLE_LIMIT]
     ]
 
 
