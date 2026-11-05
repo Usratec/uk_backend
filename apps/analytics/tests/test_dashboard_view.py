@@ -112,7 +112,7 @@ def test_a_student_page_opens_from_the_dashboard(client, superuser, student, pac
     response = client.get(reverse("admin:analytics_student", args=[student.pk]))
 
     assert response.status_code == 200
-    assert f"Student {student.pk}".encode() in response.content
+    assert f"Student analytics: {student.get_full_name()}".encode() in response.content
 
 
 @pytest.mark.django_db

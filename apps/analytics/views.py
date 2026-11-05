@@ -1,6 +1,9 @@
+from urllib.parse import urlencode
+
 from django.http import Http404, HttpRequest, HttpResponse
 from django.http.response import HttpResponseBase
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 
 from apps.analytics.services import (
     common,
@@ -36,6 +39,12 @@ SECTIONS = (
 
 def dashboard(request: HttpRequest, context: dict) -> HttpResponse:
     filters = filter_utils.parse(request.GET)
+    search_term = request.GET.get("student", "")
+    search_results = students.search(search_term)
+    if len(search_results) == 1:
+        target = reverse("admin:analytics_student", args=[search_results[0].pk])
+        return redirect(f"{target}?{urlencode(filters.as_query())}")
+
     package_rows = packages.rows(filters)
 
     charts = {
@@ -71,22 +80,24 @@ def dashboard(request: HttpRequest, context: dict) -> HttpResponse:
             "reports": exports.REPORTS,
             "export_query": filters.as_query(),
             "charts": charts,
-            "search_term": request.GET.get("student", ""),
-            "search_results": students.search(request.GET.get("student", "")),
+            "search_term": search_term,
+            "search_results": search_results,
         },
     )
 
 
 def student_detail(request: HttpRequest, context: dict, student_id: int) -> HttpResponse:
     student = get_object_or_404(common.students(), pk=student_id)
+    profile = students.profile(student)
     return render(
         request,
         "admin/analytics/student.html",
         {
             **context,
-            "title": f"Student {student.pk}",
+            "title": f"Student analytics: {profile['student_name']}",
             "filters": filter_utils.parse(request.GET),
-            **students.profile(student),
+            "admin_links": students.admin_links(student, request.user),
+            **profile,
         },
     )
 
