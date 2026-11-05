@@ -181,7 +181,7 @@ class LessonDetailView(APIView):
     )
     def get(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
-        subchapter = services.live(Subchapter.objects.select_related("chapter")).filter(slug=slug).first()
+        subchapter = services.live_lesson(slug)
         if subchapter is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -723,7 +723,7 @@ class LessonCompleteView(APIView):
     )
     def post(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
-        subchapter = services.live(Subchapter.objects.select_related("chapter")).filter(slug=slug).first()
+        subchapter = services.live_lesson(slug)
         if subchapter is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
