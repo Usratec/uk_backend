@@ -170,7 +170,9 @@ def sync(student, answers: list[Answer | dict], at=None) -> list[dict]:
         attempt.client_id: attempt
         for attempt in QuestionAttempt.objects.filter(
             student=student, client_id__in=[answer.client_id for answer in wanted]
-        ).select_related("question")
+        )
+        .select_related("question")
+        .prefetch_related("question__options")
     }
     questions = _practisable(student, {answer.question_id for answer in wanted}, at)
     periods = entitlements.access_periods(student)
@@ -242,6 +244,7 @@ def _sync_one(student, answer: Answer, *, at, already, questions, periods) -> di
         seen = (
             QuestionAttempt.objects.filter(student=student, client_id=answer.client_id)
             .select_related("question")
+            .prefetch_related("question__options")
             .first()
         )
         if seen is None:
