@@ -188,11 +188,13 @@ class TestSavingQuestions:
         assert sign_in(api, student()).post(saved_url("no-such-question")).status_code == 404
 
 
-def record_attempt(student, question, was_correct, created_at=None) -> QuestionAttempt:
-    attempt = QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
-    if created_at is not None:
-        QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=created_at)
-    return attempt
+def record_attempt(student, question, was_correct, answered_at=None) -> QuestionAttempt:
+    return QuestionAttempt.objects.create(
+        student=student,
+        question=question,
+        was_correct=was_correct,
+        **({"answered_at": answered_at} if answered_at is not None else {}),
+    )
 
 
 class TestWhichQuestionsCountAsMistakes:
@@ -205,24 +207,24 @@ class TestWhichQuestionsCountAsMistakes:
     def test_a_mistake_since_put_right_is_no_longer_one(self, student, live_question):
         learner = student()
         now = timezone.now()
-        record_attempt(learner, live_question, was_correct=False, created_at=now)
-        record_attempt(learner, live_question, was_correct=True, created_at=now + timedelta(minutes=1))
+        record_attempt(learner, live_question, was_correct=False, answered_at=now)
+        record_attempt(learner, live_question, was_correct=True, answered_at=now + timedelta(minutes=1))
 
         assert services.question_ids_answered_wrong(learner) == set()
 
     def test_a_question_got_wrong_after_being_got_right_is_a_mistake_again(self, student, live_question):
         learner = student()
         now = timezone.now()
-        record_attempt(learner, live_question, was_correct=True, created_at=now)
-        record_attempt(learner, live_question, was_correct=False, created_at=now + timedelta(minutes=1))
+        record_attempt(learner, live_question, was_correct=True, answered_at=now)
+        record_attempt(learner, live_question, was_correct=False, answered_at=now + timedelta(minutes=1))
 
         assert services.question_ids_answered_wrong(learner) == {live_question.pk}
 
     def test_attempts_sharing_a_timestamp_are_decided_by_the_last_row_written(self, student, live_question):
         same_moment = timezone.now()
         learner = student()
-        record_attempt(learner, live_question, was_correct=False, created_at=same_moment)
-        record_attempt(learner, live_question, was_correct=True, created_at=same_moment)
+        record_attempt(learner, live_question, was_correct=False, answered_at=same_moment)
+        record_attempt(learner, live_question, was_correct=True, answered_at=same_moment)
 
         assert services.question_ids_answered_wrong(learner) == set()
 
@@ -828,8 +830,7 @@ class TestStreak:
         learner = student()
         today = timezone.now()
         for days_ago in (0, 1, 2):
-            attempt = QuestionAttempt.objects.create(student=learner, question=live_question, was_correct=True)
-            QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=today - timedelta(days=days_ago))
+            record_attempt(learner, live_question, was_correct=True, answered_at=today - timedelta(days=days_ago))
 
         assert services.streak(learner) == 3
 
@@ -837,23 +838,20 @@ class TestStreak:
         learner = student()
         today = timezone.now()
         for days_ago in (0, 2, 3):
-            attempt = QuestionAttempt.objects.create(student=learner, question=live_question, was_correct=True)
-            QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=today - timedelta(days=days_ago))
+            record_attempt(learner, live_question, was_correct=True, answered_at=today - timedelta(days=days_ago))
 
         assert services.streak(learner) == 1
 
     def test_not_having_studied_yet_today_does_not_break_it(self, db, student, live_question):
         """Otherwise every streak would read zero first thing in the morning."""
         learner = student()
-        attempt = QuestionAttempt.objects.create(student=learner, question=live_question, was_correct=True)
-        QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=timezone.now() - timedelta(days=1))
+        record_attempt(learner, live_question, was_correct=True, answered_at=timezone.now() - timedelta(days=1))
 
         assert services.streak(learner) == 1
 
     def test_a_streak_that_ended_days_ago_is_gone(self, db, student, live_question):
         learner = student()
-        attempt = QuestionAttempt.objects.create(student=learner, question=live_question, was_correct=True)
-        QuestionAttempt.objects.filter(pk=attempt.pk).update(created_at=timezone.now() - timedelta(days=5))
+        record_attempt(learner, live_question, was_correct=True, answered_at=timezone.now() - timedelta(days=5))
 
         assert services.streak(learner) == 0
 

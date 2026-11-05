@@ -58,7 +58,7 @@ container start, so scaling out can't run them concurrently.
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
-| Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/` (and the rest of `/api/learn/`) |
+| Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
@@ -205,6 +205,81 @@ earlier, and `position_seconds`/`duration_seconds` are accepted as aliases. A ne
 or missing position answers 400, so an incomplete request cannot zero a real one; a position past
 the end is clamped. Repeated calls update one row (learner and video are unique together, written
 by `update_or_create` in a transaction), so posting every few seconds costs one UPDATE.
+
+### Offline practice in the PWA
+
+`GET /api/learn/offline/practice/` returns every question normal practice can ask the signed-in
+learner — live, and inside their package — with the answers in it, so the PWA can mark its own
+work offline. No plan answers 402. Normal practice only: no exam endpoint changes, and exams
+cannot be sat offline.
+
+```json
+{
+  "version": "3f8c1a09d4e27b65",
+  "updatedAt": "2026-11-01T09:12:00Z",
+  "total": 742,
+  "questions": [
+    {
+      "id": 123, "key": "distraction", "topic": "road-signs", "type": "single",
+      "prompt": "Which of these could distract you while driving?",
+      "media": { "kind": "sign", "code": "give-way" },
+      "options": [{ "id": "a", "text": "A phone call" }, { "id": "b", "text": "A clear road" }],
+      "pick": 1,
+      "correctIds": ["a"],
+      "explanation": "It takes your attention off the road.",
+      "lesson": { "slug": "distractions", "title": "Distractions" }
+    }
+  ],
+  "signs": { "give-way": { "code": "give-way", "name": "Give way", "spec": {} } },
+  "nextAfter": null
+}
+```
+
+- **Versioning.** Store `version` and compare it with the next response's to decide whether to
+  download again. It changes when anything in the pack does, including a question leaving it.
+- **Paging.** Without `limit` the whole pack comes back at once and `nextAfter` is null; that is
+  the expected way to fetch it. With `limit` (1–500), follow
+  `nextAfter` as `after` until it is null. `total` is the whole pack either way.
+- **Images expire.** An `image` is a short-lived signed URL, so cache the bytes, not the URL.
+  Signs travel in the `signs` map and are drawn by the frontend.
+
+`POST /api/learn/answers/batch/` records answers given offline against the days they were given
+on. The body is a JSON array of at most 500 answers; `{"answers": [...]}` is accepted too.
+
+```json
+[
+  { "clientId": "offline-001", "questionId": 123, "selected": ["a"], "answeredAt": "2026-11-02T14:30:00Z" },
+  { "clientId": "offline-002", "questionId": 124, "selected": ["b"], "answeredAt": "2026-11-02T14:35:00Z" }
+]
+```
+
+```json
+{
+  "results": [
+    { "clientId": "offline-001", "status": "synced", "correct": true, "correctIds": ["a"],
+      "answeredAt": "2026-11-02T14:30:00Z" },
+    { "clientId": "offline-002", "status": "rejected",
+      "error": { "code": "answered_at_in_future", "message": "The answer timestamp cannot be in the future." } }
+  ]
+}
+```
+
+- **Marking.** Decided on the server from the question rows. There is no `correct` field in the
+  request.
+- **Per item.** One result per submitted item, in the order sent, so one bad item never costs the
+  others. `status` is `synced`, `already_synced` or `rejected`; a rejection names a `code`:
+  `malformed`, `answered_at_not_timezone_aware`, `answered_at_in_future`, `answered_at_too_old`,
+  `no_access_on_that_date`, `question_not_found`, `invalid_selection`, `client_id_conflict`.
+- **Study dates.** Progress, mistakes, weak topics and streaks are all worked out from the attempt
+  rows, so an answer counts towards its own `answeredAt` whatever order the days arrive in.
+  `answeredAt` needs a timezone offset, may not be in the future (two minutes' allowance for a
+  fast clock) and may not be more than 30 days old.
+- **Historical access.** The learner must be able to practise the question now *and* have held a
+  plan covering its chapter on the study date. A period's start counts, its expiry does not, and
+  revoked periods pay for nothing.
+- **Idempotency.** `clientId` is the key, scoped to the learner by a unique constraint, so retries
+  cannot double-count. A second send reports `already_synced` and changes nothing. The same
+  `clientId` with a different question, selection or timestamp is refused as `client_id_conflict`.
 
 ### Learner exam attempts
 

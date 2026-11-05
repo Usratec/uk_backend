@@ -1076,10 +1076,35 @@ def mark_answer(question: Question, selected: list[str]) -> dict:
 # number shown to a student can never drift away from what they actually did.
 
 
-def record_answer(student, question: Question, was_correct: bool) -> None:
-    """Remember one answer."""
-    QuestionAttempt.objects.create(student=student, question=question, was_correct=was_correct)
-    notifications.queue_streak_check(student)
+def record_answer(
+    student,
+    question: Question,
+    was_correct: bool,
+    *,
+    answered_at=None,
+    client_id: str = "",
+    client_payload: str = "",
+    notify: bool = True,
+) -> QuestionAttempt:
+    """Remember one answer, given now or — when synchronised from the PWA — on some past day.
+
+    answered_at: The date the answer belongs to. Defaults to today for online answers.
+
+    client_id: The PWA's unique answer ID. Prevents duplicate answers during sync.
+
+    notify: Disabled during batch sync to run one streak check for the entire batch.
+    """
+    attempt = QuestionAttempt.objects.create(
+        student=student,
+        question=question,
+        was_correct=was_correct,
+        answered_at=answered_at or timezone.now(),
+        client_id=client_id,
+        client_payload=client_payload,
+    )
+    if notify:
+        notifications.queue_streak_check(student)
+    return attempt
 
 
 TIME_TAKEN_GRACE_SECONDS = 30
@@ -1353,7 +1378,7 @@ def study_days(student) -> list:
     Answering a question, finishing a lesson and reading a section of a book all count, so a day
     spent reading is not lost.
     """
-    answered = QuestionAttempt.objects.filter(student=student).dates("created_at", "day", order="DESC")
+    answered = QuestionAttempt.objects.filter(student=student).dates("answered_at", "day", order="DESC")
     read = LessonProgress.objects.filter(student=student).dates("completed_at", "day", order="DESC")
     booked = EbookSectionProgress.objects.filter(student=student).dates("read_at", "day", order="DESC")
     return sorted(set(answered) | set(read) | set(booked), reverse=True)
@@ -1404,10 +1429,13 @@ def question_ids_answered_wrong(student):
     It is the latest attempt that decides, not whether the question was ever got right: a
     question put right and then got wrong again is a mistake once more, and one got wrong and
     then put right is no longer a mistake to go back over.
+
+    "Latest" is based on when the answer was given, not when it was saved.
+    This ensures offline answers keep their correct order, even when synced out of order.
     """
     latest = (
         QuestionAttempt.objects.filter(student=student)
-        .order_by("question_id", "-created_at", "-id")
+        .order_by("question_id", "-answered_at", "-id")
         .distinct("question_id")
         .values_list("question_id", "was_correct")
     )
