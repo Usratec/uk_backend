@@ -1,0 +1,14 @@
+A visitor has sent a message through the contact form on the site. Replying to this email
+reaches them directly.
+
+Name: {{ name }}
+Email: {{ email }}
+Topic: {{ topic }}
+Received: {{ received_at }}
+Reference: {{ reference }}
+{% if account_reference %}Account: {{ account_email }} (id {{ account_reference }}){% else %}Account: not signed in{% endif %}
+
+Message:
+{{ message }}
+
+1Theory

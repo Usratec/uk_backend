@@ -13,7 +13,13 @@ from django.template.loader import render_to_string
 logger = logging.getLogger(__name__)
 
 
-def send(template: str, subject: str, to: str | list[str], context: dict) -> None:
+def send(
+    template: str,
+    subject: str,
+    to: str | list[str],
+    context: dict,
+    reply_to: str | list[str] | None = None,
+) -> None:
     """Hand one message to a worker to send, and return.
 
     Nothing in a request should wait for a mail server. One gunicorn worker serves the whole site
@@ -32,26 +38,43 @@ def send(template: str, subject: str, to: str | list[str], context: dict) -> Non
 
     _refuse_queued_secrets(context)
     try:
-        send_email.delay(template=template, subject=subject, to=to, context=context)
+        send_email.delay(template=template, subject=subject, to=to, context=context, reply_to=reply_to)
     except Exception:
         logger.exception("Could not queue the %s email, sending it here instead", template)
-        send_now(template=template, subject=subject, to=to, context=context)
+        send_now(template=template, subject=subject, to=to, context=context, reply_to=reply_to)
 
 
-def send_now(template: str, subject: str, to: str | list[str], context: dict) -> None:
+def send_now(
+    template: str,
+    subject: str,
+    to: str | list[str],
+    context: dict,
+    reply_to: str | list[str] | None = None,
+) -> None:
     """Render ``emails/<template>.html`` and ``.txt`` and send them.
 
     Raises whatever the mail backend raises; the caller decides whether a failure should fail
     the request. Registration, for example, succeeds even if its email cannot be sent.
+
+    ``reply_to`` carries a visitor's own address on mail we send to ourselves, such as a contact
+    form message, so replying in the inbox reaches them rather than our own from address. Django
+    refuses a header holding a newline, so an address from a form cannot smuggle extra headers in.
     """
     message = EmailMultiAlternatives(
         subject=subject,
         body=render_to_string(f"emails/{template}.txt", context),
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=[to] if isinstance(to, str) else list(to),
+        reply_to=_addresses(reply_to),
     )
     message.attach_alternative(render_to_string(f"emails/{template}.html", context), "text/html")
     message.send()
+
+
+def _addresses(value: str | list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    return [value] if isinstance(value, str) else list(value)
 
 
 def _refuse_queued_secrets(context: dict) -> None:

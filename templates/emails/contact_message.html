@@ -1,0 +1,43 @@
+{% extends "emails/base.html" %}
+{% block title %}New contact form submission{% endblock %}
+{% block content %}
+<p style="margin:0 0 16px 0; font-size:18px; font-weight:bold; color:#1e3a5f;">New contact form submission</p>
+<p style="margin:0 0 28px 0;">
+  A visitor has sent a message through the contact form on the site. Replying to this email
+  reaches them directly.
+</p>
+
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 0 28px 0; font-size:15px;">
+  <tr>
+    <td style="padding:6px 12px 6px 0; color:#888888;">Name</td>
+    <td style="padding:6px 0;"><strong>{{ name }}</strong></td>
+  </tr>
+  <tr>
+    <td style="padding:6px 12px 6px 0; color:#888888;">Email</td>
+    <td style="padding:6px 0;"><a href="mailto:{{ email }}" style="color:#2563eb;">{{ email }}</a></td>
+  </tr>
+  <tr>
+    <td style="padding:6px 12px 6px 0; color:#888888;">Topic</td>
+    <td style="padding:6px 0;">{{ topic }}</td>
+  </tr>
+  <tr>
+    <td style="padding:6px 12px 6px 0; color:#888888;">Received</td>
+    <td style="padding:6px 0;">{{ received_at }}</td>
+  </tr>
+  <tr>
+    <td style="padding:6px 12px 6px 0; color:#888888;">Account</td>
+    <td style="padding:6px 0;">
+      {% if account_reference %}{{ account_email }} (id {{ account_reference }}){% else %}Not signed in{% endif %}
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:6px 12px 6px 0; color:#888888;">Reference</td>
+    <td style="padding:6px 0;">{{ reference }}</td>
+  </tr>
+</table>
+
+<p style="margin:0 0 8px 0; color:#888888; font-size:14px;">Message</p>
+<p style="margin:0 0 28px 0; padding:16px; background-color:#f4f4f7; border-radius:6px; white-space:pre-wrap;">{{ message }}</p>
+
+<p style="margin:0; font-size:14px; color:#555555;">1Theory</p>
+{% endblock %}
