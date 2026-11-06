@@ -53,7 +53,7 @@ container start, so scaling out can't run them concurrently.
 | Authentication | `POST /api/auth/register/`, `login/`, `logout/`, `token/refresh/`, `password/reset/`, `password/reset/confirm/`; `GET /api/auth/email/verify/`, `POST /api/auth/email/verify/resend/` |
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
-| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
+| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
@@ -84,6 +84,21 @@ CLI:
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
 ```
 
+### Contact form
+
+`POST /api/content/contact/` takes the contact page's form and delivers it to the support inbox.
+It is public: a visitor who is not signed in may send a message, and no token is required.
+
+```json
+{ "name": "Ada Lovelace", "email": "ada@example.com", "topic": "billing", "message": "My card was charged twice." }
+```
+
+`name` is 2–60 characters, `email` must be a valid address, `message` is required and at most
+5000 characters, and `topic` is optional — one of `account`, `billing`, `course`, `other`.
+Leading and trailing whitespace is trimmed from all three text fields. A success is `201` with
+`{"message": "Your message has been sent successfully."}`; a bad form is `400` with DRF's
+field-level errors (`{"email": ["Enter a valid email address."]}`).
+
 ### What happens after a payment
 
 Stripe's webhook marks the order paid and queues a background job, which creates the account if
@@ -98,7 +113,8 @@ for is lost.
 
 Scheduled jobs run from the `beat` service: expiry reminders at 09:00, telling learners their
 access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
-lost orders every ten minutes, and telling the CRM about access it was never told about, hourly.
+lost orders every ten minutes, telling the CRM about access it was never told about, hourly, and
+delivering contact messages that are still pending, hourly.
 There is deliberately no job to revoke learning access, because access is derived from the dates
 every time it is checked.
 
@@ -437,6 +453,15 @@ Site content — the FAQs and the testimonials — is managed under **Site conte
 model permissions rather than a role, so a superuser can edit it without granting anything first.
 Each list edits the sort order and the published flag in place, and carries publish and unpublish
 actions for a selection.
+
+Messages sent through the contact form sit in the same section, as *Contact messages*, but are
+read-only and gated like the CRM — the Support Agent role, or `content.view_contactsubmission`
+granted to an account — because they hold a visitor's name, address and whatever they wrote. Each
+row says whether the support inbox has received it, so a message the mail server rejected is
+visible rather than lost. A signed-in visitor's account is shown by id rather than by email
+address: reading contact messages should not also reveal the address a customer registered under,
+which is the CRM's to show. Nothing on these screens can be edited or deleted, whatever
+permissions an account is given.
 
 The landing page is managed under **Landing page**, on the same model permissions. Its wording is
 a flat key → value store, so marketing can reword the page without a frontend deploy; the note

@@ -2,8 +2,10 @@ from django.contrib import admin
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils import timezone
+from django.utils.safestring import SafeString
 
-from apps.content.models import FAQ, Testimonial
+from apps.content.models import FAQ, ContactSubmission, Testimonial
+from apps.staff.admin import PermissionRequiredAdminMixin, ReadOnlyAdminMixin, placeholder
 
 
 class SiteContentAdmin(admin.ModelAdmin):
@@ -37,3 +39,26 @@ class TestimonialAdmin(SiteContentAdmin):
     list_filter = ["is_published", "rating"]
     search_fields = ["first_name", "quote"]
     fields = ["first_name", "age_range", "quote", "rating", "avatar", "sort_order", "is_published"]
+
+
+@admin.register(ContactSubmission)
+class ContactSubmissionAdmin(ReadOnlyAdminMixin, PermissionRequiredAdminMixin, admin.ModelAdmin):
+    list_display = ["created_at", "name", "email", "topic", "account", "delivery_status"]
+    list_filter = ["delivery_status", "topic", "created_at"]
+    search_fields = ["name", "email", "message"]
+    date_hierarchy = "created_at"
+    fields = ["created_at", "name", "email", "topic", "message", "account", "delivery_status", "delivered_at"]
+    readonly_fields = [
+        "created_at",
+        "name",
+        "email",
+        "topic",
+        "message",
+        "account",
+        "delivery_status",
+        "delivered_at",
+    ]
+
+    @admin.display(description="Account")
+    def account(self, submission: ContactSubmission) -> str | SafeString:
+        return str(submission.user_id) if submission.user_id else placeholder()
