@@ -90,6 +90,32 @@ class OrderStatus(models.TextChoices):
     REFUNDED = "refunded", "Refunded"
 
 
+UNSETTLED_STATUSES = (OrderStatus.PENDING, OrderStatus.FAILED)
+
+
+class OrderQuerySet(models.QuerySet):
+    def embedded(self) -> "OrderQuerySet":
+        return self.filter(stripe_session_id="", payment_intent_expires_at__isnull=False)
+
+    def holding_a_live_payment(self) -> "OrderQuerySet":
+        return self.embedded().filter(status__in=UNSETTLED_STATUSES, payment_intent_cancelled_at__isnull=True)
+
+    def payment_cancellable(self) -> "OrderQuerySet":
+        return self.holding_a_live_payment().filter(payment_intent_cancel_requested_at__isnull=False)
+
+    def payment_expired(self, at=None) -> "OrderQuerySet":
+        return self.holding_a_live_payment().filter(
+            payment_intent_cancel_requested_at__isnull=True,
+            payment_intent_expires_at__isnull=False,
+            payment_intent_expires_at__lt=at or timezone.now(),
+        )
+
+    def safe_to_delete(self) -> "OrderQuerySet":
+        return self.filter(status__in=UNSETTLED_STATUSES, subscription__isnull=True).filter(
+            models.Q(stripe_payment_intent_id="") | models.Q(payment_intent_cancelled_at__isnull=False)
+        )
+
+
 class Order(TimestampedModel):
     """One purchase attempt.
 
@@ -133,6 +159,43 @@ class Order(TimestampedModel):
     paid_at = models.DateTimeField(null=True, blank=True)
     refunded_at = models.DateTimeField(null=True, blank=True)
 
+    payment_intent_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the embedded payment stops being offered and is swept up.",
+    )
+    payment_intent_cancel_requested_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when this payment should be cancelled at Stripe. The sweeper keeps trying until it is.",
+    )
+    payment_intent_cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set only once Stripe confirms the payment can no longer be completed.",
+    )
+
+    failure_code = models.CharField(max_length=100, blank=True, help_text="Stripe's decline or error code.")
+    failure_message = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="The message shown to the learner when a payment is refused.",
+    )
+    terms_accepted = models.BooleanField(
+        default=False,
+        help_text="Only true if the buyer ticked the box themselves.",
+    )
+    immediate_access_accepted = models.BooleanField(
+        default=False,
+        help_text="The buyer agreed to start access at once and so to lose the cancellation right.",
+    )
+    consent_version = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Which wording of the terms was shown. Kept as the record of what was agreed.",
+    )
+    consent_recorded_at = models.DateTimeField(null=True, blank=True)
+
     # Set when this purchase created the account, so a retry still knows a welcome email is owed
     # even though the account exists by then.
     welcome_email_required = models.BooleanField(default=False)
@@ -140,9 +203,31 @@ class Order(TimestampedModel):
     confirmation_email_sent_at = models.DateTimeField(null=True, blank=True)
     manager_notified_at = models.DateTimeField(null=True, blank=True)
 
+    objects = OrderQuerySet.as_manager()
+
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["email"])]
+        indexes = [
+            models.Index(fields=["email"]),
+            models.Index(fields=["stripe_payment_intent_id"]),
+            models.Index(
+                fields=["payment_intent_expires_at"],
+                condition=models.Q(payment_intent_cancelled_at__isnull=True),
+                name="order_live_payment_expiry_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                "stripe_payment_intent_id",
+                condition=~models.Q(stripe_payment_intent_id=""),
+                name="order_unique_stripe_payment_intent",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(terms_accepted=False, immediate_access_accepted=False, consent_version="")
+                | models.Q(terms_accepted=True, immediate_access_accepted=True) & ~models.Q(consent_version=""),
+                name="order_consent_all_or_nothing",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.email} | {self.package.name} | {self.get_status_display()}"
