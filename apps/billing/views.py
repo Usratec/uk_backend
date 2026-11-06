@@ -99,6 +99,7 @@ class CheckoutView(APIView):
             order, session_url = checkout.start_checkout(
                 package=package,
                 email=data.validated_data["email"],
+                consent=data.validated_data["consent_snapshot"],
                 first_name=data.validated_data["first_name"],
                 last_name=data.validated_data["last_name"],
                 promo_code=data.validated_data["promo_code"],
