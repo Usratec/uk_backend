@@ -23,6 +23,7 @@ The backend is implemented as a Django monolith containing:
 - Package entitlements and permissions
 - Online Learning Platform
 - Learning Admin
+- Blog and SEO content
 - Background processing
 - Media/storage integrations
 
@@ -55,6 +56,8 @@ container start, so scaling out can't run them concurrently.
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
+| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
+| Sitemap | `GET /api/sitemap.xml` |
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
@@ -64,6 +67,27 @@ container start, so scaling out can't run them concurrently.
 
 The catalogue and site-content reads are public and unpaginated: the pages that show them show
 them all at once, and unpublished items are never returned. Everything else needs a token.
+
+The blog is the one public list that *is* paginated, because it grows without limit: `GET /api/blog/`
+returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>`.
+`GET /api/blog/<slug>/` adds the post's rich text. Both return only posts that are published *and*
+whose publish date has passed, so a draft, an unpublished post and a post scheduled for next week
+are all 404 — the status and the date are checked in the query, not after it.
+
+When a post's slug changes, the old address keeps working: it answers `301 Moved Permanently` with a
+`Location` header for the post's new API address and a body of
+`{"detail": …, "slug": "<new-slug>", "path": "/blog/<new-slug>/"}`, so the frontend can send the
+reader on and search engines see a permanent move. Every slug a post has ever had is kept, redirects
+always point at the post rather than at another slug (so there are no chains and no loops), and a
+slug taken by a live post always wins over a redirect of the same name.
+
+`GET /api/sitemap.xml` lists the published blog posts as addresses on `FRONTEND_BASE_URL`, because
+the pages themselves are rendered by the storefront. Drafts, unpublished posts and posts whose
+publish date has not arrived are left out. A post with no `canonical_url` is listed at
+`/blog/<current slug>/`; one whose canonical URL points at the storefront is listed at that path
+instead; one canonical to another site is left out altogether, since the original lives elsewhere.
+Each app with public pages declares its own entries in `<app>/sitemaps.py`, collected by
+`apps/core/sitemaps.py`.
 
 Clients send `Authorization: Bearer <access token>`. Access tokens last 5 minutes; refresh tokens
 last 30 days with `remember_me`, otherwise 24 hours. Refreshing returns a new refresh token and
@@ -96,7 +120,8 @@ Access is two dates. `package_expires_at` ends learning access; `account_expires
 in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
 for is lost.
 
-Scheduled jobs run from the `beat` service: expiry reminders at 09:00, telling learners their
+Scheduled jobs run from the `beat` service: publishing blog posts whose time has come every five
+minutes, expiry reminders at 09:00, telling learners their
 access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
 lost orders every ten minutes, and telling the CRM about access it was never told about, hourly.
 There is deliberately no job to revoke learning access, because access is derived from the dates
