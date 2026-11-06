@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.sitemaps",
     # Third party
     "corsheaders",
     "constance",
@@ -70,6 +71,7 @@ INSTALLED_APPS = [
     "apps.learning",
     "apps.content",
     "apps.landing",
+    "apps.blog",
     "apps.analytics",
     "apps.notifications",
 ]
@@ -250,6 +252,10 @@ CELERY_BEAT_SCHEDULE = {
     "delete-unfinished-orders": {
         "task": "apps.billing.tasks.delete_unfinished_orders",
         "schedule": crontab(hour="1", minute="0"),
+    },
+    "publish-scheduled-blog-posts": {
+        "task": "apps.blog.tasks.publish_scheduled_posts",
+        "schedule": crontab(minute="*/5"),
     },
     "sweep-abandoned-video-uploads": {
         "task": "apps.learning.tasks.sweep_abandoned_uploads",
@@ -548,6 +554,7 @@ JAZZMIN_SETTINGS = {
         "catalog",
         "content",
         "landing",
+        "blog",
         "billing",
         "entitlements",
         "accounts",
@@ -594,6 +601,11 @@ JAZZMIN_SETTINGS = {
         "content": "fas fa-pen-nib",
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
+        "blog": "fas fa-newspaper",
+        "blog.BlogPost": "fas fa-file-lines",
+        "blog.BlogCategory": "fas fa-folder-open",
+        "blog.BlogImage": "fas fa-image",
+        "blog.BlogPostRedirect": "fas fa-arrow-right-arrow-left",
         "landing": "fas fa-bullhorn",
         "landing.LandingText": "fas fa-font",
         "landing.LandingMedia": "fas fa-images",
