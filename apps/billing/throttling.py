@@ -15,5 +15,9 @@ class PromoCodeThrottle(AnonRateThrottle):
     scope = "promo_code"
 
 
+class PaymentIntentThrottle(UserRateThrottle):
+    scope = "payment_intent"
+
+
 class OrderStatusThrottle(UserRateThrottle):
     scope = "order_status"
