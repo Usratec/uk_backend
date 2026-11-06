@@ -34,5 +34,12 @@ def send_order_confirmation(order) -> None:
             "duration_days": order.package.duration_days,
             "amount": f"{order.final_price:.2f}",
             "order_id": str(order.id),
+            "immediate_access_wording": (
+                order.immediate_access_wording
+                if order.terms_accepted is True
+                and order.immediate_access_accepted is True
+                and order.consent_recorded_at is not None
+                else ""
+            ),
         },
     )

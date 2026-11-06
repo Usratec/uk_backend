@@ -2,12 +2,40 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.serializers import EmailField
+from apps.billing.consent import resolve_consent
 from apps.billing.models import Order
 
 CURRENCY = "GBP"
 
 
-class CheckoutSerializer(serializers.Serializer):
+class RequiredAcceptanceField(serializers.BooleanField):
+    """Only an explicit JSON true is an acceptance, never strings or numeric coercions."""
+
+    def to_internal_value(self, data):
+        if data is not True:
+            raise serializers.ValidationError("You must explicitly accept this checkbox.")
+        return True
+
+
+class ConsentVersionField(serializers.CharField):
+    def to_internal_value(self, data):
+        if not isinstance(data, str):
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
+class PurchaseConsentSerializer(serializers.Serializer):
+    terms_accepted = RequiredAcceptanceField(required=True)
+    immediate_access_accepted = RequiredAcceptanceField(required=True)
+    consent_version = ConsentVersionField(max_length=32, trim_whitespace=False)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        attrs["consent_snapshot"] = resolve_consent(attrs["consent_version"])
+        return attrs
+
+
+class CheckoutSerializer(PurchaseConsentSerializer):
     package_id = serializers.IntegerField()
     email = EmailField()
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
