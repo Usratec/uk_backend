@@ -119,6 +119,16 @@ class Order(TimestampedModel):
 
     status = models.CharField(max_length=20, choices=OrderStatus.choices, default=OrderStatus.PENDING)
 
+    # Historical orders have no consent evidence; never infer acceptance for those purchases.
+    terms_accepted = models.BooleanField(null=True, blank=True)
+    immediate_access_accepted = models.BooleanField(null=True, blank=True)
+    consent_version = models.CharField(max_length=32, blank=True)
+    consent_recorded_at = models.DateTimeField(null=True, blank=True)
+    terms_wording = models.TextField(blank=True)
+    immediate_access_wording = models.TextField(blank=True)
+    terms_version = models.CharField(max_length=128, blank=True)
+    privacy_policy_version = models.CharField(max_length=128, blank=True)
+
     stripe_session_id = models.CharField(max_length=255, blank=True)
     stripe_payment_intent_id = models.CharField(max_length=255, blank=True)
     # Stripe's payment id. Unique, so one payment can never be credited to two orders.

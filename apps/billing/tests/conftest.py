@@ -74,3 +74,18 @@ def tomorrow():
 @pytest.fixture
 def yesterday():
     return timezone.now() - timedelta(days=1)
+
+
+@pytest.fixture(autouse=True)
+def consent_registry(settings):
+    settings.PURCHASE_CONSENT_VERSIONS = {
+        "2026-11-draft": {
+            "terms_wording": "I accept the Terms and Privacy Policy (test wording).",
+            "immediate_access_wording": (
+                "I request immediate access and accept losing my 14-day right to cancel (test wording)."
+            ),
+            "terms_version": "terms-test-v1",
+            "privacy_policy_version": "privacy-test-v1",
+        }
+    }
+    return settings.PURCHASE_CONSENT_VERSIONS

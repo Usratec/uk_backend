@@ -306,6 +306,9 @@ LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 STRIPE_SECRET_KEY = env.str("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
 
+# Versioned legal wording supplied by the business. An empty registry disables new purchases.
+PURCHASE_CONSENT_VERSIONS = env.json("PURCHASE_CONSENT_VERSIONS", default={})
+
 # --- Browser Web Push ----------------------------------------------------------------------------
 # Empty keys disable push until each deployment has its own stable VAPID pair.
 WEB_PUSH_VAPID_PUBLIC_KEY = env.str("WEB_PUSH_VAPID_PUBLIC_KEY", default="")
