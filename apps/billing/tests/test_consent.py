@@ -87,13 +87,28 @@ def test_numeric_version_is_not_coerced_to_a_supported_string(api, package, stri
     stripe.assert_not_called()
 
 
-@pytest.mark.parametrize("registry", [{}, None, [], {"v1": {}}, {"v1": {"terms_wording": 1}}])
+@pytest.mark.parametrize("registry", [{}, None, []])
 def test_unconfigured_registry_fails_closed(api, package, stripe, settings, registry):
     settings.PURCHASE_CONSENT_VERSIONS = registry
     response = api.post(URL, payload(package), format="json")
     assert response.status_code == 503
     assert not Order.objects.exists()
     stripe.assert_not_called()
+
+
+def test_invalid_draft_only_blocks_checkout_using_that_version(api, package, stripe, consent_registry):
+    consent_registry["new-draft"] = {**consent_registry["2026-11-draft"], "terms_wording": ""}
+    consent_registry["x" * 33] = {}
+
+    invalid = api.post(URL, {**payload(package), "consent_version": "new-draft"}, format="json")
+    assert invalid.status_code == 503
+    assert not Order.objects.exists()
+    stripe.assert_not_called()
+
+    valid = api.post(URL, payload(package), format="json")
+    assert valid.status_code == 201
+    assert Order.objects.get().consent_version == "2026-11-draft"
+    stripe.assert_called_once()
 
 
 def test_snapshot_is_created_before_stripe_and_cannot_be_supplied_by_client(api, package, stripe, consent_registry):

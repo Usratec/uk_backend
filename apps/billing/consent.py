@@ -29,22 +29,17 @@ class ConsentSnapshot:
 def resolve_consent(version: str) -> ConsentSnapshot:
     """Never substitute current wording for an unknown version supplied by the checkout."""
     registry = getattr(settings, "PURCHASE_CONSENT_VERSIONS", {})
-    valid = isinstance(registry, dict) and bool(registry)
-    if valid:
-        for key, entry in registry.items():
-            if not isinstance(key, str) or not key.strip() or len(key) > 32 or not isinstance(entry, dict):
-                valid = False
-                break
-            if any(not isinstance(entry.get(field), str) or not entry[field].strip() for field in WORDING_FIELDS):
-                valid = False
-                break
-            if any(len(entry[field]) > 128 for field in ("terms_version", "privacy_policy_version")):
-                valid = False
-                break
-    if not valid:
+    if not isinstance(registry, dict) or not registry:
         logger.error("Purchase consent registry is missing or malformed")
         raise ConsentConfigurationError
     if version not in registry:
         raise ValidationError({"consent_version": ["Unknown consent version. Please reload checkout."]})
     entry = registry[version]
+    if (
+        not isinstance(entry, dict)
+        or any(not isinstance(entry.get(field), str) or not entry[field].strip() for field in WORDING_FIELDS)
+        or any(len(entry[field]) > 128 for field in ("terms_version", "privacy_policy_version"))
+    ):
+        logger.error("Purchase consent configuration is malformed for version %r", version)
+        raise ConsentConfigurationError
     return ConsentSnapshot(consent_version=version, **{field: entry[field] for field in WORDING_FIELDS})
