@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+from decimal import Decimal
 
 import pytest
 from django.contrib.auth.models import Permission
@@ -135,7 +136,7 @@ def test_no_payload_reaches_the_browser_as_markup(db, superuser, hostile):
         reverse(DASHBOARD) + "?student=" + XSS,
         reverse("admin:analytics_student", args=[hostile.pk]),
     ):
-        body = client.get(url).content.decode()
+        body = client.get(url, follow=True).content.decode()
         assert "<script>alert(1)</script>" not in body, url
         assert "<img src=x" not in body, url
         assert "<svg/onload" not in body, url
@@ -268,7 +269,8 @@ def test_every_export_is_a_download_named_after_its_range(db, superuser):
         disposition = response["Content-Disposition"]
         assert disposition.startswith("attachment; "), report
         assert re.fullmatch(
-            rf'attachment; filename="{report}_\d{{4}}-\d\d-\d\d_\d{{4}}-\d\d-\d\d\.csv"', disposition
+            rf'attachment; filename="1theory-{report}-\d{{4}}-\d\d-\d\d-to-\d{{4}}-\d\d-\d\d\.csv"',
+            disposition,
         ), disposition
         assert "\n" not in disposition and "\r" not in disposition, report
 
@@ -310,11 +312,17 @@ def test_a_name_with_a_comma_a_quote_and_a_newline_survives_the_round_trip(db, s
     client = Client()
     client.force_login(superuser)
     rows = _csv(client.get(reverse("admin:analytics_export", args=["learning"])))
-    assert len(rows) == 2
-    assert rows[1][0] == chapter.title
+    assert len(rows) == 3
+    assert rows[2][0] == f"1. {chapter.title}"
 
 
 def test_a_formula_cell_is_neutralised_wherever_it_comes_from(db, superuser):
+    Package.objects.create(
+        name='=HYPERLINK("http://evil","click")',
+        slug="formula",
+        duration_days=30,
+        price=Decimal("39.95"),
+    )
     Chapter.objects.create(
         slug="formula",
         title='=HYPERLINK("http://evil","click")',
@@ -323,8 +331,12 @@ def test_a_formula_cell_is_neutralised_wherever_it_comes_from(db, superuser):
     )
     client = Client()
     client.force_login(superuser)
+
+    rows = _csv(client.get(reverse("admin:analytics_export", args=["packages"])))
+    assert rows[2][0].startswith("'=")
+
     rows = _csv(client.get(reverse("admin:analytics_export", args=["learning"])))
-    assert rows[1][0].startswith("'=")
+    assert not rows[2][0].lstrip().startswith("=")
 
 
 def test_every_export_starts_with_a_byte_order_mark(db, superuser):

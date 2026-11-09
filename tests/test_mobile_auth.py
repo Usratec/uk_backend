@@ -11,6 +11,7 @@ from apps.accounts.services import issue_tokens
 @pytest.mark.parametrize("origin", ["capacitor://localhost", "https://localhost", "http://localhost"])
 def test_configured_mobile_origin_can_preflight_bearer_requests(client, settings, origin):
     settings.CORS_ALLOWED_ORIGINS = [origin]
+    settings.CORS_ALLOW_CREDENTIALS = False
     response = client.options(
         reverse("cabinet-profile"),
         HTTP_ORIGIN=origin,

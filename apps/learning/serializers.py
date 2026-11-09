@@ -15,12 +15,30 @@ already implements, not Python conventions.
 
 import math
 
+from django.utils import timezone
 from drf_spectacular.utils import PolymorphicProxySerializer, extend_schema_field
 from rest_framework import serializers
 
-from apps.learning.models import ExamKind, HazardVoidReason, QuestionType, SignCategory, SubtitleLanguage
+from apps.learning.models import (
+    ExamKind,
+    HazardVoidReason,
+    QuestionType,
+    SignCategory,
+    SubtitleLanguage,
+    VideoProcessingStatus,
+)
+from apps.learning.offline import ERROR_CODES, MAX_BACKDATE, MAX_OPTIONS_PER_ANSWER, Error
 
 MAX_CLICKS_PER_SUBMISSION = 500
+
+
+class AwareDateTimeField(serializers.DateTimeField):
+    default_error_messages = {"naive": Error.ANSWERED_AT_NOT_AWARE}
+
+    def enforce_timezone(self, value):
+        if timezone.is_naive(value):
+            self.fail("naive")
+        return value
 
 
 class ClickTimeField(serializers.FloatField):
@@ -216,6 +234,25 @@ class VideoProgressRequestSerializer(serializers.Serializer):
         return super().to_internal_value(data)
 
 
+class VideoPlaybackSerializer(serializers.Serializer):
+    mediaId = serializers.UUIDField(help_text="Identifies the video, in place of its storage key.")  # noqa: N815
+    status = serializers.ChoiceField(
+        choices=VideoProcessingStatus.choices,
+        help_text="`ready` means it can be played. The others describe uploading and processing.",
+    )
+    playbackType = serializers.CharField(  # noqa: N815
+        allow_blank=True,
+        help_text="`hls` for adaptive streaming, `progressive` for a single file, blank when nothing is playable.",
+    )
+    playbackUrl = serializers.CharField(help_text="POST-free GET that issues playback authorization.")  # noqa: N815
+    durationSeconds = serializers.FloatField(  # noqa: N815
+        allow_null=True, help_text="How long the video is, once processing has measured it."
+    )
+    qualities = serializers.ListField(
+        child=serializers.CharField(), help_text="The renditions in the manifest, such as 360p and 720p."
+    )
+
+
 class MediaBlockSerializer(serializers.Serializer):
     """A video to watch or a document to read.
 
@@ -225,7 +262,13 @@ class MediaBlockSerializer(serializers.Serializer):
 
     type = serializers.ChoiceField(choices=[("video", "video"), ("document", "document")])
     title = serializers.CharField()
-    url = serializers.URLField(help_text="A short-lived signed URL. Do not cache it.")
+    url = serializers.URLField(
+        allow_blank=True,
+        help_text=(
+            "A short-lived signed URL for the original file. Do not cache it. Blank while a video "
+            "is still being uploaded. Kept for the players already using it; prefer `playback`."
+        ),
+    )
     slug = serializers.SlugField(
         required=False,
         help_text="Only videos carry it: the slug to post to /api/learn/videos/<slug>/progress/.",
@@ -233,6 +276,9 @@ class MediaBlockSerializer(serializers.Serializer):
     subtitles = SubtitleListField(required=False)
     progress = VideoProgressSerializer(
         required=False, help_text="The signed-in learner's own saved position. Only videos carry it."
+    )
+    playback = VideoPlaybackSerializer(
+        required=False, allow_null=True, help_text="Only videos carry it: how to play this one."
     )
 
 
@@ -312,7 +358,14 @@ class HazardClipSerializer(serializers.Serializer):
     slug = serializers.CharField()
     title = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
-    url = serializers.URLField(help_text="A short-lived signed URL for the video. Do not cache it.")
+    url = serializers.URLField(
+        allow_blank=True,
+        help_text=(
+            "A short-lived signed URL for the original video. Do not cache it. Kept for the "
+            "players already using it; prefer `playback`."
+        ),
+    )
+    playback = VideoPlaybackSerializer(allow_null=True, help_text="How to play this clip.")
     subtitles = SubtitleListField()
     thumbnailUrl = serializers.URLField(  # noqa: N815
         allow_null=True,
@@ -526,6 +579,107 @@ class AnswerResponseSerializer(serializers.Serializer):
     )
     explanation = serializers.CharField(allow_blank=True)
     lesson = LinkSerializer(allow_null=True, help_text="Where to read more about this, when there is somewhere.")
+
+
+class OfflineQuestionSerializer(StudentQuestionSerializer):
+    correctIds = serializers.ListField(  # noqa: N815
+        child=serializers.CharField(),
+        help_text="The option ids that are right, so the PWA can mark the answer with no connection.",
+    )
+    explanation = serializers.CharField(allow_blank=True, help_text="Shown after answering.")
+    lesson = LinkSerializer(allow_null=True, help_text="Where to read more about this, when there is somewhere.")
+
+
+class OfflinePackResponseSerializer(serializers.Serializer):
+    version = serializers.CharField(
+        help_text=(
+            "Changes whenever anything in the pack changes, including questions, options, "
+            "answers, explanations, lessons, signs, or images. Store this value and compare "
+            "it with the next response to determine whether the pack needs downloading again."
+        )
+    )
+    updatedAt = serializers.DateTimeField(  # noqa: N815
+        allow_null=True,
+        help_text="The newest change behind `version`, for a human. Null when the pack is empty.",
+    )
+    total = serializers.IntegerField(help_text="How many questions the whole pack holds, not just this page.")
+    questions = OfflineQuestionSerializer(many=True)
+    signs = SignMapField()
+    nextAfter = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Pass as `after` to fetch the next page. Null on the last page or when `limit` "
+            "is not provided, since the entire pack is returned at once."
+        ),
+    )
+
+
+class OfflineAnswerRequestSerializer(serializers.Serializer):
+    clientId = serializers.CharField(  # noqa: N815
+        max_length=64,
+        help_text=(
+            "A unique ID generated by the PWA for each learner's answer. Reusing it returns "
+            "`already_synced` without making changes. Using it for a different answer is rejected."
+        ),
+    )
+    questionId = serializers.IntegerField(help_text="The question's `id` from the offline pack.")  # noqa: N815
+    selected = serializers.ListField(
+        child=serializers.CharField(max_length=4),
+        allow_empty=True,
+        max_length=MAX_OPTIONS_PER_ANSWER,
+        help_text="The option ids chosen, e.g. ['a', 'c']. Order does not matter. Ids the question does not have "
+        "are refused.",
+    )
+    answeredAt = AwareDateTimeField(  # noqa: N815
+        help_text=(
+            "The time the learner answered, including a timezone offset. Naive timestamps are rejected. "
+            "Must be no more than two minutes ahead of the server's UTC clock or "
+            f"{MAX_BACKDATE.days} days in the past."
+        ),
+    )
+
+
+class OfflineAnswerErrorSerializer(serializers.Serializer):
+    code = serializers.ChoiceField(
+        choices=[(code, code) for code in sorted(ERROR_CODES)],
+        help_text=(
+            "`malformed` — the item does not fit the schema. "
+            "`answered_at_not_timezone_aware` — no offset on the timestamp. "
+            "`answered_at_in_future` — the timestamp is ahead of the server. "
+            "`answered_at_too_old` — the study date is further back than a sync is trusted for. "
+            "`no_access_on_that_date` — no plan covered this question on the study date. "
+            "`question_not_found` — not a question this learner can practise now. "
+            "`invalid_selection` — option ids that are not this question's, or repeated. "
+            "`client_id_conflict` — that `clientId` already recorded a different answer."
+        ),
+    )
+    message = serializers.CharField()
+    detail = serializers.JSONField(
+        required=False, help_text="What was wrong, where saying so helps: the field errors, or the ids that do exist."
+    )
+
+
+class OfflineAnswerResultSerializer(serializers.Serializer):
+    clientId = serializers.CharField()  # noqa: N815
+    status = serializers.ChoiceField(
+        choices=[
+            ("synced", "Recorded now"),
+            ("already_synced", "Recorded by an earlier request; nothing changed"),
+            ("rejected", "Refused; see `error`"),
+        ]
+    )
+    correct = serializers.BooleanField(required=False, help_text="Marked on the server. Absent on a rejected item.")
+    correctIds = serializers.ListField(  # noqa: N815
+        child=serializers.CharField(), required=False, help_text="The ids that were right. Absent on a rejected item."
+    )
+    answeredAt = serializers.DateTimeField(  # noqa: N815
+        required=False, help_text="The study date the answer was recorded against. Absent on a rejected item."
+    )
+    error = OfflineAnswerErrorSerializer(required=False, help_text="Present only when `status` is `rejected`.")
+
+
+class OfflineAnswerBatchResponseSerializer(serializers.Serializer):
+    results = OfflineAnswerResultSerializer(many=True)
 
 
 # --- Exams ---------------------------------------------------------------------------------------

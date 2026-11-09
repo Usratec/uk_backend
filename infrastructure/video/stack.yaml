@@ -1,0 +1,921 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: UK-246 private video storage, signed HLS CDN and isolated ECS workers.
+  Existing web and media are not replaced.
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+    - dev
+    - stage
+  Cluster:
+    Type: String
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+  SecurityGroups:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  Image:
+    Type: String
+    Description: Immutable ECR image digest, shared with web.
+    AllowedPattern: '[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[^\s]+@sha256:[a-f0-9]{64}'
+  ExecutionRoleArn:
+    Type: String
+  ExecutionRoleName:
+    Type: String
+  WebTaskRoleName:
+    Type: String
+  RuntimeSecretArn:
+    Type: String
+    Description: Existing JSON secret with the required Django production runtime settings.
+      See the deployment README for required keys. No secret values in parameters.
+  SigningSecretArn:
+    Type: String
+    Description: Existing secret containing only the RSA PEM private key.
+  SigningPublicKey:
+    Type: String
+    Description: RSA 2048 public PEM matching SigningSecretArn.
+  MediaDomain:
+    Type: String
+    AllowedPattern: '[a-z0-9.-]+'
+  CookieDomain:
+    Type: String
+    AllowedPattern: \.?[a-z0-9.-]+
+  CertificateArn:
+    Type: String
+    AllowedPattern: arn:aws:acm:us-east-1:[0-9]{12}:certificate/.+
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  AllowedOrigins:
+    Type: CommaDelimitedList
+    Description: Exact HTTPS staff and learner origins. No wildcard.
+    AllowedPattern: https://[^*\s,]+
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+    - DISABLED
+    - ENABLED
+  StartServices:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Description: Enable only after migrations, Redis durability/reachability and secrets
+      are verified.
+  CreateGeneralWorker:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Description: Enable only if an ordinary worker does not already exist.
+  GeneralTaskRoleArn:
+    Type: String
+    Description: Existing ordinary worker task role.
+  LegacyMediaBucketName:
+    Type: String
+    Default: ''
+    Description: Existing AWS media bucket for optional re-encoding of legacy learning/video/*
+      files.
+  WebServiceName:
+    Type: String
+    Description: Existing backend ECS service bound to this environment.
+Conditions:
+  RunServices:
+    Fn::Equals:
+    - Ref: StartServices
+    - 'true'
+  MakeGeneralWorker:
+    Fn::Equals:
+    - Ref: CreateGeneralWorker
+    - 'true'
+  HasLegacyMediaBucket:
+    Fn::Not:
+    - Fn::Equals:
+      - Ref: LegacyMediaBucketName
+      - ''
+Resources:
+  VideoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+        - ObjectOwnership: BucketOwnerEnforced
+      CorsConfiguration:
+        CorsRules:
+        - AllowedOrigins:
+            Ref: AllowedOrigins
+          AllowedMethods:
+          - PUT
+          - GET
+          - HEAD
+          AllowedHeaders:
+          - '*'
+          ExposedHeaders:
+          - ETag
+          MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+        - Id: AbortIncompleteUploads
+          Status: Enabled
+          Prefix: learning/video-source/
+          AbortIncompleteMultipartUpload:
+            DaysAfterInitiation: 7
+      Tags:
+      - Key: Environment
+        Value:
+          Ref: Environment
+      - Key: Task
+        Value: UK-246
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  OriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  PublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Properties:
+      PublicKeyConfig:
+        CallerReference:
+          Fn::Sub: ${AWS::StackName}-video
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        EncodedKey:
+          Ref: SigningPublicKey
+  KeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        Items:
+        - Ref: PublicKey
+  Headers:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        CorsConfig:
+          AccessControlAllowCredentials: true
+          AccessControlAllowHeaders:
+            Items:
+            - Range
+            - Content-Type
+          AccessControlAllowMethods:
+            Items:
+            - GET
+            - HEAD
+          AccessControlAllowOrigins:
+            Items:
+              Ref: AllowedOrigins
+          AccessControlExposeHeaders:
+            Items:
+            - ETag
+            - Accept-Ranges
+            - Content-Range
+            - Content-Length
+          OriginOverride: true
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment:
+          Fn::Sub: UK-246 ${Environment} private HLS
+        Aliases:
+        - Ref: MediaDomain
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+        - Id: video
+          DomainName:
+            Fn::GetAtt:
+            - VideoBucket
+            - RegionalDomainName
+          OriginAccessControlId:
+            Ref: OriginAccess
+          S3OriginConfig:
+            OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: video
+          ViewerProtocolPolicy: https-only
+          AllowedMethods:
+          - GET
+          - HEAD
+          CachedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          TrustedKeyGroups:
+          - Ref: KeyGroup
+          ResponseHeadersPolicyId:
+            Ref: Headers
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          MinTTL: 0
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+        ViewerCertificate:
+          AcmCertificateArn:
+            Ref: CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: VideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: cloudfront.amazonaws.com
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub: ${VideoBucket.Arn}/learning/video-hls/*
+          Condition:
+            StringEquals:
+              AWS:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+        - Effect: Deny
+          Principal: '*'
+          Action: s3:*
+          Resource:
+          - Fn::GetAtt:
+            - VideoBucket
+            - Arn
+          - Fn::Sub: ${VideoBucket.Arn}/*
+          Condition:
+            Bool:
+              aws:SecureTransport: 'false'
+  MediaDns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Ref: HostedZoneId
+      Name:
+        Ref: MediaDomain
+      Type: A
+      AliasTarget:
+        DNSName:
+          Fn::GetAtt:
+          - Distribution
+          - DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+  MediaDnsIpv6:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Ref: HostedZoneId
+      Name:
+        Ref: MediaDomain
+      Type: AAAA
+      AliasTarget:
+        DNSName:
+          Fn::GetAtt:
+          - Distribution
+          - DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+  VideoTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: video-storage
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:ListBucket
+            Resource:
+              Fn::GetAtt:
+              - VideoBucket
+              - Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                - learning/video-source/*
+                - learning/video-hls/*
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:AbortMultipartUpload
+            - s3:ListMultipartUploadParts
+            Resource:
+            - Fn::Sub: ${VideoBucket.Arn}/learning/video-source/*
+            - Fn::Sub: ${VideoBucket.Arn}/learning/video-hls/*
+  WebVideoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-video
+      Roles:
+      - Ref: WebTaskRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+            Fn::GetAtt:
+            - VideoBucket
+            - Arn
+          Condition:
+            StringLike:
+              s3:prefix:
+              - learning/video-source/*
+              - learning/video-hls/*
+        - Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:PutObject
+          - s3:DeleteObject
+          - s3:AbortMultipartUpload
+          - s3:ListMultipartUploadParts
+          Resource:
+          - Fn::Sub: ${VideoBucket.Arn}/learning/video-source/*
+          - Fn::Sub: ${VideoBucket.Arn}/learning/video-hls/*
+  ExecutionSecretsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-secrets
+      Roles:
+      - Ref: ExecutionRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: secretsmanager:GetSecretValue
+          Resource:
+          - Ref: RuntimeSecretArn
+          - Ref: SigningSecretArn
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  VideoWorkerTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family:
+        Fn::Sub: ${AWS::StackName}-videoworker
+      RequiresCompatibilities:
+      - FARGATE
+      NetworkMode: awsvpc
+      Cpu: '2048'
+      Memory: '4096'
+      ExecutionRoleArn:
+        Ref: ExecutionRoleArn
+      TaskRoleArn:
+        Fn::GetAtt:
+        - VideoTaskRole
+        - Arn
+      EphemeralStorage:
+        SizeInGiB: 50
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+      - Name: VideoWorker
+        Image:
+          Ref: Image
+        Essential: true
+        Command:
+        - bash
+        - scripts/video-worker-start.sh
+        StopTimeout: 120
+        Environment:
+        - Name: DJANGO_SETTINGS_MODULE
+          Value: config.settings.production
+        - Name: ENVIRONMENT
+          Value:
+            Ref: Environment
+        - Name: VIDEO_S3_BUCKET_NAME
+          Value:
+            Ref: VideoBucket
+        - Name: VIDEO_S3_REGION
+          Value:
+            Ref: AWS::Region
+        - Name: VIDEO_TRANSCODING_ENABLED
+          Value: 'True'
+        - Name: VIDEO_ALLOW_UNSIGNED_PLAYBACK
+          Value: 'False'
+        - Name: VIDEO_TASK_QUEUE
+          Value: video
+        - Name: CELERY_TASK_DEFAULT_QUEUE
+          Value: celery
+        - Name: CLOUDFRONT_DOMAIN
+          Value:
+            Ref: MediaDomain
+        - Name: CLOUDFRONT_KEY_PAIR_ID
+          Value:
+            Ref: PublicKey
+        - Name: CLOUDFRONT_COOKIE_DOMAIN
+          Value:
+            Ref: CookieDomain
+        - Name: VIDEO_FFMPEG_THREADS
+          Value: '2'
+        - Name: CELERY_WORKER_PREFETCH_MULTIPLIER
+          Value: '1'
+        - Name: ALLOWED_HOSTS
+          Value: localhost
+        - Name: S3_BUCKET_NAME
+          Value:
+            Ref: LegacyMediaBucketName
+        - Name: S3_REGION
+          Value:
+            Ref: AWS::Region
+        Secrets:
+        - Name: SECRET_KEY
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:SECRET_KEY::'
+        - Name: DATABASE_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:DATABASE_URL::'
+        - Name: REDIS_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:REDIS_URL::'
+        - Name: CELERY_BROKER_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:CELERY_BROKER_URL::'
+        - Name: FRONTEND_BASE_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:FRONTEND_BASE_URL::'
+        - Name: STRIPE_SECRET_KEY
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:STRIPE_SECRET_KEY::'
+        - Name: STRIPE_WEBHOOK_SECRET
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:STRIPE_WEBHOOK_SECRET::'
+        - Name: POSTMARK_SERVER_TOKEN
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:POSTMARK_SERVER_TOKEN::'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group:
+              Ref: Logs
+            awslogs-region:
+              Ref: AWS::Region
+            awslogs-stream-prefix: VideoWorker
+  VideoWorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        Ref: Cluster
+      ServiceName:
+        Fn::Sub: ${AWS::StackName}-videoworker
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      DesiredCount:
+        Fn::If:
+        - RunServices
+        - 1
+        - 0
+      TaskDefinition:
+        Ref: VideoWorkerTask
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            Ref: Subnets
+          SecurityGroups:
+            Ref: SecurityGroups
+          AssignPublicIp:
+            Ref: AssignPublicIp
+    DependsOn:
+    - ExecutionSecretsPolicy
+  VideoWorkerCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+      - Name: ClusterName
+        Value:
+          Ref: Cluster
+      - Name: ServiceName
+        Value:
+          Fn::GetAtt:
+          - VideoWorkerService
+          - Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 95
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+  BeatTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family:
+        Fn::Sub: ${AWS::StackName}-beat
+      RequiresCompatibilities:
+      - FARGATE
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn:
+        Ref: ExecutionRoleArn
+      TaskRoleArn:
+        Fn::GetAtt:
+        - VideoTaskRole
+        - Arn
+      EphemeralStorage:
+        SizeInGiB: 50
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+      - Name: Beat
+        Image:
+          Ref: Image
+        Essential: true
+        Command:
+        - celery
+        - --app
+        - config
+        - beat
+        - --loglevel
+        - info
+        - --schedule=/tmp/celerybeat-schedule
+        StopTimeout: 120
+        Environment:
+        - Name: DJANGO_SETTINGS_MODULE
+          Value: config.settings.production
+        - Name: ENVIRONMENT
+          Value:
+            Ref: Environment
+        - Name: VIDEO_S3_BUCKET_NAME
+          Value:
+            Ref: VideoBucket
+        - Name: VIDEO_S3_REGION
+          Value:
+            Ref: AWS::Region
+        - Name: VIDEO_TRANSCODING_ENABLED
+          Value: 'True'
+        - Name: VIDEO_ALLOW_UNSIGNED_PLAYBACK
+          Value: 'False'
+        - Name: VIDEO_TASK_QUEUE
+          Value: video
+        - Name: CELERY_TASK_DEFAULT_QUEUE
+          Value: celery
+        - Name: CLOUDFRONT_DOMAIN
+          Value:
+            Ref: MediaDomain
+        - Name: CLOUDFRONT_KEY_PAIR_ID
+          Value:
+            Ref: PublicKey
+        - Name: CLOUDFRONT_COOKIE_DOMAIN
+          Value:
+            Ref: CookieDomain
+        - Name: VIDEO_FFMPEG_THREADS
+          Value: '2'
+        - Name: CELERY_WORKER_PREFETCH_MULTIPLIER
+          Value: '1'
+        - Name: ALLOWED_HOSTS
+          Value: localhost
+        - Name: S3_BUCKET_NAME
+          Value:
+            Ref: LegacyMediaBucketName
+        - Name: S3_REGION
+          Value:
+            Ref: AWS::Region
+        Secrets:
+        - Name: SECRET_KEY
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:SECRET_KEY::'
+        - Name: DATABASE_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:DATABASE_URL::'
+        - Name: REDIS_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:REDIS_URL::'
+        - Name: CELERY_BROKER_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:CELERY_BROKER_URL::'
+        - Name: FRONTEND_BASE_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:FRONTEND_BASE_URL::'
+        - Name: STRIPE_SECRET_KEY
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:STRIPE_SECRET_KEY::'
+        - Name: STRIPE_WEBHOOK_SECRET
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:STRIPE_WEBHOOK_SECRET::'
+        - Name: POSTMARK_SERVER_TOKEN
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:POSTMARK_SERVER_TOKEN::'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group:
+              Ref: Logs
+            awslogs-region:
+              Ref: AWS::Region
+            awslogs-stream-prefix: Beat
+  BeatService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        Ref: Cluster
+      ServiceName:
+        Fn::Sub: ${AWS::StackName}-beat
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      DesiredCount:
+        Fn::If:
+        - RunServices
+        - 1
+        - 0
+      TaskDefinition:
+        Ref: BeatTask
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            Ref: Subnets
+          SecurityGroups:
+            Ref: SecurityGroups
+          AssignPublicIp:
+            Ref: AssignPublicIp
+    DependsOn:
+    - ExecutionSecretsPolicy
+  BeatCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+      - Name: ClusterName
+        Value:
+          Ref: Cluster
+      - Name: ServiceName
+        Value:
+          Fn::GetAtt:
+          - BeatService
+          - Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 95
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+  GeneralWorkerTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family:
+        Fn::Sub: ${AWS::StackName}-generalworker
+      RequiresCompatibilities:
+      - FARGATE
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn:
+        Ref: ExecutionRoleArn
+      TaskRoleArn:
+        Ref: GeneralTaskRoleArn
+      EphemeralStorage:
+        SizeInGiB: 50
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+      - Name: GeneralWorker
+        Image:
+          Ref: Image
+        Essential: true
+        Command:
+        - celery
+        - --app
+        - config
+        - worker
+        - --queues
+        - celery
+        - --concurrency
+        - '2'
+        - --loglevel
+        - info
+        StopTimeout: 120
+        Environment:
+        - Name: DJANGO_SETTINGS_MODULE
+          Value: config.settings.production
+        - Name: ENVIRONMENT
+          Value:
+            Ref: Environment
+        - Name: VIDEO_S3_BUCKET_NAME
+          Value:
+            Ref: VideoBucket
+        - Name: VIDEO_S3_REGION
+          Value:
+            Ref: AWS::Region
+        - Name: VIDEO_TRANSCODING_ENABLED
+          Value: 'True'
+        - Name: VIDEO_ALLOW_UNSIGNED_PLAYBACK
+          Value: 'False'
+        - Name: VIDEO_TASK_QUEUE
+          Value: video
+        - Name: CELERY_TASK_DEFAULT_QUEUE
+          Value: celery
+        - Name: CLOUDFRONT_DOMAIN
+          Value:
+            Ref: MediaDomain
+        - Name: CLOUDFRONT_KEY_PAIR_ID
+          Value:
+            Ref: PublicKey
+        - Name: CLOUDFRONT_COOKIE_DOMAIN
+          Value:
+            Ref: CookieDomain
+        - Name: VIDEO_FFMPEG_THREADS
+          Value: '2'
+        - Name: CELERY_WORKER_PREFETCH_MULTIPLIER
+          Value: '1'
+        - Name: ALLOWED_HOSTS
+          Value: localhost
+        - Name: S3_BUCKET_NAME
+          Value:
+            Ref: LegacyMediaBucketName
+        - Name: S3_REGION
+          Value:
+            Ref: AWS::Region
+        Secrets:
+        - Name: SECRET_KEY
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:SECRET_KEY::'
+        - Name: DATABASE_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:DATABASE_URL::'
+        - Name: REDIS_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:REDIS_URL::'
+        - Name: CELERY_BROKER_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:CELERY_BROKER_URL::'
+        - Name: FRONTEND_BASE_URL
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:FRONTEND_BASE_URL::'
+        - Name: STRIPE_SECRET_KEY
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:STRIPE_SECRET_KEY::'
+        - Name: STRIPE_WEBHOOK_SECRET
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:STRIPE_WEBHOOK_SECRET::'
+        - Name: POSTMARK_SERVER_TOKEN
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:POSTMARK_SERVER_TOKEN::'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group:
+              Ref: Logs
+            awslogs-region:
+              Ref: AWS::Region
+            awslogs-stream-prefix: GeneralWorker
+    Condition: MakeGeneralWorker
+  GeneralWorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        Ref: Cluster
+      ServiceName:
+        Fn::Sub: ${AWS::StackName}-generalworker
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      DesiredCount:
+        Fn::If:
+        - RunServices
+        - 1
+        - 0
+      TaskDefinition:
+        Ref: GeneralWorkerTask
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            Ref: Subnets
+          SecurityGroups:
+            Ref: SecurityGroups
+          AssignPublicIp:
+            Ref: AssignPublicIp
+    DependsOn:
+    - ExecutionSecretsPolicy
+    Condition: MakeGeneralWorker
+  GeneralWorkerCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+      - Name: ClusterName
+        Value:
+          Ref: Cluster
+      - Name: ServiceName
+        Value:
+          Fn::GetAtt:
+          - GeneralWorkerService
+          - Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 95
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+    Condition: MakeGeneralWorker
+  LegacyReadPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasLegacyMediaBucket
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-legacy-read
+      Roles:
+      - Ref: VideoTaskRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:s3:::${LegacyMediaBucketName}/learning/video/*
+Outputs:
+  VideoBucketName:
+    Value:
+      Ref: VideoBucket
+  CloudFrontDomain:
+    Value:
+      Ref: MediaDomain
+  CloudFrontKeyPairId:
+    Value:
+      Ref: PublicKey
+  SigningSecretArn:
+    Value:
+      Ref: SigningSecretArn
+  VideoWorkerService:
+    Value:
+      Fn::GetAtt:
+      - VideoWorkerService
+      - Name
+  BeatService:
+    Value:
+      Fn::GetAtt:
+      - BeatService
+      - Name
+  VideoTaskRoleArn:
+    Value:
+      Fn::GetAtt:
+      - VideoTaskRole
+      - Arn
+  WebServiceName:
+    Value:
+      Ref: WebServiceName

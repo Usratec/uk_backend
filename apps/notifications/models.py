@@ -102,3 +102,14 @@ class PushDelivery(TimestampedModel):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["notification", "device"], name="push_once_per_device")]
         indexes = [models.Index(fields=["sent_at", "next_attempt_at"], name="push_delivery_due")]
+
+
+class PushSubscription(TimestampedModel):
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="push_subscriptions")
+    endpoint = models.URLField(max_length=2048, unique=True)
+    p256dh = models.CharField(max_length=100)
+    auth = models.CharField(max_length=32)
+
+    def __str__(self) -> str:
+        # The endpoint and auth key are bearer secrets, so keep them out of logs/admin labels.
+        return f"Browser subscription {self.pk} for user {self.user_id}"

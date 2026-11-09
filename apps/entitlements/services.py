@@ -61,6 +61,32 @@ def package_of(user: User) -> int | None:
     return subscription.package_id if subscription else None
 
 
+def access_periods(user: User) -> list[tuple]:
+    return list(granting().filter(user=user).values_list("starts_at", "package_expires_at", "package_id"))
+
+
+def package_covering(periods: list[tuple], at) -> int | None:
+    covering = [period for period in periods if period[0] <= at < period[1]]
+    return max(covering, key=lambda period: period[1])[2] if covering else None
+
+
+def package_at(user: User, at) -> int | None:
+    return package_covering(access_periods(user), at)
+
+
+def could_practise(user: User, question, at, periods: list[tuple] | None = None) -> bool:
+    if not user.is_authenticated or not user.is_active:
+        return False
+
+    periods = access_periods(user) if periods is None else periods
+    covering = [period for period in periods if period[0] <= at < period[1]]
+    if not covering:
+        return False
+
+    required = {package.pk for package in question.chapter.only_for_packages.all()}
+    return not required or package_covering(periods, at) in required
+
+
 #: Tells "no package was passed" apart from "the student is on no package", which is a real value.
 _UNSET = object()
 

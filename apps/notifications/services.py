@@ -82,9 +82,11 @@ def notify(
 
 
 def _queue_push(notification: Notification) -> None:
-    from apps.notifications.push import queue_push
+    from apps.notifications.mobile_push import queue_push
+    from apps.notifications.push import queue_notification
 
     queue_push(notification)
+    transaction.on_commit(lambda: queue_notification(notification.pk))
 
 
 def notify_quietly(create: Callable[[], object], description: str) -> None:

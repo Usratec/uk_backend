@@ -48,6 +48,7 @@ def boxes(filters) -> list[Box]:
     mocks = mock_attempts(filters)
     mock_summary = mocks.aggregate(sittings=Count("id"), passed=Count("id", filter=Q(passed=True)))
     quiet, with_access = quiet_students(filters)
+    finished, started = lessons_started_and_finished()
 
     return [
         Box(
@@ -58,15 +59,13 @@ def boxes(filters) -> list[Box]:
         ),
         Box(
             "Lesson completion rate",
-            "Tracking required",
-            "Would need an event when a lesson is opened; only finishing one is recorded today.",
-            tracking_required=True,
+            _percent(common.percentage(finished, started)),
+            f"All time: {finished:,} completed of {started:,} started",
         ),
         Box(
             "Video progress on unfinished lessons",
-            "Tracking required",
-            "Would need a saved playback position and the video's length, neither of which is stored.",
-            tracking_required=True,
+            _whole_percent(video_share_on_unfinished()),
+            "Average saved position vs lesson length",
         ),
         Box(
             "E-book sections read",
@@ -100,6 +99,27 @@ def boxes(filters) -> list[Box]:
             f"Of {with_access:,} students with current access",
         ),
     ]
+
+
+def lessons_started_and_finished() -> tuple[int, int]:
+    finished = common.completed_lessons().values("student_id", "subchapter_id").order_by().distinct().count()
+    return finished, finished + common.unfinished_lesson_pairs().count()
+
+
+def video_share_on_unfinished() -> float | None:
+    rows = (
+        common.unfinished_video_progress()
+        .filter(position_seconds__gte=0, duration_seconds__gt=0)
+        .values("student_id", "content__subchapter_id")
+        .order_by()
+        .annotate(watched=Sum("position_seconds"), length=Sum("duration_seconds"))
+    )
+    shares = [
+        min(float(row["watched"]) / float(row["length"]), 1.0) for row in rows if row["length"] and row["length"] > 0
+    ]
+    if not shares:
+        return None
+    return round(sum(shares) / len(shares) * 100, 1)
 
 
 def charts(filters) -> dict:
@@ -270,3 +290,7 @@ def _progress_band(share: float) -> str:
 
 def _percent(value: float | None) -> str:
     return "—" if value is None else f"{value:.1f}%"
+
+
+def _whole_percent(value: float | None) -> str:
+    return "—" if value is None else f"{value:.0f}%"

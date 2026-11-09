@@ -45,6 +45,7 @@ the user; it does not attempt to erase the device's Firebase installation.
 The API already authenticates with `Authorization: Bearer <access>` and returns JWTs as JSON;
 it does not depend on session cookies. Native HTTP clients do not enforce browser CORS. A
 WebView or Capacitor app must confirm its exact Origin with FE; then configure that exact
-origin in `CORS_ALLOWED_ORIGINS` for the environment and test preflight requests. Do not enable
-wildcard origins, credentials or disable secure cookie/CSRF defaults to make mobile login work.
+origin in `CORS_ALLOWED_ORIGINS` for the environment and test preflight requests. Browser video
+playback uses credentialed CORS for allowed origins. Mobile login uses bearer tokens without
+cookies. Keep wildcard origins disabled and retain the secure cookie and CSRF settings.
 Physical iPhone/Android verification still requires the app, app origins and deployed server.

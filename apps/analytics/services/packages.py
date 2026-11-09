@@ -19,6 +19,7 @@ def rows(filters) -> list[dict]:
     access = dict(
         common.active_subscriptions(filters).values_list("package_id").annotate(total=Count("user_id", distinct=True))
     )
+    ended = dict(access_ended(filters).values_list("package_id").annotate(total=Count("id")))
 
     all_purchases = sum(purchases.values())
     all_net = sum(
@@ -46,9 +47,19 @@ def rows(filters) -> list[dict]:
                 "net_decimal": gross - back,
                 "revenue_share": common.percentage(gross - back, all_net),
                 "access_now": access.get(package.pk, 0),
+                "access_ended": ended.get(package.pk, 0),
             }
         )
     return out
+
+
+def access_ended(filters, at=None):
+    at = at or timezone.now()
+    return common.subscriptions(filters).filter(
+        package_expires_at__gte=filters.start_at,
+        package_expires_at__lt=filters.end_at,
+        package_expires_at__lte=at,
+    )
 
 
 def charts(filters, package_rows: list[dict]) -> dict:

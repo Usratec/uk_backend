@@ -11,6 +11,13 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 # Let `python`, `gunicorn` etc. resolve to the virtualenv, so commands need no `uv run` prefix.
 ENV PATH=/opt/venv/bin:$PATH
 
+# ffmpeg is what apps/learning/transcode.py runs: without it the Celery worker can probe and
+# encode nothing. Installed here because every process shares this image; which container is
+# actually given the video queue is a deployment decision.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install dependencies before copying the code, so Docker reuses this layer

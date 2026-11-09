@@ -58,7 +58,7 @@ container start, so scaling out can't run them concurrently.
 | Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
-| Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/` (and the rest of `/api/learn/`) |
+| Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
@@ -176,7 +176,6 @@ stay server-side, as does the email captured at checkout.
 The list is capped at the newest 50, like notifications, because nothing in this API is paginated.
 One query serves it: the package is joined in, so a long history costs no more than a short one.
 
-
 ### Learner video position
 
 `POST /api/learn/videos/<slug>/progress/` saves where the signed-in learner is up to in a lesson
@@ -206,6 +205,81 @@ earlier, and `position_seconds`/`duration_seconds` are accepted as aliases. A ne
 or missing position answers 400, so an incomplete request cannot zero a real one; a position past
 the end is clamped. Repeated calls update one row (learner and video are unique together, written
 by `update_or_create` in a transaction), so posting every few seconds costs one UPDATE.
+
+### Offline practice in the PWA
+
+`GET /api/learn/offline/practice/` returns every question normal practice can ask the signed-in
+learner — live, and inside their package — with the answers in it, so the PWA can mark its own
+work offline. No plan answers 402. Normal practice only: no exam endpoint changes, and exams
+cannot be sat offline.
+
+```json
+{
+  "version": "3f8c1a09d4e27b65",
+  "updatedAt": "2026-11-01T09:12:00Z",
+  "total": 742,
+  "questions": [
+    {
+      "id": 123, "key": "distraction", "topic": "road-signs", "type": "single",
+      "prompt": "Which of these could distract you while driving?",
+      "media": { "kind": "sign", "code": "give-way" },
+      "options": [{ "id": "a", "text": "A phone call" }, { "id": "b", "text": "A clear road" }],
+      "pick": 1,
+      "correctIds": ["a"],
+      "explanation": "It takes your attention off the road.",
+      "lesson": { "slug": "distractions", "title": "Distractions" }
+    }
+  ],
+  "signs": { "give-way": { "code": "give-way", "name": "Give way", "spec": {} } },
+  "nextAfter": null
+}
+```
+
+- **Versioning.** Store `version` and compare it with the next response's to decide whether to
+  download again. It changes when anything in the pack does, including a question leaving it.
+- **Paging.** Without `limit` the whole pack comes back at once and `nextAfter` is null; that is
+  the expected way to fetch it. With `limit` (1–500), follow
+  `nextAfter` as `after` until it is null. `total` is the whole pack either way.
+- **Images expire.** An `image` is a short-lived signed URL, so cache the bytes, not the URL.
+  Signs travel in the `signs` map and are drawn by the frontend.
+
+`POST /api/learn/answers/batch/` records answers given offline against the days they were given
+on. The body is a JSON array of at most 500 answers; `{"answers": [...]}` is accepted too.
+
+```json
+[
+  { "clientId": "offline-001", "questionId": 123, "selected": ["a"], "answeredAt": "2026-11-02T14:30:00Z" },
+  { "clientId": "offline-002", "questionId": 124, "selected": ["b"], "answeredAt": "2026-11-02T14:35:00Z" }
+]
+```
+
+```json
+{
+  "results": [
+    { "clientId": "offline-001", "status": "synced", "correct": true, "correctIds": ["a"],
+      "answeredAt": "2026-11-02T14:30:00Z" },
+    { "clientId": "offline-002", "status": "rejected",
+      "error": { "code": "answered_at_in_future", "message": "The answer timestamp cannot be in the future." } }
+  ]
+}
+```
+
+- **Marking.** Decided on the server from the question rows. There is no `correct` field in the
+  request.
+- **Per item.** One result per submitted item, in the order sent, so one bad item never costs the
+  others. `status` is `synced`, `already_synced` or `rejected`; a rejection names a `code`:
+  `malformed`, `answered_at_not_timezone_aware`, `answered_at_in_future`, `answered_at_too_old`,
+  `no_access_on_that_date`, `question_not_found`, `invalid_selection`, `client_id_conflict`.
+- **Study dates.** Progress, mistakes, weak topics and streaks are all worked out from the attempt
+  rows, so an answer counts towards its own `answeredAt` whatever order the days arrive in.
+  `answeredAt` needs a timezone offset, may not be in the future (two minutes' allowance for a
+  fast clock) and may not be more than 30 days old.
+- **Historical access.** The learner must be able to practise the question now *and* have held a
+  plan covering its chapter on the study date. A period's start counts, its expiry does not, and
+  revoked periods pay for nothing.
+- **Idempotency.** `clientId` is the key, scoped to the learner by a unique constraint, so retries
+  cannot double-count. A second send reports `already_synced` and changes nothing. The same
+  `clientId` with a different question, selection or timestamp is refused as `client_id_conflict`.
 
 ### Learner exam attempts
 
@@ -263,6 +337,75 @@ sent so the customer is not emailed twice.
 
 There is no theory-test-date reminder. The profile now records `theory_test_date`, but nothing
 reads it to schedule a notification; that is a decision for whoever adds the reminder.
+
+### Direct video uploads and HLS streaming
+
+Videos no longer pass through Django. The browser is given short-lived permission to write **one**
+object into the private bucket, the backend checks what actually arrived, and a Celery worker turns
+it into an HLS ladder with ffmpeg. Playback is authorized per learner and served by CloudFront.
+
+Each run produces two things under one run-scoped prefix: the adaptive ladder (`master.m3u8` plus a
+360p/720p/1080p variant per rung the source is big enough for) and a single `video.mp4` written with
+`-movflags +faststart`, so its `moov` atom is at the front and a player can start before the file
+has finished downloading. `GET /api/learn/media/<id>/playback/` returns the manifest as `url` and
+that file as `mp4Url`; the signed cookies on that response cover the whole prefix, so they cover
+both.
+
+**The frame rate is never changed.** A hazard clip's hazard windows are counted in frames, so the
+pipeline encodes every output at exactly the rate the source arrived at — `fps=30000/1001` stays
+`30000/1001`, not 30 — and a rate outside `VIDEO_MIN_FRAME_RATE`–`VIDEO_MAX_FRAME_RATE` is refused
+with a message saying what to re-export at, rather than being quietly halved or capped to fit.
+
+### PWA Web Push
+
+Browser push is separate from native-app Firebase tokens. Generate one stable VAPID pair per
+environment (outside the checkout), then put the file contents into that environment's secret
+settings. Do not rotate keys on every deploy: browser subscriptions are tied to the public key.
+
+```bash
+uv run python manage.py generate_vapid_keys --output-dir ~/.config/1theory/web-push-dev
+```
+
+The command writes `vapid-public.key` and `vapid-private.key` with owner-only permissions and
+prints only their paths. Set `WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY` and
+`WEB_PUSH_VAPID_SUBJECT` (a support contact, for example `mailto:support@1theory.co.uk`) on both
+web and worker services. The private setting is the generated base64 DER content, not its path.
+Run migrations and restart the web and Celery worker after deploying. Empty keys disable push;
+internal notifications continue to work.
+
+Frontend contract for UK-253:
+
+| Request | Body / response |
+|---|---|
+| `GET /api/notifications/push/public-key/` (public) | `{"public_key": "<applicationServerKey>"}`; 503 while unconfigured |
+| `POST /api/notifications/push/subscriptions/` (authenticated) | Browser `PushSubscription.toJSON()`: `{"endpoint": "https://…", "keys": {"p256dh": "…", "auth": "…"}}`; 200 on save |
+| `DELETE /api/notifications/push/subscriptions/` (authenticated) | `{"endpoint": "https://…"}`; 204, including when already removed |
+| `POST /api/auth/logout/` (authenticated) | Existing `refresh` plus `push_endpoint` for this browser, so logout removes only its subscription |
+
+Ask for notification permission from a user action, subscribe using the public key, and save the
+browser subscription after login. The API checks actual P-256/auth keys and accepts HTTPS
+endpoints from Google, Mozilla, Apple and Windows browser push services. A browser subscription
+can move to a different signed-in account only with its existing keys; otherwise POST answers
+409 and the browser should unsubscribe and create a fresh subscription. DELETE can only remove
+the signed-in user's own subscription. Account deletion cascades to its subscriptions.
+Blank, null or invalid logout `push_endpoint` values are ignored; refresh-token revocation still
+runs first and logout succeeds.
+
+New internal notifications queue Web Push after the database transaction commits. The JSON
+payload is `{"title": "…", "body": "…", "link": "/my-package"}` (the link defaults to `/`).
+The service worker must display the notification and open the frontend route on click. Delivery
+covers every saved subscription; 404/410 responses remove stale subscriptions, while temporary
+failures retry only the affected subscriptions, up to three times. A stable `Topic` header
+collapses retries still queued by the provider, but cannot undo an already displayed notification.
+Windows endpoints also receive `X-WNS-Type: wns/raw`. A worker missing VAPID settings logs an error. Queue/provider failures do
+not fail the purchase or internal notification. No browser endpoints or encryption keys are
+included in task arguments or application logs.
+
+Welcome and payment confirmation emails include the home-screen prompt. Stripe success and
+cancel URLs already use `FRONTEND_BASE_URL`; set it to the installed PWA's frontend domain.
+Device QA with UK-253 must confirm push display/click, current-device logout, and payment return
+on installed iPhone and Android PWAs. Backend URL checks alone cannot prove that the browser
+will reopen the installed PWA window.
 
 ### Uploaded pictures carry no metadata
 

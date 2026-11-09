@@ -15,5 +15,10 @@ def for_user(user: User) -> models.QuerySet[Order]:
     )
 
 
+def readable_by(user: User) -> models.QuerySet[Order]:
+    own_guest_checkout = models.Q(user__isnull=True, email__iexact=user.email)
+    return Order.objects.filter(models.Q(user=user) | own_guest_checkout)
+
+
 def recent(user: User, limit: int = LIST_LIMIT) -> list[Order]:
     return list(for_user(user)[:limit])

@@ -17,6 +17,8 @@ CSRF_TRUSTED_ORIGINS = []
 FRONTEND_BASE_URL = "http://frontend.test/"
 BACKEND_BASE_URL = "http://backend.test/"
 
+VIDEO_ALLOW_UNSIGNED_PLAYBACK = True
+
 # Tasks run immediately, in-process, so the suite needs no worker or queue.
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
@@ -40,3 +42,8 @@ WHITENOISE_AUTOREFRESH = True
 
 # Hashing cost is irrelevant to what tests verify, and dominates their runtime.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# Tests never inherit deployed browser push credentials or contact push services.
+WEB_PUSH_VAPID_PUBLIC_KEY = ""
+WEB_PUSH_VAPID_PRIVATE_KEY = ""
+WEB_PUSH_VAPID_SUBJECT = ""

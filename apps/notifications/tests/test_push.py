@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.notifications import push, services
+from apps.notifications import mobile_push, services
 from apps.notifications.models import DeviceToken, NotificationKind, PushDelivery
 
 pytestmark = pytest.mark.django_db
@@ -66,7 +66,7 @@ def test_invalid_platform(signed_in):
 
 
 def test_device_cap_allows_existing_token_refresh_but_rejects_new_and_transfer(signed_in, learner, other_learner):
-    for index in range(push.MAX_DEVICES_PER_USER):
+    for index in range(mobile_push.MAX_DEVICES_PER_USER):
         device(learner, f"installation-{index}")
     foreign = device(other_learner, "foreign-installation")
     assert signed_in.post(URL, {"token": "installation-0", "platform": "android"}).status_code == 204
@@ -75,7 +75,7 @@ def test_device_cap_allows_existing_token_refresh_but_rejects_new_and_transfer(s
         assert signed_in.post(URL, {"token": token, "platform": "ios"}).status_code == 400
     foreign.refresh_from_db()
     assert foreign.user_id == other_learner.pk
-    assert DeviceToken.objects.filter(user=learner).count() == push.MAX_DEVICES_PER_USER
+    assert DeviceToken.objects.filter(user=learner).count() == mobile_push.MAX_DEVICES_PER_USER
     assert signed_in.delete(URL, {"token": "installation-1"}, format="json").status_code == 204
     assert signed_in.post(URL, {"token": foreign.token, "platform": "ios"}).status_code == 204
     foreign.refresh_from_db()
@@ -96,7 +96,7 @@ def test_device_registration_is_rate_limited(signed_in, settings):
 
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_additions_cannot_exceed_device_cap(learner):
-    for index in range(push.MAX_DEVICES_PER_USER - 1):
+    for index in range(mobile_push.MAX_DEVICES_PER_USER - 1):
         device(learner, f"installation-{index}")
     start = Barrier(2)
 
@@ -104,7 +104,7 @@ def test_concurrent_additions_cannot_exceed_device_cap(learner):
         close_old_connections()
         try:
             start.wait(timeout=10)
-            push.register_device(user=learner, token=token, platform="ios")
+            mobile_push.register_device(user=learner, token=token, platform="ios")
             return "saved"
         except ValidationError:
             return "full"
@@ -114,7 +114,7 @@ def test_concurrent_additions_cannot_exceed_device_cap(learner):
     with ThreadPoolExecutor(max_workers=2) as executor:
         outcomes = list(executor.map(register, ["new-one", "new-two"]))
     assert sorted(outcomes) == ["full", "saved"]
-    assert DeviceToken.objects.filter(user=learner).count() == push.MAX_DEVICES_PER_USER
+    assert DeviceToken.objects.filter(user=learner).count() == mobile_push.MAX_DEVICES_PER_USER
 
 
 def test_each_device_receives_event_once(enabled, learner, other_learner, monkeypatch):
@@ -122,12 +122,14 @@ def test_each_device_receives_event_once(enabled, learner, other_learner, monkey
     second = device(learner, "device-two")
     device(other_learner, "foreign-device")
     sent = []
-    monkeypatch.setattr(push.FirebaseClient, "send_message", lambda self, delivery: sent.append(delivery.device_id))
+    monkeypatch.setattr(
+        mobile_push.FirebaseClient, "send_message", lambda self, delivery: sent.append(delivery.device_id)
+    )
     notification = notify(learner)
     notify(learner)
     assert PushDelivery.objects.filter(notification=notification).count() == 2
-    assert push.deliver_pending() == 2
-    assert push.deliver_pending() == 0
+    assert mobile_push.deliver_pending() == 2
+    assert mobile_push.deliver_pending() == 0
     assert sorted(sent) == [first.pk, second.pk]
 
 
@@ -140,9 +142,9 @@ def test_device_added_after_event_does_not_receive_old_notification(enabled, lea
 def test_reassigned_device_cannot_receive_former_users_event(enabled, learner, other_learner, monkeypatch):
     registered = device(learner)
     notify(learner)
-    push.register_device(user=other_learner, token=registered.token, platform="android")
-    monkeypatch.setattr(push.FirebaseClient, "send_message", Mock(side_effect=AssertionError("must not send")))
-    assert push.deliver_pending() == 0
+    mobile_push.register_device(user=other_learner, token=registered.token, platform="android")
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", Mock(side_effect=AssertionError("must not send")))
+    assert mobile_push.deliver_pending() == 0
     assert not PushDelivery.objects.exists()
 
 
@@ -153,12 +155,12 @@ def test_in_flight_response_cannot_remove_reassigned_device(enabled, learner, ot
 
     def send(self, delivery):
         assert not transaction.get_connection().in_atomic_block
-        assert push.deliver_pending() == 0
-        push.register_device(user=other_learner, token=registered.token, platform="android")
-        raise push.PushDeliveryError("http_404", invalid_token=True)
+        assert mobile_push.deliver_pending() == 0
+        mobile_push.register_device(user=other_learner, token=registered.token, platform="android")
+        raise mobile_push.PushDeliveryError("http_404", invalid_token=True)
 
-    monkeypatch.setattr(push.FirebaseClient, "send_message", send)
-    assert push.deliver_pending() == 0
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", send)
+    assert mobile_push.deliver_pending() == 0
     registered.refresh_from_db()
     assert registered.user_id == other_learner.pk
     assert not PushDelivery.objects.exists()
@@ -168,7 +170,7 @@ def test_logout_removes_only_this_device_and_queued_delivery(enabled, learner):
     first = device(learner)
     second = device(learner, "second")
     notify(learner)
-    push.remove_device_token(user=learner, token=first.token)
+    mobile_push.remove_device_token(user=learner, token=first.token)
     assert list(PushDelivery.objects.values_list("device_id", flat=True)) == [second.pk]
 
 
@@ -212,18 +214,20 @@ def test_partial_failure_retries_failed_device_only(enabled, learner, monkeypatc
 
     def send(self, delivery):
         if delivery.device_id == second.pk:
-            raise push.PushDeliveryError("http_503", retry_after=600)
+            raise mobile_push.PushDeliveryError("http_503", retry_after=600)
 
-    monkeypatch.setattr(push.FirebaseClient, "send_message", send)
-    assert push.deliver_pending() == 1
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", send)
+    assert mobile_push.deliver_pending() == 1
     assert PushDelivery.objects.get(device=first).sent_at is not None
     failed = PushDelivery.objects.get(device=second)
     assert failed.sent_at is None
     assert failed.next_attempt_at > timezone.now() + timedelta(seconds=590)
     PushDelivery.objects.filter(pk=failed.pk).update(next_attempt_at=timezone.now())
     sent = []
-    monkeypatch.setattr(push.FirebaseClient, "send_message", lambda self, delivery: sent.append(delivery.device_id))
-    assert push.deliver_pending() == 1
+    monkeypatch.setattr(
+        mobile_push.FirebaseClient, "send_message", lambda self, delivery: sent.append(delivery.device_id)
+    )
+    assert mobile_push.deliver_pending() == 1
     assert sent == [second.pk]
 
 
@@ -232,10 +236,10 @@ def test_unregistered_token_is_removed(enabled, learner, monkeypatch):
     notify(learner)
 
     def fail(self, delivery):
-        raise push.PushDeliveryError("http_404", invalid_token=True)
+        raise mobile_push.PushDeliveryError("http_404", invalid_token=True)
 
-    monkeypatch.setattr(push.FirebaseClient, "send_message", fail)
-    assert push.deliver_pending() == 0
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", fail)
+    assert mobile_push.deliver_pending() == 0
     assert not DeviceToken.objects.exists()
     assert not PushDelivery.objects.exists()
 
@@ -245,14 +249,14 @@ def test_retry_budget_is_bounded_and_keeps_diagnostics(enabled, learner, monkeyp
     notify(learner)
 
     def fail(self, delivery):
-        raise push.PushDeliveryError("http_503")
+        raise mobile_push.PushDeliveryError("http_503")
 
-    monkeypatch.setattr(push.FirebaseClient, "send_message", fail)
-    for _ in range(push.MAX_ATTEMPTS + 1):
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", fail)
+    for _ in range(mobile_push.MAX_ATTEMPTS + 1):
         PushDelivery.objects.update(next_attempt_at=timezone.now())
-        assert push.deliver_pending() == 0
+        assert mobile_push.deliver_pending() == 0
     delivery = PushDelivery.objects.get()
-    assert delivery.attempts == push.MAX_ATTEMPTS
+    assert delivery.attempts == mobile_push.MAX_ATTEMPTS
     assert delivery.last_error == "http_503"
     assert DeviceToken.objects.count() == 1
 
@@ -263,8 +267,8 @@ def test_recheck_owner_before_sending_even_if_device_was_changed_outside_service
     registered = device(learner)
     notify(learner)
     DeviceToken.objects.filter(pk=registered.pk).update(user=other_learner)
-    monkeypatch.setattr(push.FirebaseClient, "send_message", Mock(side_effect=AssertionError("must not send")))
-    assert push.deliver_pending() == 0
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", Mock(side_effect=AssertionError("must not send")))
+    assert mobile_push.deliver_pending() == 0
     assert not PushDelivery.objects.exists()
 
 
@@ -283,8 +287,8 @@ def test_inactive_account_is_not_sent_push(enabled, learner, monkeypatch):
     notify(learner)
     learner.is_active = False
     learner.save(update_fields=["is_active"])
-    monkeypatch.setattr(push.FirebaseClient, "send_message", Mock(side_effect=AssertionError("must not send")))
-    assert push.deliver_pending() == 0
+    monkeypatch.setattr(mobile_push.FirebaseClient, "send_message", Mock(side_effect=AssertionError("must not send")))
+    assert mobile_push.deliver_pending() == 0
 
 
 def test_broker_failure_leaves_recoverable_outbox(enabled, learner, monkeypatch, django_capture_on_commit_callbacks):
@@ -320,10 +324,10 @@ def test_fcm_batch_reuses_session_and_sends_generic_alerts(enabled, learner, mon
     session.post.return_value.status_code = 200
     credentials = Mock(return_value=("credentials", None))
     authorize = Mock(return_value=session)
-    monkeypatch.setattr(push.google.auth, "default", credentials)
-    monkeypatch.setattr(push, "AuthorizedSession", authorize)
+    monkeypatch.setattr(mobile_push.google.auth, "default", credentials)
+    monkeypatch.setattr(mobile_push, "AuthorizedSession", authorize)
 
-    assert push.deliver_pending() == 2
+    assert mobile_push.deliver_pending() == 2
 
     credentials.assert_called_once()
     authorize.assert_called_once_with("credentials")
@@ -349,8 +353,8 @@ def test_only_specific_unregistered_response_deletes_tokens(enabled, learner, mo
     }
     session = Mock()
     session.post.return_value = response
-    monkeypatch.setattr(push.google.auth, "default", lambda **kwargs: ("credentials", None))
-    monkeypatch.setattr(push, "AuthorizedSession", lambda credentials: session)
-    with closing(push.FirebaseClient()) as client, pytest.raises(push.PushDeliveryError) as error:
+    monkeypatch.setattr(mobile_push.google.auth, "default", lambda **kwargs: ("credentials", None))
+    monkeypatch.setattr(mobile_push, "AuthorizedSession", lambda credentials: session)
+    with closing(mobile_push.FirebaseClient()) as client, pytest.raises(mobile_push.PushDeliveryError) as error:
         client.send_message(PushDelivery.objects.get())
     assert error.value.invalid_token is invalid

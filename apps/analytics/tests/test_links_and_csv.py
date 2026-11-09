@@ -9,12 +9,15 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.analytics.services import exports, overview, packages, revenue
 from apps.analytics.services import filters as filter_utils
-from apps.analytics.services import overview, packages, revenue
 from apps.analytics.tests.conftest import answer, give_access, make_course, make_order, study
+from apps.analytics.tests.test_exports import HEADERS
 from apps.billing.models import Order, OrderStatus
 
 DASHBOARD = "admin:analytics_dashboard_changelist"
+
+EXPECTED_HEADERS = HEADERS
 
 
 @pytest.fixture
@@ -53,7 +56,12 @@ def trading(db, package, other_package):
 
 def _rows(response) -> list[list[str]]:
     body = b"".join(response.streaming_content).decode("utf-8-sig")
-    return list(csv.reader(io.StringIO(body)))
+    return list(csv.reader(io.StringIO(body)))[1:]
+
+
+def _title(response) -> list[str]:
+    body = b"".join(response.streaming_content).decode("utf-8-sig")
+    return next(csv.reader(io.StringIO(body)))
 
 
 def _count(client, url: str) -> int:
@@ -134,60 +142,17 @@ def test_every_jump_link_lands_on_a_section(looking, trading):
         assert label.replace("&", "&amp;") in body, label
 
 
-EXPECTED_HEADERS = {
-    "revenue": ["Date", "Payments", "Gross", "Refunds", "Net", "Average order value"],
-    "students": [
-        "Student ID",
-        "Registered on",
-        "Has paid",
-        "Total paid",
-        "Access",
-        "Studied in range",
-        "Lessons completed",
-        "Lessons published",
-        "Lesson progress %",
-    ],
-    "packages": [
-        "Package",
-        "Price",
-        "Purchases",
-        "Share %",
-        "Gross",
-        "Refunds",
-        "Net",
-        "Revenue share %",
-        "Students with access now",
-    ],
-    "learning": [
-        "Chapter",
-        "Published lessons",
-        "Lessons completed (all time)",
-        "Practice answers in range",
-        "Correct answers in range",
-        "Accuracy %",
-    ],
-}
-
-
 @pytest.mark.parametrize(("report", "headers"), EXPECTED_HEADERS.items())
 def test_each_export_has_exactly_the_headers_it_promises(looking, trading, report, headers):
     rows = _rows(looking.get(reverse("admin:analytics_export", args=[report])))
     assert rows[0] == headers
 
 
-def test_the_payment_export_headers_name_the_clock(looking, trading):
-    rows = _rows(looking.get(reverse("admin:analytics_export", args=["payments"])))
-    zone = timezone.get_current_timezone_name()
-    assert rows[0] == [
-        "Order",
-        f"Created ({zone})",
-        f"Paid ({zone})",
-        f"Refunded ({zone})",
-        "Status",
-        "Package",
-        "Amount",
-        "Student ID",
-    ]
+@pytest.mark.parametrize("report", list(EXPECTED_HEADERS))
+def test_each_export_opens_with_its_title_and_range(looking, trading, report):
+    filters = filter_utils.parse({})
+    title = _title(looking.get(reverse("admin:analytics_export", args=[report])))
+    assert title == [f"1THEORY {report} report", exports.date_range(filters)]
 
 
 def test_the_revenue_export_has_one_row_per_day_and_adds_to_the_boxes(looking, trading):
@@ -215,10 +180,11 @@ def test_the_payment_export_lists_exactly_the_orders_the_table_is_a_window_onto(
     assert len(body) == len(expected)
     assert [row[0] for row in body] == [str(order.pk) for order in expected]
     for row, order in zip(body, expected, strict=True):
-        assert row[4] == order.get_status_display()
-        assert row[5] == order.package.name
-        assert Decimal(row[6]) == order.final_price
-        assert row[7] == (str(order.user_id) if order.user_id else "")
+        assert row[3] == order.get_status_display()
+        assert row[4] == order.package.name
+        assert Decimal(row[5]) == order.final_price
+        assert Decimal(row[6]) == order.discount_amount
+        assert row[8] == (str(order.user_id) if order.user_id else "")
         assert row[2] == (timezone.localtime(order.paid_at).strftime("%Y-%m-%d %H:%M") if order.paid_at else "")
 
 
@@ -231,12 +197,13 @@ def test_the_package_export_matches_the_table_on_the_page(looking, trading):
     for row, page_row in zip(body, on_page, strict=True):
         assert row[header.index("Package")] == page_row["package"].name
         assert int(row[header.index("Purchases")]) == page_row["purchases"]
-        assert Decimal(row[header.index("Gross")]) == page_row["gross_value"]
-        assert Decimal(row[header.index("Net")]) == page_row["net_decimal"]
+        assert Decimal(row[header.index("Gross (£)")]) == page_row["gross_value"]
+        assert Decimal(row[header.index("Net (£)")]) == page_row["net_decimal"]
+        assert int(row[header.index("Access periods ended in range")]) == page_row["access_ended"]
 
     boxes = {box.label: box for box in overview.boxes(filters)}
     assert sum(int(row[header.index("Purchases")]) for row in body) == int(boxes["Successful payments"].value)
-    assert sum(Decimal(row[header.index("Net")]) for row in body) == Decimal(
+    assert sum(Decimal(row[header.index("Net (£)")]) for row in body) == Decimal(
         boxes["Net revenue"].value.replace("£", "").replace(",", "")
     )
 
@@ -252,16 +219,15 @@ def test_the_student_export_has_one_row_per_registered_student(looking, trading)
 
     paying = common.paying_student_ids(filters)
     for row in body:
-        assert row[header.index("Has paid")] == ("yes" if int(row[0]) in paying else "no")
-        Decimal(row[header.index("Total paid")])
-    assert sum(1 for row in body if row[header.index("Has paid")] == "yes") == len(paying)
+        assert row[header.index("Has paid")] == ("Yes" if int(row[0]) in paying else "No")
+    assert sum(1 for row in body if row[header.index("Has paid")] == "Yes") == len(paying)
 
 
 def test_money_in_a_csv_is_a_plain_two_place_decimal(looking, trading):
     for report, columns in (
-        ("revenue", ("Gross", "Refunds", "Net", "Average order value")),
-        ("packages", ("Price", "Gross", "Refunds", "Net")),
-        ("payments", ("Amount",)),
+        ("revenue", ("Gross revenue (£)", "Refunds (£)", "Net revenue (£)", "Average order value (£)")),
+        ("packages", ("Price (£)", "Gross (£)", "Refunds (£)", "Net (£)")),
+        ("payments", ("Amount (£)", "Discount (£)")),
     ):
         rows = _rows(looking.get(reverse("admin:analytics_export", args=[report])))
         header = rows[0]
@@ -282,18 +248,18 @@ def test_every_export_honours_the_filters(looking, trading, package, other_packa
     assert rows[1][0] == package.name
 
     rows = _rows(looking.get(reverse("admin:analytics_export", args=["payments"]) + query))
-    assert {row[5] for row in rows[1:]} == {package.name}
+    assert {row[4] for row in rows[1:]} == {package.name}
     assert len(rows) - 1 == revenue.all_orders(filters).count()
 
     rows = _rows(looking.get(reverse("admin:analytics_export", args=["payments"]) + query + "&status=pending"))
-    assert {row[4] for row in rows[1:]} == {"Pending"}
+    assert {row[3] for row in rows[1:]} == {"Pending"}
 
 
 def test_a_custom_range_reaches_the_file_and_its_name(looking, trading):
     response = looking.get(
         reverse("admin:analytics_export", args=["revenue"]) + "?range=custom&start=2026-03-01&end=2026-03-31"
     )
-    assert 'filename="revenue_2026-03-01_2026-03-31.csv"' in response["Content-Disposition"]
+    assert 'filename="1theory-revenue-2026-03-01-to-2026-03-31.csv"' in response["Content-Disposition"]
     rows = _rows(response)
     assert len(rows) - 1 == 31
     assert rows[1][0] == "2026-03-01"

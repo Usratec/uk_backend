@@ -36,7 +36,9 @@ from apps.accounts.throttling import (
 )
 from apps.core.http import client_ip
 from apps.integrations import google_identity
-from apps.notifications import push
+from apps.notifications.mobile_push import remove_device_token
+from apps.notifications.push_subscriptions import remove_subscription
+from apps.notifications.serializers import PushLogoutSerializer
 
 GENERIC_RESET_RESPONSE = "If this email is registered, a reset link has been sent."
 
@@ -46,8 +48,7 @@ refresh_request = inline_serializer(
 )
 
 
-class LogoutSerializer(serializers.Serializer):
-    refresh = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+class LogoutSerializer(PushLogoutSerializer):
     device_token = serializers.RegexField(
         r"^[!-~]+$", max_length=2048, trim_whitespace=False, write_only=True, required=False
     )
@@ -259,12 +260,21 @@ class LogoutView(APIView):
 
     @extend_schema(request=LogoutSerializer, responses={200: DetailSerializer}, summary="Sign out")
     def post(self, request: Request) -> Response:
-        data = LogoutSerializer(data=request.data)
-        data.is_valid(raise_exception=True)
-        services.blacklist_refresh_token(data.validated_data.get("refresh"))
-        token = data.validated_data.get("device_token")
+        token = None
+        if "device_token" in request.data:
+            device = LogoutSerializer(data={"device_token": request.data["device_token"]})
+            device.is_valid(raise_exception=True)
+            token = device.validated_data["device_token"]
+
+        services.blacklist_refresh_token(request.data.get("refresh"))
+        user = cast(User, request.user)
         if token:
-            push.remove_device_token(user=request.user, token=token)
+            remove_device_token(user=user, token=token)
+
+        # Optional browser cleanup must never prevent revoking the session.
+        browser = PushLogoutSerializer(data=request.data)
+        if browser.is_valid() and (endpoint := browser.validated_data.get("push_endpoint")):
+            remove_subscription(user=user, endpoint=endpoint)
         return Response({"detail": "Logged out."}, status=status.HTTP_200_OK)
 
 

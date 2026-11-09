@@ -113,6 +113,8 @@ def daily_rows(filters):
     gross = _by_day(common.payments_taken(filters), "paid_at", Sum("final_price"))
     counts = _by_day(common.payments_taken(filters), "paid_at", Count("id"))
     refunded = _by_day(common.refunds(filters), "refunded_at", Sum("final_price"))
+    pending = _by_day(common.orders_created(filters, OrderStatus.PENDING), "created_at", Count("id"))
+    failed = _by_day(common.orders_created(filters, OrderStatus.FAILED), "created_at", Count("id"))
 
     day, rows = filters.start, []
     while day <= filters.end:
@@ -127,6 +129,8 @@ def daily_rows(filters):
                 "refunds": given_back,
                 "net": taken - given_back,
                 "average_order_value": (taken / count) if count else Decimal("0.00"),
+                "pending": pending.get(day) or 0,
+                "failed": failed.get(day) or 0,
             }
         )
         day += timedelta(days=1)

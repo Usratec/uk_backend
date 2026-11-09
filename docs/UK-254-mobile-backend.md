@@ -30,7 +30,9 @@ and whether networking uses the WebView or a native HTTP plugin. Configure those
 in `CORS_ALLOWED_ORIGINS` for each environment; for example, `capacitor://localhost` on an iOS
 WebView, or `https://localhost` on Android, only when the release build actually uses them.
 Existing configuration accepts these schemes and includes the Authorization header and DELETE
-method. Do not enable wildcard origins, `null` origins, credential cookies or CSRF exemptions.
+method. The API allows credentials for explicitly configured origins to support browser video
+playback. Mobile bearer requests work without cookies. Keep wildcard and `null` origins disabled
+and retain the existing CSRF protections.
 No speculative origin has been enabled by this change. Frontend confirmation is still pending.
 
 Automated HTTP tests exercise preflight, protected calls, refresh and logout with real JWTs
