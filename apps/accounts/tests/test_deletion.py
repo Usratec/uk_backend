@@ -156,6 +156,7 @@ def test_storage_failure_rolls_back_user_and_orders(user):
     order.refresh_from_db()
     assert order.email == user.email
     assert order.user_id == user.pk
+    assert not AuditEvent.objects.filter(action="accounts.user.deleted", target_id=str(user.pk)).exists()
 
 
 def test_copied_profile_audit_data_scrubbed(authenticated_api, user):
@@ -172,6 +173,14 @@ def test_copied_profile_audit_data_scrubbed(authenticated_api, user):
     assert audit.target_label == "Deleted account"
     assert audit.changes == {}
     assert audit.reason == ""
+    event = AuditEvent.objects.get(action="accounts.user.deleted", target_id=str(user.pk))
+    assert event.target_type == audit.target_type
+    assert event.target_label == "Deleted account"
+    assert event.created_at is not None
+    assert event.actor_id is None
+    assert event.actor_email == ""
+    assert event.changes == {}
+    assert event.reason == ""
 
 
 def test_google_account_requires_linked_identity(api, google_user):

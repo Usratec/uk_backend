@@ -13,6 +13,8 @@ questions, app notifications, device tokens and security links are deleted by ca
 The profile photo is removed from configured storage. If storage deletion fails, database
 deletion is rolled back and no successful response is returned. Audit snapshots describing
 this account and Django administration log entries for it are scrubbed/deleted.
+The deletion transaction records an audit event with the former internal account ID and
+the deletion time. The event contains no email address, name, or profile data.
 
 Orders keep amounts, package, timestamps and Stripe payment/checkout references for payment
 reconciliation, refunds and accounting. Their customer email and names are replaced by an

@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from apps.accounts.deletion import is_deleted_order_email
 from apps.accounts.models import AuthMethod, User
-from apps.accounts.services import send_email_verification
+from apps.accounts.services import queue_email_verification
 from apps.billing import emails
 from apps.billing.models import Order, OrderStatus
 from apps.crm import notifications
@@ -43,6 +43,9 @@ def _notify_paid_order(order: Order) -> None:
     if user is None:
         return
     send_welcome(order, user)
+    if order.welcome_email_required and not order.verification_email_queued_at and not user.email_verified:
+        # If the welcome callback fails, this callback is skipped and the order still owes verification.
+        transaction.on_commit(partial(_queue_purchase_verification, order.pk))
     send_order_confirmation(order)
     notifications.notify_access_granted(order, user)
 
@@ -133,10 +136,27 @@ def send_welcome(order: Order, user: User) -> None:
     emails.send_welcome(user)
     Order.objects.filter(pk=order.pk).update(welcome_email_sent_at=timezone.now())
     logger.info("Welcomed %s", user.email)
-    # Paying does not prove the person can read the mailbox. The same confirmation link
-    # registration uses is what sets email_verified.
-    if not user.email_verified:
-        send_email_verification(user, after_commit=True)
+
+
+@transaction.atomic
+def _queue_purchase_verification(order_id) -> None:
+    order = Order.objects.select_for_update().filter(pk=order_id, welcome_email_required=True).first()
+    if order is None or order.user_id is None or order.verification_email_queued_at:
+        return
+    user = User.objects.select_for_update().filter(pk=order.user_id, email_verified=False).first()
+    if user is None:
+        return
+
+    # Register this separately so a dispatch failure retries verification without resending welcome.
+    queued_at = timezone.now()
+    Order.objects.filter(pk=order.pk).update(verification_email_queued_at=queued_at)
+
+    def retry_verification() -> None:
+        Order.objects.filter(pk=order.pk, verification_email_queued_at=queued_at).update(
+            verification_email_queued_at=None
+        )
+
+    queue_email_verification(user, on_failure=retry_verification)
 
 
 def send_order_confirmation(order: Order) -> None:

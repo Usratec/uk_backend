@@ -51,8 +51,8 @@ _MESSAGES: dict[str, _Message] = {
 }
 
 
-def send_email_verification(user, token: str, after_commit: bool = False) -> None:
-    queue_security_link(token, "email_verification", after_commit=after_commit)
+def send_email_verification(user, token: str) -> None:
+    queue_security_link(token, "email_verification")
 
 
 def send_password_reset(user, token: str) -> None:

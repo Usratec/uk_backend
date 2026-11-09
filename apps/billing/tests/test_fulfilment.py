@@ -90,6 +90,42 @@ def test_failed_after_commit_welcome_remains_retryable(paid_order, monkeypatch):
     paid_order.refresh_from_db()
     assert paid_order.welcome_email_sent_at is not None
     assert any(message.subject.startswith("Welcome") for message in mail.outbox)
+    assert "Please confirm your email address" in subjects()
+
+
+def test_failed_verification_dispatch_retries_without_resending_welcome(paid_order, monkeypatch):
+    from apps.accounts import emails
+    from apps.accounts.tasks import send_security_link
+    from apps.billing import fulfilment
+
+    publish = send_security_link.delay
+    deliver = emails.deliver_security_link
+
+    def fail_publish(*, token_id, template):
+        if template == "email_verification":
+            raise OSError("broker unavailable")
+        return publish(token_id=token_id, template=template)
+
+    def fail_verification(token, raw_token, template):
+        if template == "email_verification":
+            raise OSError("delivery unavailable")
+        return deliver(token, raw_token, template)
+
+    with monkeypatch.context() as failing:
+        failing.setattr(send_security_link, "delay", fail_publish)
+        failing.setattr(emails, "deliver_security_link", fail_verification)
+        with pytest.raises(OSError, match="delivery unavailable"):
+            fulfilment.fulfil(paid_order)
+
+    paid_order.refresh_from_db()
+    assert paid_order.welcome_email_sent_at is not None
+    assert paid_order.verification_email_queued_at is None
+    assert "Please confirm your email address" not in subjects()
+    fulfil(paid_order)
+    fulfil(paid_order)
+    assert paid_order.verification_email_queued_at is not None
+    assert subjects().count("Please confirm your email address") == 1
+    assert sum(subject.startswith("Welcome") for subject in subjects()) == 1
 
 
 def test_deletion_between_activation_and_email_does_not_queue_erased_profile(paid_order, monkeypatch):

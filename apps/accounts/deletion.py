@@ -11,6 +11,7 @@ from apps.accounts.services import clear_failed_logins
 from apps.billing.models import Order
 from apps.core.models import AuditEvent
 from apps.entitlements.models import Subscription
+from apps.notifications.models import DeviceToken
 
 DELETED_ACCOUNT_DOMAIN = "deleted-account.invalid"
 
@@ -63,5 +64,13 @@ def delete_account(user: User) -> None:
         # while a profile photo remains publicly retrievable. No path is accepted from the app.
         locked_user.photo.storage.delete(locked_user.photo.name)
     email = locked_user.email
+    # Acquire installation locks before the deletion cascade touches push deliveries.
+    list(DeviceToken.objects.select_for_update().filter(user=locked_user).order_by("pk").values_list("pk", flat=True))
+    AuditEvent.objects.create(
+        action="accounts.user.deleted",
+        target_type=ContentType.objects.get_for_model(User),
+        target_id=str(locked_user.pk),
+        target_label="Deleted account",
+    )
     locked_user.delete()
     transaction.on_commit(lambda: clear_failed_logins(email))

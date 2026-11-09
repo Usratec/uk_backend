@@ -13,6 +13,10 @@ Uses existing events: package activation following payment, access ending soon, 
 
 Worker and beat are required. A durable per-device outbox recovers queue failures and retries provider failures up to five attempts with exponential backoff and Retry-After support. Successful devices are not retried when another device fails. Exhausted deliveries remain inspectable with a safe error code. Firebase acceptance does not prove device display; a worker crash after acceptance can redeliver, so deduplicate `notification_id` in the app. Invalid `UNREGISTERED` tokens are removed; generic validation/configuration errors do not remove devices.
 
+Firebase alerts carry generic text and a `notification_id`. The authenticated notification
+API supplies event details. A request already in flight can reach an installation during
+logout or an account switch, so the alert omits account-specific content.
+
 Before release, test real Firebase deliveries on iPhone and Android, permission denial, logout, token rotation, multiple devices and switching accounts. No live credentials or device delivery were exercised by automated tests.
 
 ## Trial period (UK-270)

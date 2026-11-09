@@ -6,6 +6,7 @@ acceptance and recording sent_at can redeliver; clients can deduplicate notifica
 
 import logging
 import random
+from contextlib import closing
 from datetime import timedelta
 from email.utils import parsedate_to_datetime
 
@@ -24,6 +25,7 @@ from apps.notifications.models import DeviceToken, Notification, PushDelivery
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
 MAX_DEVICES_PER_USER = 20
+DELIVERY_LEASE = timedelta(minutes=10)
 
 
 def register_device(*, user, token: str, platform: str) -> None:
@@ -38,8 +40,11 @@ def register_device(*, user, token: str, platform: str) -> None:
         device.deliveries.exclude(notification__user=user).delete()
 
 
+@transaction.atomic
 def remove_device_token(*, user, token: str) -> None:
-    DeviceToken.objects.filter(user=user, token=token).delete()
+    device = DeviceToken.objects.select_for_update().filter(user=user, token=token).first()
+    if device is not None:
+        device.delete()
 
 
 def queue_push(notification: Notification) -> None:
@@ -84,44 +89,52 @@ def _retry_after(response) -> int:
             return 0
 
 
-def send_message(delivery: PushDelivery) -> None:
-    if not settings.FIREBASE_PROJECT_ID:
-        raise PushDeliveryError("not_configured")
-    try:
-        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/firebase.messaging"])
-        with AuthorizedSession(credentials) as session:
-            notification = delivery.notification
-            response = session.post(
+class FirebaseClient:
+    def __init__(self) -> None:
+        self.session: AuthorizedSession | None = None
+
+    def close(self) -> None:
+        if self.session is not None:
+            self.session.close()
+
+    def send_message(self, delivery: PushDelivery) -> None:
+        if not settings.FIREBASE_PROJECT_ID:
+            raise PushDeliveryError("not_configured")
+        try:
+            if self.session is None:
+                credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/firebase.messaging"])
+                self.session = AuthorizedSession(credentials)
+            response = self.session.post(
                 f"https://fcm.googleapis.com/v1/projects/{settings.FIREBASE_PROJECT_ID}/messages:send",
                 json={
                     "message": {
                         "token": delivery.device.token,
-                        "notification": {"title": notification.title, "body": notification.text},
-                        "data": {
-                            "notification_id": str(notification.pk),
-                            "kind": notification.kind,
-                            "link": notification.link,
-                        },
+                        # A request already in flight can reach an installation after logout.
+                        # Keep account-specific content in the authenticated notification API.
+                        "notification": {"title": "1Theory", "body": "You have a new notification."},
+                        "data": {"notification_id": str(delivery.notification_id)},
                     }
                 },
                 timeout=10,
             )
-    except (GoogleAuthError, requests.RequestException):
-        # Exception text can contain request bodies/credentials. Store and log a safe code only.
-        raise PushDeliveryError("transport_error") from None
-    if response.status_code == 200:
-        return
-    try:
-        details = response.json().get("error", {}).get("details", [])
-        invalid = any(
-            detail.get("@type") == "type.googleapis.com/google.firebase.fcm.v1.FcmError"
-            and detail.get("errorCode") == "UNREGISTERED"
-            for detail in details
-            if isinstance(detail, dict)
+        except (GoogleAuthError, requests.RequestException):
+            # Exception text can contain request bodies/credentials. Store and log a safe code only.
+            raise PushDeliveryError("transport_error") from None
+        if response.status_code == 200:
+            return
+        try:
+            details = response.json().get("error", {}).get("details", [])
+            invalid = any(
+                detail.get("@type") == "type.googleapis.com/google.firebase.fcm.v1.FcmError"
+                and detail.get("errorCode") == "UNREGISTERED"
+                for detail in details
+                if isinstance(detail, dict)
+            )
+        except (ValueError, AttributeError, TypeError):
+            invalid = False
+        raise PushDeliveryError(
+            f"http_{response.status_code}", invalid_token=invalid, retry_after=_retry_after(response)
         )
-    except (ValueError, AttributeError, TypeError):
-        invalid = False
-    raise PushDeliveryError(f"http_{response.status_code}", invalid_token=invalid, retry_after=_retry_after(response))
 
 
 def deliver_pending(*, limit: int = 100) -> int:
@@ -135,47 +148,78 @@ def deliver_pending(*, limit: int = 100) -> int:
         .order_by("id")
         .values_list("pk", "device_id")[:limit]
     )
-    for delivery_id, device_id in candidates:
-        with transaction.atomic():
-            # Match registration/logout lock order: installation first, then deliveries.
-            # Skip busy installations; the scheduled sweep picks them up next time.
-            device = DeviceToken.objects.select_for_update(skip_locked=True).filter(pk=device_id).first()
-            if device is None:
-                continue
-            delivery = (
-                PushDelivery.objects.select_for_update(skip_locked=True)
-                .filter(
-                    pk=delivery_id,
-                    sent_at__isnull=True,
-                    attempts__lt=MAX_ATTEMPTS,
-                    next_attempt_at__lte=timezone.now(),
-                )
-                .first()
-            )
+    with closing(FirebaseClient()) as client:
+        for delivery_id, device_id in candidates:
+            delivery = _claim_delivery(delivery_id, device_id)
             if delivery is None:
                 continue
-            notification = Notification.objects.select_related("user").filter(pk=delivery.notification_id).first()
-            if notification is None or device.user_id != notification.user_id or not notification.user.is_active:
-                delivery.delete()
-                continue
-            delivery.device = device
-            delivery.notification = notification
-            delivery.attempts += 1
             try:
-                send_message(delivery)
+                client.send_message(delivery)
             except PushDeliveryError as error:
-                if error.invalid_token:
-                    device.delete()
-                    continue
-                delivery.last_error = error.code
-                seconds = max(error.retry_after, 60 * 2 ** (delivery.attempts - 1))
-                seconds += random.SystemRandom().randint(0, 30)
-                delivery.next_attempt_at = timezone.now() + timedelta(seconds=seconds)
-                if delivery.attempts == MAX_ATTEMPTS:
-                    logger.warning("Push delivery %s exhausted retries (%s)", delivery.pk, error.code)
+                _finish_delivery(delivery, error)
             else:
-                delivery.sent_at = timezone.now()
-                delivery.last_error = ""
-                delivered += 1
-            delivery.save(update_fields=["attempts", "sent_at", "last_error", "next_attempt_at", "updated_at"])
+                delivered += _finish_delivery(delivery)
     return delivered
+
+
+@transaction.atomic
+def _claim_delivery(delivery_id: int, device_id: int) -> PushDelivery | None:
+    # Lock in the same order as device registration. Release both locks before contacting FCM.
+    device = DeviceToken.objects.select_for_update(skip_locked=True).filter(pk=device_id).first()
+    if device is None:
+        return None
+    now = timezone.now()
+    delivery = (
+        PushDelivery.objects.select_for_update(skip_locked=True)
+        .filter(pk=delivery_id, sent_at__isnull=True, attempts__lt=MAX_ATTEMPTS, next_attempt_at__lte=now)
+        .first()
+    )
+    if delivery is None:
+        return None
+    if not Notification.objects.filter(
+        pk=delivery.notification_id, user_id=device.user_id, user__is_active=True
+    ).exists():
+        delivery.delete()
+        return None
+
+    # Reuse the due timestamp as a lease. A crashed worker leaves the row eligible after expiry.
+    delivery.next_attempt_at = now + DELIVERY_LEASE
+    delivery.save(update_fields=["next_attempt_at", "updated_at"])
+    delivery.device = device
+    return delivery
+
+
+@transaction.atomic
+def _finish_delivery(delivery: PushDelivery, error: PushDeliveryError | None = None) -> int:
+    device = (
+        DeviceToken.objects.select_for_update()
+        .filter(pk=delivery.device_id, user_id=delivery.device.user_id, token=delivery.device.token)
+        .first()
+    )
+    if device is None:
+        return 0
+    current = PushDelivery.objects.filter(
+        pk=delivery.pk, sent_at__isnull=True, next_attempt_at=delivery.next_attempt_at
+    )
+    # A stale response must not overwrite a newer claim or remove a reassigned installation.
+    if error is not None and error.invalid_token:
+        if current.exists():
+            device.delete()
+        return 0
+
+    now = timezone.now()
+    attempts = delivery.attempts + 1
+    if error is None:
+        return current.update(attempts=attempts, sent_at=now, last_error="", updated_at=now)
+
+    seconds = max(error.retry_after, 60 * 2 ** (attempts - 1))
+    seconds += random.SystemRandom().randint(0, 30)
+    updated = current.update(
+        attempts=attempts,
+        last_error=error.code,
+        next_attempt_at=now + timedelta(seconds=seconds),
+        updated_at=now,
+    )
+    if updated and attempts == MAX_ATTEMPTS:
+        logger.warning("Push delivery %s exhausted retries (%s)", delivery.pk, error.code)
+    return 0
