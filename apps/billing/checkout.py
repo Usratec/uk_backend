@@ -6,12 +6,14 @@ confirms the payment, because anything decided in this request could be faked by
 """
 
 import logging
+from dataclasses import asdict
 from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.billing.consent import ConsentSnapshot
 from apps.billing.models import Order, PromoCode
 from apps.billing.pricing import PROMO_HOLD, quote, slots_left
 from apps.catalog.models import Package
@@ -45,6 +47,7 @@ def start_checkout(
     *,
     package: Package,
     email: str,
+    consent: ConsentSnapshot,
     first_name: str = "",
     last_name: str = "",
     promo_code: str = "",
@@ -75,6 +78,10 @@ def start_checkout(
             discount_amount=priced.discount_amount,
             final_price=priced.final_price,
             promo_code=priced.promo_code,
+            terms_accepted=True,
+            immediate_access_accepted=True,
+            consent_recorded_at=timezone.now(),
+            **asdict(consent),
         )
 
     session = stripe_client.create_checkout_session(
