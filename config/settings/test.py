@@ -17,6 +17,8 @@ CSRF_TRUSTED_ORIGINS = []
 FRONTEND_BASE_URL = "http://frontend.test/"
 BACKEND_BASE_URL = "http://backend.test/"
 
+VIDEO_ALLOW_UNSIGNED_PLAYBACK = True
+
 # Tasks run immediately, in-process, so the suite needs no worker or queue.
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True

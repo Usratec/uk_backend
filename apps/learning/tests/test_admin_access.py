@@ -11,7 +11,7 @@ import pytest
 from django.urls import reverse
 
 from apps.accounts.models import User
-from apps.learning.roles import CONTENT_MODELS, PROGRESS_MODELS
+from apps.learning.roles import CONTENT_MODELS, INLINE_MODELS, PROGRESS_MODELS
 
 from .conftest import PASSWORD, staff_member
 
@@ -19,8 +19,7 @@ pytestmark = pytest.mark.django_db
 
 #: The models with a screen of their own. ``CONTENT_MODELS`` also names inlines, which have no
 #: changelist to open, so they are excluded rather than listed again by hand.
-INLINES = {"hazardwindow", "questionoption", "examquestion", "examhazardclip", "subtitle"}
-EDITABLE = tuple(model for model in CONTENT_MODELS if model not in INLINES)
+EDITABLE = tuple(model for model in CONTENT_MODELS if model not in INLINE_MODELS)
 LISTED = EDITABLE + PROGRESS_MODELS
 
 

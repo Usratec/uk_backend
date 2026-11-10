@@ -1,12 +1,16 @@
 from django.contrib import admin
+from django.contrib.admin.utils import unquote
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
-from django.http import HttpRequest
+from django.http import HttpRequest, HttpResponse
 
+from apps.accounts import services
 from apps.accounts.models import SecurityToken, User
 
 # Fields that decide what a staff member is allowed to do. Only superusers may change them,
 # otherwise anyone who can edit users could make themselves a superuser.
 PRIVILEGE_FIELDS = ("is_staff", "is_superuser", "groups", "user_permissions")
+
+AUDIT_SNAPSHOT = "_accounts_audit_snapshot"
 
 
 @admin.register(User)
@@ -70,6 +74,35 @@ class UserAdmin(DjangoUserAdmin):
             # Hiding the fields is not enough: a hand-written POST would still submit them.
             readonly += list(PRIVILEGE_FIELDS)
         return readonly
+
+    def save_model(self, request: HttpRequest, obj: User, form, change: bool) -> None:
+        setattr(request, AUDIT_SNAPSHOT, services.snapshot_user(obj) if change else {})
+        super().save_model(request, obj, form, change)
+
+    def save_related(self, request: HttpRequest, form, formsets, change: bool) -> None:
+        super().save_related(request, form, formsets, change)
+
+        user = form.instance
+        if change:
+            services.record_user_updated(
+                actor=request.user,
+                user=user,
+                before=getattr(request, AUDIT_SNAPSHOT, {}),
+            )
+        else:
+            services.record_user_created(actor=request.user, user=user)
+
+    def user_change_password(self, request: HttpRequest, id: str, form_url: str = "") -> HttpResponse:
+        user = self.get_object(request, unquote(id))
+        was = user.password if user is not None else None
+
+        response = super().user_change_password(request, id, form_url)
+
+        if request.method == "POST" and user is not None:
+            user.refresh_from_db(fields=["password"])
+            if user.password != was:
+                services.record_user_password_changed(actor=request.user, user=user)
+        return response
 
 
 @admin.register(SecurityToken)

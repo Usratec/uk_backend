@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from apps.billing.models import Order, OrderStatus, PromoCode
 from apps.billing.pricing import PROMO_HOLD, slots_left, uses_in_flight
+from apps.billing.tests.test_checkout import CONSENT_PAYLOAD
 from apps.entitlements import services as entitlements
 from apps.entitlements.models import RevocationReason
 from apps.integrations import stripe_client
@@ -49,7 +50,7 @@ def one_use_code(make_promo_code):
 def checkout(api, package, code="ONLYONE", email="buyer@example.com"):
     return api.post(
         URL,
-        {"package_id": package.pk, "email": email, "promo_code": code},
+        {**CONSENT_PAYLOAD, "package_id": package.pk, "email": email, "promo_code": code},
         format="json",
     )
 
@@ -212,7 +213,7 @@ class TestTheStripeSessionExpiresWithTheClaim:
 
     def test_an_undiscounted_checkout_is_not(self, api, package, stripe):
         """It holds nothing, so there is nothing to cut it short for."""
-        api.post(URL, {"package_id": package.pk, "email": "buyer@example.com"}, format="json")
+        api.post(URL, {**CONSENT_PAYLOAD, "package_id": package.pk, "email": "buyer@example.com"}, format="json")
 
         assert stripe[0]["expires_at"] is None
 

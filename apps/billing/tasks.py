@@ -6,7 +6,7 @@ from datetime import timedelta
 from celery import shared_task
 from django.utils import timezone
 
-from apps.billing import fulfilment
+from apps.billing import fulfilment, intent
 from apps.billing.checkout import UNPAID_ORDER_RETENTION
 from apps.billing.models import Order, OrderStatus
 
@@ -80,12 +80,19 @@ def delete_unfinished_orders() -> int:
     alone, and so is anything that already granted access.
     """
     cutoff = timezone.now() - UNPAID_ORDER_RETENTION
-    stale = Order.objects.filter(
-        status__in=(OrderStatus.PENDING, OrderStatus.FAILED),
-        created_at__lt=cutoff,
-        subscription__isnull=True,
-    )
+    stale = Order.objects.safe_to_delete().filter(created_at__lt=cutoff)
     count = stale.count()
     stale.delete()
+
+    held = Order.objects.holding_a_live_payment().filter(created_at__lt=cutoff).count()
+    if held:
+        logger.warning("Keeping %d old orders whose Stripe payment is not confirmed cancelled", held)
+
     logger.info("Deleted %d unfinished orders created before %s", count, cutoff)
     return count
+
+
+@shared_task
+def sweep_embedded_payments() -> int:
+    intent.expire_live_payments()
+    return intent.cancel_requested_payments()

@@ -4,6 +4,7 @@ from apps.billing import views
 
 urlpatterns = [
     path("payments/checkout/", views.CheckoutView.as_view(), name="checkout"),
+    path("payments/intent/", views.PaymentIntentView.as_view(), name="payment-intent"),
     path(
         "payments/promo-codes/validate/",
         views.PromoCodeValidateView.as_view(),

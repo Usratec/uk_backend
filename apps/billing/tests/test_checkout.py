@@ -12,6 +12,11 @@ from apps.integrations.stripe_client import CheckoutSession, StripeError
 pytestmark = pytest.mark.django_db
 
 URL = reverse("checkout")
+CONSENT_PAYLOAD = {
+    "terms_accepted": True,
+    "immediate_access_accepted": True,
+    "consent_version": "2026-11-draft",
+}
 
 
 @pytest.fixture
@@ -36,7 +41,9 @@ def stripe_down(monkeypatch):
 
 
 def checkout(api, package, **payload):
-    return api.post(URL, {"package_id": package.pk, "email": "buyer@example.com", **payload}, format="json")
+    return api.post(
+        URL, {**CONSENT_PAYLOAD, "package_id": package.pk, "email": "buyer@example.com", **payload}, format="json"
+    )
 
 
 class TestSuccessfulCheckout:
@@ -137,7 +144,7 @@ class TestPromoCodes:
 
 class TestRefusedCheckout:
     def test_unknown_package_returns_404(self, api, package, stripe):
-        response = api.post(URL, {"package_id": 9999, "email": "buyer@example.com"}, format="json")
+        response = api.post(URL, {**CONSENT_PAYLOAD, "package_id": 9999, "email": "buyer@example.com"}, format="json")
 
         assert response.status_code == 404
         assert response.data["detail"] == "Package not found or unavailable."
@@ -151,7 +158,7 @@ class TestRefusedCheckout:
 
     @pytest.mark.parametrize("field", ["package_id", "email"])
     def test_required_fields(self, api, package, stripe, field):
-        payload = {"package_id": package.pk, "email": "buyer@example.com"}
+        payload = {**CONSENT_PAYLOAD, "package_id": package.pk, "email": "buyer@example.com"}
         del payload[field]
 
         response = api.post(URL, payload, format="json")

@@ -1,12 +1,13 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from django.db.models import DecimalField, Q, QuerySet, Sum
+from django.db.models import DecimalField, Exists, Max, OuterRef, Q, QuerySet, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.models import Order, OrderStatus
+from apps.core.models import PublishStatus
 from apps.entitlements.models import Subscription
 from apps.learning.models import (
     EbookSectionProgress,
@@ -14,6 +15,7 @@ from apps.learning.models import (
     LessonProgress,
     MockAttempt,
     QuestionAttempt,
+    VideoProgress,
 )
 
 ZERO = Decimal("0.00")
@@ -124,6 +126,28 @@ def active_student_ids(filters) -> set[int]:
     return {student_id for _, student_id in activity_days(filters)}
 
 
+def last_activity(filters) -> dict[int, datetime]:
+    found: dict[int, datetime] = {}
+    for model, column in ACTIVITY_SOURCES:
+        rows = (
+            model.objects.filter(
+                student__is_staff=False,
+                student__is_superuser=False,
+                **{f"{column}__lt": filters.end_at},
+            )
+            .values("student_id")
+            .annotate(seen=Max(column))
+        )
+        for row in rows:
+            seen = row["seen"]
+            if seen is None:
+                continue
+            known = found.get(row["student_id"])
+            if known is None or seen > known:
+                found[row["student_id"]] = seen
+    return found
+
+
 def students_active_since(since: datetime) -> set[int]:
     found: set[int] = set()
     for model, column in ACTIVITY_SOURCES:
@@ -137,6 +161,25 @@ def students_active_since(since: datetime) -> set[int]:
 
 def student_matcher(cohort: QuerySet[User]) -> Q:
     return Q(user__in=cohort) | Q(email__in=cohort.values("email"))
+
+
+def completed_lessons() -> QuerySet[LessonProgress]:
+    return by_students(LessonProgress.objects.filter(subchapter__status=PublishStatus.PUBLISHED))
+
+
+def unfinished_video_progress() -> QuerySet[VideoProgress]:
+    completed = LessonProgress.objects.filter(
+        student_id=OuterRef("student_id"), subchapter_id=OuterRef("content__subchapter_id")
+    )
+    return (
+        by_students(VideoProgress.objects.filter(content__subchapter__status=PublishStatus.PUBLISHED))
+        .annotate(lesson_completed=Exists(completed))
+        .filter(lesson_completed=False)
+    )
+
+
+def unfinished_lesson_pairs() -> QuerySet:
+    return unfinished_video_progress().values("student_id", "content__subchapter_id").order_by().distinct()
 
 
 def percentage(part: int | Decimal | None, whole: int | Decimal | None) -> float | None:
