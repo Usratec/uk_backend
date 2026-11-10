@@ -1,8 +1,10 @@
 from django.conf import settings
 from django.contrib import admin
+from django.contrib.sitemaps.views import sitemap
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
+from apps.core.sitemaps import declared_sitemaps
 from apps.core.views import healthcheck
 
 admin.site.site_header = "CRM Administration"
@@ -22,7 +24,10 @@ urlpatterns = [
     path("api/", include("apps.learning.urls")),
     path("api/", include("apps.content.urls")),
     path("api/", include("apps.landing.urls")),
+    path("api/", include("apps.blog.urls")),
     path("api/", include("apps.notifications.urls")),
+    # Addresses on the storefront, not on this backend; see apps/core/sitemaps.py.
+    path("api/sitemap.xml", sitemap, {"sitemaps": declared_sitemaps()}, name="sitemap"),
 ]
 
 if settings.DEBUG and not settings.S3_BUCKET_NAME:

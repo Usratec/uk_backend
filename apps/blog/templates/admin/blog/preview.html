@@ -1,0 +1,61 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'back_office/css/learning-preview.css' %}">
+{% endblock %}
+
+{% block breadcrumbs %}
+    <div class="breadcrumbs">
+        <a href="{% url 'admin:index' %}">Home</a>
+        &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+        &rsaquo; <a href="{% url 'admin:blog_blogpost_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+        &rsaquo; Preview
+    </div>
+{% endblock %}
+
+{% block content %}
+    <div class="adm-preview">
+        {% if problems %}
+            <div class="adm-preview__problems">
+                <strong>This cannot be published yet:</strong>
+                <ul>{% for problem in problems %}<li>{{ problem }}</li>{% endfor %}</ul>
+            </div>
+        {% endif %}
+
+        <article class="adm-preview__page">
+            <p class="adm-preview__eyebrow">{{ post.category.name }}</p>
+            <h1>{{ post.title }}</h1>
+            <p class="adm-preview__meta">
+                {{ post.get_status_display }}
+                {% if post.byline %} · {{ post.byline }}{% endif %}
+                {% if post.publish_at %} · {{ post.publish_at }}{% endif %}
+            </p>
+
+            {% if post.social_image %}
+                <img class="adm-preview__image" src="{{ post.social_image.url }}"
+                     alt="The picture shown when this post is shared">
+            {% endif %}
+
+            {% if post.body_html %}
+                <div class="adm-preview__body">{{ post.body_html|safe }}</div>
+            {% else %}
+                <p class="adm-preview__placeholder">Nothing has been written yet.</p>
+            {% endif %}
+
+            <h2 class="adm-preview__block-title">Search and sharing</h2>
+            <ul class="adm-preview__answers">
+                <li>Title: {{ post.meta_title|default:post.title }}</li>
+                <li>Description: {{ post.meta_description|default:"(none)" }}</li>
+                <li>Canonical: {{ post.canonical_url|default:"(this post's own address)" }}</li>
+                <li>Address: /blog/{{ post.slug }}/</li>
+            </ul>
+            {% for warning in warnings %}
+                <p class="adm-preview__meta">{{ warning }}</p>
+            {% endfor %}
+        </article>
+
+        <p><a class="adm-btn" href="../change/">Back to editing</a></p>
+    </div>
+{% endblock %}
