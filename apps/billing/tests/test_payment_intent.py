@@ -15,7 +15,7 @@ PASSWORD = "Riverbank42"
 CONSENT = {
     "terms_accepted": True,
     "immediate_access_accepted": True,
-    "consent_version": "2026-11-01",
+    "consent_version": "2026-11-draft",
 }
 
 
@@ -68,7 +68,7 @@ class TestSuccessfulIntent:
         order = Order.objects.get()
         assert order.terms_accepted is True
         assert order.immediate_access_accepted is True
-        assert order.consent_version == "2026-11-01"
+        assert order.consent_version == "2026-11-draft"
         assert order.consent_recorded_at is not None
 
 

@@ -32,6 +32,21 @@ class OrderAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_select_related = ["package", "user"]
     readonly_fields = ["candidate"]
 
+    consent_fields = (
+        "terms_accepted",
+        "immediate_access_accepted",
+        "consent_version",
+        "consent_recorded_at",
+        "terms_wording",
+        "immediate_access_wording",
+        "terms_version",
+        "privacy_policy_version",
+    )
+
+    def get_fieldsets(self, request, obj=None):
+        fields = [field for field in self.get_fields(request, obj) if field not in self.consent_fields]
+        return [(None, {"fields": fields}), ("Purchase consent", {"fields": self.consent_fields})]
+
     @admin.display(description="Candidate")
     def candidate(self, order: Order) -> SafeString:
         """Back to the customer's CRM record, for staff who hold CRM access."""

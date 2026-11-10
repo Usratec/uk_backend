@@ -25,7 +25,7 @@ PASSWORD = "Riverbank42"
 CONSENT = {
     "terms_accepted": True,
     "immediate_access_accepted": True,
-    "consent_version": "2026-11-01",
+    "consent_version": "2026-11-draft",
 }
 
 

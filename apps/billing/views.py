@@ -107,6 +107,7 @@ class CheckoutView(APIView):
             order, session_url = checkout.start_checkout(
                 package=package,
                 email=data.validated_data["email"],
+                consent=data.validated_data["consent_snapshot"],
                 first_name=data.validated_data["first_name"],
                 last_name=data.validated_data["last_name"],
                 promo_code=data.validated_data["promo_code"],
@@ -160,11 +161,7 @@ class PaymentIntentView(APIView):
                 user=cast(User, request.user),
                 package=package,
                 promo_code=typed_promo_code,
-                consent=intent.Consent(
-                    terms_accepted=data.validated_data["terms_accepted"],
-                    immediate_access_accepted=data.validated_data["immediate_access_accepted"],
-                    consent_version=data.validated_data["consent_version"],
-                ),
+                consent=data.validated_data["consent_snapshot"],
             )
         except pricing.PromoCodeUnavailableError:
             return Response(

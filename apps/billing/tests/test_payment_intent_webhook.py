@@ -34,7 +34,7 @@ def embedded_order(package, buyer):
         stripe_payment_intent_id="pi_embedded_1",
         terms_accepted=True,
         immediate_access_accepted=True,
-        consent_version="2026-11-01",
+        consent_version="2026-11-draft",
     )
 
 

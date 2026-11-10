@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 from decimal import Decimal
 
@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.checkout import FreeOrderNotSupportedError
+from apps.billing.consent import ConsentSnapshot
 from apps.billing.models import UNSETTLED_STATUSES, Order, OrderStatus
 from apps.billing.pricing import PROMO_HOLD, PromoCodeUnavailableError, Quote, claim_slot, quote, slots_left
 from apps.catalog.models import Package
@@ -39,22 +40,13 @@ class PaymentUnverifiableError(Exception):
 
 
 @dataclass(frozen=True)
-class Consent:
-    """What the buyer agreed to on the checkout page, as the request stated it."""
-
-    terms_accepted: bool
-    immediate_access_accepted: bool
-    consent_version: str
-
-
-@dataclass(frozen=True)
 class StartedPayment:
     order: Order
     client_secret: str
     amount_pence: int
 
 
-def start_payment(*, user: User, package: Package, promo_code: str = "", consent: Consent) -> StartedPayment:
+def start_payment(*, user: User, package: Package, promo_code: str = "", consent: ConsentSnapshot) -> StartedPayment:
     priced = quote(package, promo_code)
     if priced.is_free:
         raise FreeOrderNotSupportedError
@@ -99,7 +91,7 @@ def _claim_a_slot_to_pay_in(*, user: User, package: Package) -> tuple[str | None
 
 
 def _resume(
-    *, order_id: str, user: User, priced: Quote, promo_code: str, consent: Consent, package: Package
+    *, order_id: str, user: User, priced: Quote, promo_code: str, consent: ConsentSnapshot, package: Package
 ) -> StartedPayment:
     order = Order.objects.get(pk=order_id)
 
@@ -128,7 +120,7 @@ def _resume(
     return _reprice(order=order, priced=priced, promo_code=promo_code, consent=consent, package=package)
 
 
-def _open(*, user: User, package: Package, priced: Quote, promo_code: str, consent: Consent) -> StartedPayment:
+def _open(*, user: User, package: Package, priced: Quote, promo_code: str, consent: ConsentSnapshot) -> StartedPayment:
     with transaction.atomic():
         claim_slot(promo_code)
         order = Order.objects.create(
@@ -151,7 +143,7 @@ def _open(*, user: User, package: Package, priced: Quote, promo_code: str, conse
 
 
 def _attach_intent(
-    *, order: Order, user: User, priced: Quote, consent: Consent, package: Package, discard_if_refused: bool
+    *, order: Order, user: User, priced: Quote, consent: ConsentSnapshot, package: Package, discard_if_refused: bool
 ) -> StartedPayment:
     try:
         intent = stripe_client.create_payment_intent(
@@ -179,7 +171,9 @@ def _attach_intent(
     return StartedPayment(order=order, client_secret=intent.client_secret, amount_pence=intent.amount)
 
 
-def _reprice(*, order: Order, priced: Quote, promo_code: str, consent: Consent, package: Package) -> StartedPayment:
+def _reprice(
+    *, order: Order, priced: Quote, promo_code: str, consent: ConsentSnapshot, package: Package
+) -> StartedPayment:
     changed = order.final_price != priced.final_price
     if changed:
         _check_slot_is_available(priced=priced, order=order)
@@ -254,12 +248,12 @@ def _expiry(priced: Quote):
     return timezone.now() + window
 
 
-def _consent_fields(consent: Consent) -> dict:
+def _consent_fields(consent: ConsentSnapshot) -> dict:
     return {
-        "terms_accepted": consent.terms_accepted,
-        "immediate_access_accepted": consent.immediate_access_accepted,
-        "consent_version": consent.consent_version,
+        "terms_accepted": True,
+        "immediate_access_accepted": True,
         "consent_recorded_at": timezone.now(),
+        **asdict(consent),
     }
 
 

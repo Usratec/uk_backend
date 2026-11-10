@@ -145,6 +145,16 @@ class Order(TimestampedModel):
 
     status = models.CharField(max_length=20, choices=OrderStatus.choices, default=OrderStatus.PENDING)
 
+    # Historical orders have no consent evidence; never infer acceptance for those purchases.
+    terms_accepted = models.BooleanField(null=True, blank=True)
+    immediate_access_accepted = models.BooleanField(null=True, blank=True)
+    consent_version = models.CharField(max_length=32, blank=True)
+    consent_recorded_at = models.DateTimeField(null=True, blank=True)
+    terms_wording = models.TextField(blank=True)
+    immediate_access_wording = models.TextField(blank=True)
+    terms_version = models.CharField(max_length=128, blank=True)
+    privacy_policy_version = models.CharField(max_length=128, blank=True)
+
     stripe_session_id = models.CharField(max_length=255, blank=True)
     stripe_payment_intent_id = models.CharField(max_length=255, blank=True)
     # Stripe's payment id. Unique, so one payment can never be credited to two orders.
@@ -181,21 +191,6 @@ class Order(TimestampedModel):
         blank=True,
         help_text="The message shown to the learner when a payment is refused.",
     )
-    terms_accepted = models.BooleanField(
-        default=False,
-        help_text="Only true if the buyer ticked the box themselves.",
-    )
-    immediate_access_accepted = models.BooleanField(
-        default=False,
-        help_text="The buyer agreed to start access at once and so to lose the cancellation right.",
-    )
-    consent_version = models.CharField(
-        max_length=50,
-        blank=True,
-        help_text="Which wording of the terms was shown. Kept as the record of what was agreed.",
-    )
-    consent_recorded_at = models.DateTimeField(null=True, blank=True)
-
     # Set when this purchase created the account, so a retry still knows a welcome email is owed
     # even though the account exists by then.
     welcome_email_required = models.BooleanField(default=False)
@@ -221,11 +216,6 @@ class Order(TimestampedModel):
                 "stripe_payment_intent_id",
                 condition=~models.Q(stripe_payment_intent_id=""),
                 name="order_unique_stripe_payment_intent",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(terms_accepted=False, immediate_access_accepted=False, consent_version="")
-                | models.Q(terms_accepted=True, immediate_access_accepted=True) & ~models.Q(consent_version=""),
-                name="order_consent_all_or_nothing",
             ),
         ]
 

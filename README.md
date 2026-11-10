@@ -103,6 +103,48 @@ To receive webhooks locally, forward them with the Stripe CLI:
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
 ```
 
+### Purchase consent
+
+`POST /api/payments/checkout/` requires `terms_accepted: true`,
+`immediate_access_accepted: true` (JSON booleans), and `consent_version` (up to 32 characters).
+Missing or invalid values produce field errors with status 400, without creating an order or
+contacting Stripe. Clients must send the version of the exact wording shown to the buyer.
+The two checkboxes remain separate; accepting Terms alone never grants immediate-access consent.
+The successful response is unchanged.
+
+Before enabling purchases, configure `PURCHASE_CONSENT_VERSIONS` as a JSON object keyed by each
+supported consent version. Each entry requires four nonempty strings: `terms_wording`,
+`immediate_access_wording`, `terms_version`, and `privacy_policy_version`. The wording must match
+the frontend, and the document versions must identify the actual Terms and Privacy Policy shown.
+For `2026-11-draft`, UK-315 specifies these checkbox texts:
+
+- “I have read the privacy policy and agree to the terms of 1theory.”
+- “I want my access to start straight away, and I understand that once it starts I lose my 14-day right to cancel.”
+
+The actual Terms/Privacy versions still need to be supplied by the business; no draft or
+production legal versions are invented in code. The registry defaults to `{}`; unavailable legal
+configuration returns 503 for otherwise valid requests. An unsupported consent version returns
+400 on `consent_version`. Keep a version available only while clients may legitimately submit
+that wording, and use a new version whenever the displayed wording or linked document versions
+change. Configure the same registry for the web process and workers, and restart them when it
+changes. Local Compose passes the setting from `.env`.
+
+The order stores both accepted values, server timestamp, consent version, exact checkbox wording
+and Terms/Privacy versions in the same transaction as the purchase attempt. A guest order has no
+user until the normal paid-order fulfilment links the account. Consent details are visible
+read-only in the order admin and are not exposed by public order-status responses.
+
+Payment confirmation emails use the order's saved immediate-access wording in both text and HTML,
+so later configuration changes cannot rewrite what the buyer accepted. Historical orders without
+a recorded consent omit this section. Failed Stripe requests and failed or cancelled payments
+retain the snapshot with the order; the existing cleanup removes unpaid/failed orders and their
+consent after 15 days. Paid and refunded orders follow their existing retention.
+
+The validation and snapshot resolver are reusable by the future UK-330 PaymentIntent endpoint;
+this change does not add that endpoint. Stage verification after deployment: configure the real
+legal versions, coordinate the matching FE consent version, then check a successful purchase,
+field-error responses, read-only admin details and both email formats.
+
 ### What happens after a payment
 
 Stripe's webhook marks the order paid and queues a background job, which creates the account if
