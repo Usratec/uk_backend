@@ -23,7 +23,7 @@ def image_file(request, key) -> HttpResponseBase:
 
 @require_GET
 def social_image(request, slug: str) -> HttpResponseBase:
-    post = services.live_post(slug=slug)
+    post = services.live_post(slug=slug) or services.redirect_target(slug=slug)
     if post is None or not post.social_image:
         return HttpResponse(MISSING, status=404)
     return _serve(post.social_image, "")

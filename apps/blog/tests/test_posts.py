@@ -4,6 +4,7 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.blog import services
 from apps.blog.models import BlogStatus
 
 from .conftest import CONTENT, make_category, make_post, uploaded_image
@@ -226,3 +227,24 @@ class TestSocialImage:
         post = make_post()
 
         assert api.get(reverse("blog-post-social-image", args=[post.slug])).status_code == 404
+
+    def test_an_old_address_still_serves_the_picture(self, api):
+        post = make_post(slug="old-address", social_image=uploaded_image())
+        post.slug = "new-address"
+        post.save()
+        services.record_slug_change(post=post, previous_slug="old-address")
+
+        response = api.get(reverse("blog-post-social-image", args=["old-address"]))
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "image/png"
+
+    def test_an_old_address_of_a_draft_hands_nothing_out(self, api):
+        post = make_post(slug="old-address", social_image=uploaded_image())
+        post.slug = "new-address"
+        post.save()
+        services.record_slug_change(post=post, previous_slug="old-address")
+        post.status = BlogStatus.DRAFT
+        post.save(update_fields=["status", "updated_at"])
+
+        assert api.get(reverse("blog-post-social-image", args=["old-address"])).status_code == 404

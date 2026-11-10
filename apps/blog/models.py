@@ -44,8 +44,15 @@ class BlogCategory(TimestampedModel):
     def __str__(self) -> str:
         return self.name
 
-    def save(self, *args, **kwargs):
+    def clean(self) -> None:
+        super().clean()
+        self._normalize_slug()
+
+    def _normalize_slug(self) -> None:
         self.slug = slugify(self.slug or self.name)[:80]
+
+    def save(self, *args, **kwargs):
+        self._normalize_slug()
         super().save(*args, **kwargs)
 
 
@@ -206,12 +213,16 @@ class BlogPost(TimestampedModel):
 
     def clean(self) -> None:
         super().clean()
+        self._normalize_slug()
         if self.status != BlogStatus.DRAFT and self.publish_at is None:
             raise ValidationError({"publish_at": ["A scheduled or published post needs a publish date."]})
         self._check_social_image()
 
-    def save(self, *args, **kwargs):
+    def _normalize_slug(self) -> None:
         self.slug = slugify(self.slug or self.title)[:SLUG_MAX_LENGTH]
+
+    def save(self, *args, **kwargs):
+        self._normalize_slug()
         self.body_html = html.clean(self.body_html)
         self._check_social_image()
         super().save(*args, **kwargs)

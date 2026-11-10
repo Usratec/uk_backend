@@ -6,7 +6,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.blog.models import BlogImage, BlogPost, BlogPostRedirect, BlogStatus
+from apps.blog import services
+from apps.blog.models import BlogCategory, BlogImage, BlogPost, BlogPostRedirect, BlogStatus
 
 from .conftest import CONTENT, PASSWORD, make_category, make_post, uploaded_image
 
@@ -108,6 +109,31 @@ class TestWritingAPost:
 
         assert response.status_code == 200
         assert BlogPost.objects.count() == 1
+
+    def test_a_slug_that_only_collides_once_tidied_is_refused_with_a_message(self, manager_client):
+        make_post(slug="taken")
+
+        response = manager_client.post(ADD_URL, form_data(slug="Taken--"))
+
+        assert response.status_code == 200
+        assert b"already exists" in response.content
+        assert BlogPost.objects.count() == 1
+
+    def test_a_slug_is_tidied_up_before_it_is_stored(self, manager_client):
+        manager_client.post(ADD_URL, form_data(slug="Hello--World"))
+
+        assert BlogPost.objects.get().slug == "hello-world"
+
+    def test_a_category_slug_that_only_collides_once_tidied_is_refused(self, manager_client):
+        make_category(name="Theory tips", slug="theory-tips")
+
+        response = manager_client.post(
+            reverse("admin:blog_blogcategory_add"),
+            {"name": "Something else", "slug": "Theory--Tips", "description": ""},
+        )
+
+        assert response.status_code == 200
+        assert BlogCategory.objects.count() == 1
 
     def test_a_post_can_be_deleted(self, manager_client):
         post = make_post()
@@ -226,6 +252,17 @@ class TestTheAdminActions:
         post.refresh_from_db()
 
         assert post.status == BlogStatus.DRAFT
+
+    def test_an_unexpected_failure_is_not_reported_as_a_permission_problem(self, manager_client, monkeypatch):
+        post = make_post(status=BlogStatus.DRAFT)
+
+        def explode(**kwargs):
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(services, "publish", explode)
+
+        with pytest.raises(RuntimeError):
+            act(manager_client, "publish_selected", post)
 
 
 class TestPictureUploads:

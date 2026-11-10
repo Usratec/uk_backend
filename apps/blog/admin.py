@@ -16,6 +16,7 @@ from apps.blog.roles import BLOG_MANAGER
 from apps.blog.widgets import BlogCKEditor5Widget
 from apps.staff.access import granted_permissions
 from apps.staff.admin import PermissionRequiredAdminMixin, badge, placeholder
+from apps.staff.authz import PermissionDeniedError
 
 STATUS_TONES: dict[str, str] = {
     BlogStatus.PUBLISHED: "success",
@@ -294,7 +295,7 @@ class BlogPostAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
                 changed += 1
             except (services.PostNotReadyError, services.ScheduleInThePastError) as error:
                 self.message_user(request, f"{post}: {error}", level=messages.ERROR)
-            except Exception:
+            except PermissionDeniedError:
                 self.message_user(request, NO_PUBLISH_PERMISSION, level=messages.ERROR)
                 return
         if changed:
