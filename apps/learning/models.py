@@ -23,11 +23,13 @@ the public contract once published.
 """
 
 from decimal import Decimal
+from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
+from django.utils import timezone
 from django.utils.text import slugify
 
 from apps.core import images
@@ -201,6 +203,28 @@ def media_path(instance, filename: str) -> str:
     return f"learning/{instance.kind}/{filename}"
 
 
+class VideoProcessingStatus(models.TextChoices):
+    LEGACY = "legacy", "Uploaded through the admin"
+    PENDING_UPLOAD = "pending_upload", "Waiting for the upload"
+    UPLOADED = "uploaded", "Uploaded, being checked"
+    QUEUED = "queued", "Queued for processing"
+    PROCESSING = "processing", "Processing"
+    READY = "ready", "Ready to stream"
+    FAILED = "failed", "Processing failed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+UNFINISHED_UPLOAD_STATUSES = (
+    VideoProcessingStatus.PENDING_UPLOAD,
+    VideoProcessingStatus.UPLOADED,
+)
+
+ACTIVE_PROCESSING_STATUSES = (
+    VideoProcessingStatus.QUEUED,
+    VideoProcessingStatus.PROCESSING,
+)
+
+
 class MediaAsset(TimestampedModel):
     """A file staff uploaded — a video, a document, an image.
 
@@ -223,11 +247,95 @@ class MediaAsset(TimestampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploads"
     )
 
+    upload_token = models.UUIDField(
+        default=uuid4,
+        unique=True,
+        editable=False,
+        help_text="How the frontend refers to this file while uploading it and when asking to play it.",
+    )
+    processing_status = models.CharField(
+        max_length=20,
+        choices=VideoProcessingStatus.choices,
+        default=VideoProcessingStatus.LEGACY,
+        editable=False,
+        db_index=True,
+        help_text="Where this file is between being chosen and being ready to stream.",
+    )
+    upload_expires_at = models.DateTimeField(
+        null=True, blank=True, editable=False, help_text="After this the upload can no longer be finished."
+    )
+    multipart_upload_id = models.CharField(max_length=255, blank=True, editable=False)
+    declared_size_bytes = models.PositiveBigIntegerField(
+        default=0, editable=False, help_text="The size the browser said it would send, before it sent anything."
+    )
+    hls_prefix = models.CharField(max_length=255, blank=True, editable=False)
+    hls_master_key = models.CharField(max_length=255, blank=True, editable=False)
+    mp4_key = models.CharField(
+        max_length=255,
+        blank=True,
+        editable=False,
+        help_text="The single optimized MP4, for a player that cannot take the HLS ladder.",
+    )
+    renditions = models.JSONField(
+        default=list, blank=True, editable=False, help_text="The quality levels that were produced."
+    )
+    duration_seconds = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, editable=False)
+    source_width = models.PositiveIntegerField(default=0, editable=False)
+    source_height = models.PositiveIntegerField(default=0, editable=False)
+    source_frame_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="The frame rate the file was uploaded at, which every output is encoded at.",
+    )
+    processing_job = models.UUIDField(
+        null=True, blank=True, editable=False, help_text="The processing run that owns this file right now."
+    )
+    processing_error = models.TextField(blank=True, editable=False)
+    processing_attempts = models.PositiveSmallIntegerField(default=0, editable=False)
+    queued_at = models.DateTimeField(null=True, blank=True, editable=False)
+    processing_started_at = models.DateTimeField(null=True, blank=True, editable=False)
+    processing_heartbeat_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="Last sign of life from the worker holding this file. Stops when its task dies.",
+    )
+    processing_finished_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["processing_status", "upload_expires_at"])]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(processing_status=VideoProcessingStatus.READY) | ~models.Q(hls_master_key=""),
+                name="ready_video_has_a_master_playlist",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.title
+
+    @property
+    def is_streaming(self) -> bool:
+        return bool(self.hls_master_key) and self.processing_status != VideoProcessingStatus.CANCELLED
+
+    @property
+    def has_source_file(self) -> bool:
+        return bool(self.file) and self.processing_status not in (
+            VideoProcessingStatus.PENDING_UPLOAD,
+            VideoProcessingStatus.CANCELLED,
+        )
+
+    @property
+    def is_playable_source(self) -> bool:
+        if not self.file:
+            return False
+        if self.processing_status in (VideoProcessingStatus.LEGACY, VideoProcessingStatus.READY):
+            return True
+        return self.is_streaming
 
     def save(self, *args, **kwargs):
         # The browser's declared type is ignored. The bytes decide, and they have to match the kind.
@@ -248,7 +356,10 @@ class MediaAsset(TimestampedModel):
                 raise ValidationError({"file": "This file is not a format this kind of upload accepts."})
             else:
                 self.content_type = require_upload(self.file, allowed)
-        if self.file:
+
+        # Only a file that came through Django has its size read here. A direct upload's object
+        # may not exist yet, and asking the bucket for it would be a network call per save.
+        if self.file and self.processing_status == VideoProcessingStatus.LEGACY:
             self.size_bytes = getattr(self.file, "size", 0) or 0
         super().save(*args, **kwargs)
 
@@ -537,15 +648,48 @@ class QuestionAttempt(TimestampedModel):
 
     Keeping every attempt is what makes "questions I got wrong" and "questions I keep getting
     wrong" answerable later; a single row per question would lose that the moment they retried.
+
+    ``answered_at`` records when the student answered, while ``created_at`` records when the
+    answer was saved. Offline answers keep their original date, so streaks, mistakes, and
+    mastery are calculated correctly.
     """
 
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="question_attempts")
     question = models.ForeignKey(Question, on_delete=models.CASCADE, related_name="attempts")
     was_correct = models.BooleanField()
+    answered_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="When the student answered. The same as created_at unless it was answered offline.",
+    )
+    # Scoped to the student by the constraint below, so two people may both send "answer-1".
+    client_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="The id the PWA gave this answer, so synchronising it twice records it once. Empty when online.",
+    )
+    client_payload = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        editable=False,
+        help_text="A digest of what was synchronised under that id, so the same id sent with a different answer "
+        "is refused rather than quietly ignored.",
+    )
 
     class Meta:
-        ordering = ["-created_at"]
-        indexes = [models.Index(fields=["student", "question", "-created_at"])]
+        ordering = ["-answered_at"]
+        indexes = [
+            models.Index(fields=["student", "question", "-answered_at"]),
+            models.Index(fields=["student", "-answered_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student", "client_id"],
+                condition=~models.Q(client_id=""),
+                name="one_attempt_per_client_id_per_student",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.student} · {self.question.key} · {'right' if self.was_correct else 'wrong'}"

@@ -3,16 +3,40 @@
 from datetime import timedelta
 
 import pytest
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 
 from apps.core.models import AuditEvent, PublishStatus
 from apps.learning import services
-from apps.learning.models import Chapter, ContentType, LearningContent, Subchapter
+from apps.learning.models import (
+    Chapter,
+    ContentType,
+    LearningContent,
+    MediaAsset,
+    MediaKind,
+    Subchapter,
+)
 from apps.staff.authz import PermissionDeniedError
 
-from .conftest import CONTENT
+from .conftest import CONTENT, mp4_bytes
 
 pytestmark = pytest.mark.django_db
+
+
+def video_block(subchapter, slug="the-clip", title="The clip", order=1) -> LearningContent:
+    asset = MediaAsset.objects.create(
+        title=title,
+        kind=MediaKind.VIDEO,
+        file=SimpleUploadedFile(f"{slug}.mp4", mp4_bytes(), content_type="video/mp4"),
+    )
+    return LearningContent.objects.create(
+        subchapter=subchapter,
+        slug=slug,
+        title=title,
+        content_type=ContentType.VIDEO,
+        media=asset,
+        order=order,
+    )
 
 
 class TestPermission:
@@ -86,8 +110,30 @@ class TestChecksBeforePublishing:
         with pytest.raises(services.NotReadyToPublishError, match="not published"):
             services.publish(actor=publisher, instance=subchapter)
 
-    def test_an_empty_subchapter_is_allowed_but_says_it_is_empty(self, publisher, chapter, subchapter):
-        """Material is built top-down, so a subchapter is always empty when it is published."""
+    def test_an_empty_subchapter_is_refused(self, publisher, chapter, subchapter):
+        """A lesson with nothing in it is one students can open and find blank."""
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        with pytest.raises(services.NotReadyToPublishError, match="nothing in this lesson"):
+            services.publish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+
+    def test_a_subchapter_whose_only_block_is_empty_is_refused(self, publisher, chapter, subchapter):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+        LearningContent.objects.create(subchapter=subchapter, slug="empty", title="Empty", body_html="<p>&nbsp;</p>")
+
+        with pytest.raises(services.NotReadyToPublishError, match="nothing in this lesson"):
+            services.publish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+
+    def test_a_subchapter_is_published_on_a_block_that_is_still_a_draft(self, publisher, chapter, subchapter, content):
+        """Written material is enough: the block itself cannot go live until the lesson has."""
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
 
@@ -96,6 +142,45 @@ class TestChecksBeforePublishing:
         subchapter.refresh_from_db()
         assert subchapter.is_published
         assert "nothing in this subchapter" in services.warnings_about(subchapter)[0].lower()
+
+    def test_a_subchapter_holding_a_video_is_published(self, publisher, chapter, subchapter):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+        video_block(subchapter)
+
+        services.publish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.is_published
+
+    def test_a_subchapter_holding_a_question_from_the_bank_is_published(
+        self, publisher, chapter, subchapter, make_question
+    ):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+        question = make_question(key="limits")
+        services.publish(actor=publisher, instance=question)
+        LearningContent.objects.create(
+            subchapter=subchapter,
+            slug="check",
+            title="Check",
+            content_type=ContentType.QUESTION,
+            question=question,
+            order=1,
+        )
+
+        services.publish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.is_published
+
+    def test_publishing_a_chapter_leaves_its_lessons_as_drafts(self, publisher, chapter, subchapter, content):
+        services.publish(actor=publisher, instance=chapter)
+
+        subchapter.refresh_from_db()
+        content.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+        assert content.status == PublishStatus.DRAFT
 
     def test_an_empty_chapter_is_allowed_but_says_it_is_empty(self, publisher, chapter):
         services.publish(actor=publisher, instance=chapter)

@@ -16,6 +16,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts import emails
 from apps.accounts.models import AuthMethod, SecurityToken, TokenPurpose, User
+from apps.core import audit
+from apps.core.models import AuditEvent
 
 logger = logging.getLogger(__name__)
 
@@ -278,3 +280,82 @@ def set_password(user: User, new_password: str) -> None:
     # Someone who has just proved ownership by email should not stay locked out.
     clear_failed_logins(user.email)
     emails.send_quietly(emails.send_password_changed, user)
+
+
+NEVER_AUDITED = frozenset({"id", "created_at", "updated_at"})
+
+AUDITED_RELATIONS = ("groups", "user_permissions")
+
+CREDENTIAL_FIELD = "password"
+
+REDACTED = "(not shown)"
+
+
+def _audited_fields() -> tuple[str, ...]:
+    return tuple(field.name for field in User._meta.concrete_fields if field.name not in NEVER_AUDITED)
+
+
+def _related_labels(user: User, relation: str) -> str:
+    return ", ".join(sorted(str(item) for item in getattr(user, relation).all()))
+
+
+def snapshot_user(user: User) -> dict:
+    if user.pk is None:
+        return {}
+    stored = User.objects.filter(pk=user.pk).values(*_audited_fields()).first()
+    if stored is None:
+        return {}
+    for relation in AUDITED_RELATIONS:
+        stored[relation] = _related_labels(user, relation)
+    return stored
+
+
+def record_user_created(*, actor, user: User, reason: str = "") -> AuditEvent:
+    present = {field: value for field, value in snapshot_user(user).items() if value not in (None, "", False)}
+    present.pop(CREDENTIAL_FIELD, None)
+
+    event = audit.record(
+        actor=actor,
+        action="accounts.user.created",
+        target=user,
+        changes=audit.diff({}, present),
+        reason=reason,
+    )
+    logger.info("%s created user %s", getattr(actor, "email", "system"), user.pk)
+    return event
+
+
+def record_user_updated(*, actor, user: User, before: dict, reason: str = "") -> AuditEvent | None:
+    after = snapshot_user(user)
+
+    was_credential = before.pop(CREDENTIAL_FIELD, None)
+    is_credential = after.pop(CREDENTIAL_FIELD, None)
+
+    difference = audit.diff(before, after)
+    if was_credential != is_credential:
+        difference[CREDENTIAL_FIELD] = {"from": REDACTED, "to": REDACTED}
+
+    if not difference:
+        return None
+
+    event = audit.record(
+        actor=actor,
+        action="accounts.user.updated",
+        target=user,
+        changes=difference,
+        reason=reason,
+    )
+    logger.info("%s updated user %s", getattr(actor, "email", "system"), user.pk)
+    return event
+
+
+def record_user_password_changed(*, actor, user: User, reason: str = "") -> AuditEvent:
+    event = audit.record(
+        actor=actor,
+        action="accounts.user.password_changed",
+        target=user,
+        changes={CREDENTIAL_FIELD: {"from": REDACTED, "to": REDACTED}},
+        reason=reason,
+    )
+    logger.warning("%s changed the password of user %s", getattr(actor, "email", "system"), user.pk)
+    return event

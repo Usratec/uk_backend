@@ -10,6 +10,8 @@ from decimal import Decimal
 
 import stripe
 from django.conf import settings
+from stripe import RequestOptions
+from stripe.params import PaymentIntentCreateParams, PaymentIntentUpdateParams
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,15 @@ class InvalidWebhookSignatureError(Exception):
 class CheckoutSession:
     id: str
     url: str
+
+
+@dataclass(frozen=True)
+class PaymentIntent:
+    id: str
+    client_secret: str
+    amount: int
+    currency: str
+    status: str
 
 
 def _client() -> stripe.StripeClient:
@@ -88,6 +99,104 @@ def create_checkout_session(
         raise StripeError(str(error)) from error
 
     return CheckoutSession(id=session.id, url=session.url or "")
+
+
+def _as_payment_intent(intent) -> PaymentIntent:
+    return PaymentIntent(
+        id=intent.id,
+        client_secret=intent.client_secret or "",
+        amount=intent.amount or 0,
+        currency=intent.currency or "",
+        status=intent.status or "",
+    )
+
+
+def create_payment_intent(
+    *,
+    amount: Decimal,
+    description: str,
+    reference: str,
+    user_id: int,
+    receipt_email: str = "",
+    idempotency_key: str = "",
+) -> PaymentIntent:
+    options: RequestOptions = {}
+    if idempotency_key:
+        options["idempotency_key"] = idempotency_key
+
+    params: PaymentIntentCreateParams = {
+        "amount": to_pence(amount),
+        "currency": CHECKOUT_CURRENCY,
+        "description": description,
+        "automatic_payment_methods": {"enabled": True},
+        "metadata": {"order_id": reference, "user_id": str(user_id)},
+    }
+    if receipt_email:
+        params["receipt_email"] = receipt_email
+
+    try:
+        intent = _client().v1.payment_intents.create(params=params, options=options or None)
+    except stripe.StripeError as error:
+        logger.exception("Stripe refused to create a payment intent for order %s", reference)
+        raise StripeError(str(error)) from error
+
+    return _as_payment_intent(intent)
+
+
+def update_payment_intent(*, intent_id: str, amount: Decimal, description: str = "") -> PaymentIntent:
+    params: PaymentIntentUpdateParams = {"amount": to_pence(amount)}
+    if description:
+        params["description"] = description
+
+    try:
+        intent = _client().v1.payment_intents.update(intent_id, params=params)
+    except stripe.StripeError as error:
+        logger.exception("Stripe refused to re-price payment intent %s", intent_id)
+        raise StripeError(str(error)) from error
+
+    return _as_payment_intent(intent)
+
+
+def retrieve_payment_intent(intent_id: str) -> PaymentIntent:
+    try:
+        intent = _client().v1.payment_intents.retrieve(intent_id)
+    except stripe.StripeError as error:
+        logger.exception("Stripe could not return payment intent %s", intent_id)
+        raise StripeError(str(error)) from error
+
+    return _as_payment_intent(intent)
+
+
+def cancel_payment_intent(intent_id: str) -> PaymentIntent:
+    try:
+        intent = _client().v1.payment_intents.cancel(intent_id)
+    except stripe.StripeError as error:
+        logger.warning("Could not cancel payment intent %s: %s", intent_id, error)
+        raise StripeError(str(error)) from error
+
+    return _as_payment_intent(intent)
+
+
+@dataclass(frozen=True)
+class PaymentMethodDomain:
+    id: str
+    domain_name: str
+    wallets: dict[str, bool]
+
+
+def register_payment_method_domain(domain: str) -> PaymentMethodDomain:
+    try:
+        registered = _client().v1.payment_method_domains.create(params={"domain_name": domain})
+    except stripe.StripeError as error:
+        logger.exception("Stripe refused to register the payment method domain %s", domain)
+        raise StripeError(str(error)) from error
+
+    wallets = {}
+    for wallet in ("apple_pay", "google_pay"):
+        state = getattr(registered, wallet, None)
+        wallets[wallet] = bool(state and getattr(state, "status", "") == "active")
+
+    return PaymentMethodDomain(id=registered.id, domain_name=registered.domain_name, wallets=wallets)
 
 
 def read_webhook_event(payload: bytes, signature: str) -> dict:

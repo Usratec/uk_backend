@@ -9,7 +9,16 @@ from apps.billing.models import Order, OrderStatus
 from apps.catalog.models import Package
 from apps.core.models import PublishStatus
 from apps.entitlements.models import Subscription
-from apps.learning.models import Chapter, LessonProgress, Question, QuestionAttempt, Subchapter
+from apps.learning.models import (
+    Chapter,
+    ContentType,
+    LearningContent,
+    LessonProgress,
+    Question,
+    QuestionAttempt,
+    Subchapter,
+    VideoProgress,
+)
 
 PASSWORD = "Riverbank42"
 
@@ -101,6 +110,27 @@ def study(student, lesson, *, days_ago=1):
     progress = LessonProgress.objects.create(student=student, subchapter=lesson)
     LessonProgress.objects.filter(pk=progress.pk).update(completed_at=timezone.now() - timedelta(days=days_ago))
     return progress
+
+
+def make_video(lesson, *, slug=None, status=PublishStatus.PUBLISHED):
+    count = LearningContent.objects.filter(subchapter=lesson).count() + 1
+    return LearningContent.objects.create(
+        subchapter=lesson,
+        content_type=ContentType.VIDEO,
+        slug=slug or f"{lesson.slug}-video-{count}",
+        title=f"{lesson.title} video {count}",
+        order=count,
+        status=status,
+    )
+
+
+def watch(student, lesson, *, position=50, duration=100, video=None):
+    return VideoProgress.objects.create(
+        student=student,
+        content=video or make_video(lesson),
+        position_seconds=Decimal(str(position)),
+        duration_seconds=None if duration is None else Decimal(str(duration)),
+    )
 
 
 def answer(student, question, *, correct=True, days_ago=1):

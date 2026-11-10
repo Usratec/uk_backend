@@ -6,14 +6,16 @@ confirms the payment, because anything decided in this request could be faked by
 """
 
 import logging
+from dataclasses import asdict
 from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.billing.consent import ConsentSnapshot
 from apps.billing.models import Order, PromoCode
-from apps.billing.pricing import PROMO_HOLD, quote, slots_left
+from apps.billing.pricing import PROMO_HOLD, claim_slot, quote
 from apps.catalog.models import Package
 from apps.integrations import stripe_client
 
@@ -37,14 +39,11 @@ class FreeOrderNotSupportedError(Exception):
     """The discount covers the whole price, and Stripe cannot take a payment of nothing."""
 
 
-class PromoCodeUnavailableError(Exception):
-    """The campaign is still running but every redemption has been claimed."""
-
-
 def start_checkout(
     *,
     package: Package,
     email: str,
+    consent: ConsentSnapshot,
     first_name: str = "",
     last_name: str = "",
     promo_code: str = "",
@@ -65,7 +64,7 @@ def start_checkout(
     # The claim and the order are taken together, under a lock on the code, so two checkouts
     # arriving at once cannot both read the same last redemption as free.
     with transaction.atomic():
-        _claim_promo_slot(promo_code)
+        claim_slot(promo_code)
         order = Order.objects.create(
             package=package,
             email=email.lower(),
@@ -75,6 +74,10 @@ def start_checkout(
             discount_amount=priced.discount_amount,
             final_price=priced.final_price,
             promo_code=priced.promo_code,
+            terms_accepted=True,
+            immediate_access_accepted=True,
+            consent_recorded_at=timezone.now(),
+            **asdict(consent),
         )
 
     session = stripe_client.create_checkout_session(
@@ -96,30 +99,6 @@ def start_checkout(
     logger.info("Started checkout for order %s", order.id)
 
     return order, session.url
-
-
-def _claim_promo_slot(code: str) -> None:
-    """Reserve a discount code redemption or reject checkout.
-
-    Must be called inside the order-creation transaction to prevent
-    multiple orders from using the same remaining redemption.
-
-    Unknown or expired codes are ignored, and the customer pays full price.
-    If the code has no redemptions left, reject checkout to avoid charging
-    more than the price shown to the customer.
-    """
-    typed = code.strip()
-    if not typed:
-        return
-
-    promo_code = PromoCode.objects.select_for_update().filter(code__iexact=typed).first()
-    if promo_code is None or not promo_code.is_within_window():
-        return
-
-    remaining = slots_left(promo_code)
-    if remaining is not None and remaining <= 0:
-        logger.info("Refusing checkout: every redemption of %s is claimed", promo_code.code)
-        raise PromoCodeUnavailableError
 
 
 def _session_expiry(promo_code: PromoCode | None) -> int | None:

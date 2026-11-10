@@ -41,8 +41,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Check Dev migration deployment
+        run: bash tests/deploy/test_dev_migrations.sh
+
       - name: Check Dev deployment waiter
         run: bash tests/deploy/test_wait_ecs_dev.sh
+
+      - name: Validate video infrastructure
+        run: uvx --from cfn-lint==1.59.0 cfn-lint infrastructure/video/stack.yaml
+
+      - name: Install video tools for integration tests
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y ffmpeg
 
       - name: Lint
         run: uv run ruff check .

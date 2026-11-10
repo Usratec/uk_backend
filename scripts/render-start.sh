@@ -54,10 +54,12 @@ if [ "${RUN_WORKER_IN_WEB:-false}" = "true" ]; then
     # --pool=solo keeps the worker to one process: a prefork pool would fork a second copy of
     # Django, and three copies do not fit in the free plan's 512 MB.
     # The schedule file goes in /tmp because that is writable whatever the platform does to /app.
-    log "starting the Celery worker with embedded beat"
+    queues="${CELERY_QUEUES:-celery,${VIDEO_TASK_QUEUE:-video}}"
+    log "starting the Celery worker with embedded beat on queues: $queues"
     celery --app config worker \
         --beat \
         --pool=solo \
+        --queues "$queues" \
         --schedule=/tmp/celerybeat-schedule \
         --loglevel "${CELERY_LOG_LEVEL:-info}" &
     pids+=($!)
