@@ -223,6 +223,21 @@ class Order(TimestampedModel):
         return f"{self.email} | {self.package.name} | {self.get_status_display()}"
 
 
+class PurchaseConsentVersion(TimestampedModel):
+    consent_version = models.CharField(max_length=32, unique=True, help_text="The version sent by checkout.")
+    terms_wording = models.TextField()
+    immediate_access_wording = models.TextField()
+    terms_version = models.CharField(max_length=128)
+    privacy_policy_version = models.CharField(max_length=128)
+    is_active = models.BooleanField(default=True, help_text="Allow checkout to submit this version.")
+
+    class Meta:
+        ordering = ["consent_version"]
+
+    def __str__(self) -> str:
+        return self.consent_version
+
+
 class StripeEvent(models.Model):
     """A webhook Stripe has already delivered.
 

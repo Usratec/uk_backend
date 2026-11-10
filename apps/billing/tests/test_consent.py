@@ -4,13 +4,15 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from django.contrib.auth.models import Permission
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.accounts.models import User
 from apps.billing import webhooks
 from apps.billing.checkout import UNPAID_ORDER_RETENTION
 from apps.billing.fulfilment import provision_account
-from apps.billing.models import Order, OrderStatus
+from apps.billing.models import Order, OrderStatus, PurchaseConsentVersion
 from apps.billing.tasks import delete_unfinished_orders
 from apps.billing.tests.test_checkout import CONSENT_PAYLOAD
 from apps.integrations.stripe_client import CheckoutSession, StripeError
@@ -94,6 +96,66 @@ def test_unconfigured_registry_fails_closed(api, package, stripe, settings, regi
     assert response.status_code == 503
     assert not Order.objects.exists()
     stripe.assert_not_called()
+
+
+@pytest.fixture
+def consent_admin(client):
+    staff = User.objects.create_user(email="consent-admin@example.com", is_staff=True)
+    client.force_login(staff)
+    return staff
+
+
+def test_admin_configured_version_works_without_environment_settings(
+    client, consent_admin, api, package, stripe, consent_registry, settings
+):
+    data = {"consent_version": "2026-11-draft", "is_active": True, **consent_registry["2026-11-draft"]}
+    settings.PURCHASE_CONSENT_VERSIONS = {}
+    add_url = reverse("admin:billing_purchaseconsentversion_add")
+    assert client.post(add_url, data).status_code == 403
+    consent_admin.user_permissions.add(
+        *Permission.objects.filter(codename__in=["add_purchaseconsentversion", "change_purchaseconsentversion"])
+    )
+    assert client.post(add_url, data).status_code == 302
+    version = PurchaseConsentVersion.objects.get()
+
+    unknown = api.post(URL, {**payload(package), "consent_version": "unknown"}, format="json")
+    assert unknown.status_code == 400
+    assert "consent_version" in unknown.data
+    assert api.post(URL, payload(package), format="json").status_code == 201
+    order = Order.objects.get()
+    assert order.terms_wording == data["terms_wording"]
+    assert order.immediate_access_wording == data["immediate_access_wording"]
+    assert order.terms_version == data["terms_version"]
+    assert order.privacy_policy_version == data["privacy_policy_version"]
+
+    settings.PURCHASE_CONSENT_VERSIONS = consent_registry
+    change_url = reverse("admin:billing_purchaseconsentversion_change", args=[version.pk])
+    assert client.post(change_url, {"terms_wording": "Overwrite", "consent_version": "other"}).status_code == 302
+    version.refresh_from_db()
+    assert version.consent_version == order.consent_version
+    assert version.terms_wording == order.terms_wording
+    assert not version.is_active
+    inactive = api.post(URL, payload(package), format="json")
+    assert inactive.status_code == 400
+    assert "consent_version" in inactive.data
+    assert Order.objects.count() == 1
+    stripe.assert_called_once()
+
+
+def test_admin_cannot_reuse_a_configured_or_recorded_version_with_different_wording(
+    client, consent_admin, api, package, stripe, consent_registry, settings
+):
+    consent_admin.user_permissions.add(Permission.objects.get(codename="add_purchaseconsentversion"))
+    add_url = reverse("admin:billing_purchaseconsentversion_add")
+    data = {"consent_version": "2026-11-draft", "is_active": True, **consent_registry["2026-11-draft"]}
+    changed = {**data, "terms_wording": "Different wording"}
+
+    assert b"already configured with different wording" in client.post(add_url, changed).content
+    assert api.post(URL, payload(package), format="json").status_code == 201
+    settings.PURCHASE_CONSENT_VERSIONS = {}
+    assert b"recorded on orders with different wording" in client.post(add_url, changed).content
+    assert not PurchaseConsentVersion.objects.exists()
+    assert client.post(add_url, data).status_code == 302
 
 
 def test_invalid_draft_only_blocks_checkout_using_that_version(api, package, stripe, consent_registry):

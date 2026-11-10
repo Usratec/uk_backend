@@ -136,22 +136,23 @@ contacting Stripe. Clients must send the version of the exact wording shown to t
 The two checkboxes remain separate; accepting Terms alone never grants immediate-access consent.
 The successful response is unchanged.
 
-Before enabling purchases, configure `PURCHASE_CONSENT_VERSIONS` as a JSON object keyed by each
-supported consent version. Each entry requires four nonempty strings: `terms_wording`,
-`immediate_access_wording`, `terms_version`, and `privacy_policy_version`. The wording must match
-the frontend, and the document versions must identify the actual Terms and Privacy Policy shown.
+Before enabling purchases, add a version in **Django admin → Billing → Purchase consent versions**.
+Enter the version sent by checkout, both checkbox texts, and the Terms and Privacy Policy versions.
+The wording must match the frontend, and the document versions must identify the actual documents shown.
 For `2026-11-draft`, UK-315 specifies these checkbox texts:
 
 - “I have read the privacy policy and agree to the terms of 1theory.”
 - “I want my access to start straight away, and I understand that once it starts I lose my 14-day right to cancel.”
 
-The actual Terms/Privacy versions still need to be supplied by the business; no draft or
-production legal versions are invented in code. The registry defaults to `{}`; unavailable legal
-configuration returns 503 for otherwise valid requests. An unsupported consent version returns
-400 on `consent_version`. Keep a version available only while clients may legitimately submit
-that wording, and use a new version whenever the displayed wording or linked document versions
-change. Configure the same registry for the web process and workers, and restart them when it
-changes. Local Compose passes the setting from `.env`.
+Create a new version whenever wording or document versions change, and coordinate its identifier
+with the frontend. Saved texts and document versions are read-only. Clear **Is active** once clients
+no longer submit a version. Order snapshots remain available in the order admin.
+
+Existing `PURCHASE_CONSENT_VERSIONS` environment entries continue to work for identifiers absent
+from the admin. To move one into the admin, register the same identifier with identical wording and
+document versions. An inactive admin entry also disables the matching environment entry. Admin
+changes take effect without a restart. Unavailable consent configuration returns 503. An unknown
+version when consent is configured, or an inactive version, returns 400 on `consent_version`.
 
 The order stores both accepted values, server timestamp, consent version, exact checkbox wording
 and Terms/Privacy versions in the same transaction as the purchase attempt. A guest order has no
