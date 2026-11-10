@@ -12,6 +12,24 @@ from django.template.loader import render_to_string
 
 logger = logging.getLogger(__name__)
 
+_RESTRICTED_ENVIRONMENTS = frozenset({"dev", "stage"})
+_ALLOWED_EMAIL_SUFFIXES = ("@nutheorie.nl", "@orangeuni.com")
+
+
+def _filter_recipients(to: str | list[str]) -> list[str]:
+    recipients = [to] if isinstance(to, str) else list(to)
+    if settings.ENVIRONMENT not in _RESTRICTED_ENVIRONMENTS:
+        return recipients
+    allowed = [address for address in recipients if address.lower().endswith(_ALLOWED_EMAIL_SUFFIXES)]
+    dropped = [address for address in recipients if address not in allowed]
+    if dropped:
+        logger.warning(
+            "Dropped email recipients outside the %s allowlist: %s",
+            settings.ENVIRONMENT,
+            ", ".join(dropped),
+        )
+    return allowed
+
 
 def send(template: str, subject: str, to: str | list[str], context: dict) -> None:
     """Hand one message to a worker to send, and return.
@@ -43,12 +61,23 @@ def send_now(template: str, subject: str, to: str | list[str], context: dict) ->
 
     Raises whatever the mail backend raises; the caller decides whether a failure should fail
     the request. Registration, for example, succeeds even if its email cannot be sent.
+
+    On ``dev`` and ``stage``, only ``@nutheorie.nl`` and ``@orangeuni.com`` addresses are
+    delivered; if none remain, the send is skipped after a warning.
     """
+    recipients = _filter_recipients(to)
+    if not recipients:
+        logger.warning(
+            "Skipping %s email: no recipients left after the %s allowlist",
+            template,
+            settings.ENVIRONMENT,
+        )
+        return
     message = EmailMultiAlternatives(
         subject=subject,
         body=render_to_string(f"emails/{template}.txt", context),
         from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to] if isinstance(to, str) else list(to),
+        to=recipients,
     )
     message.attach_alternative(render_to_string(f"emails/{template}.html", context), "text/html")
     message.send()
