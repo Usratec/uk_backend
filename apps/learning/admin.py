@@ -33,6 +33,7 @@ from apps.learning.models import (
     Chapter,
     ContentType,
     Ebook,
+    EbookSampleRequest,
     EbookSection,
     EbookSectionProgress,
     ExamHazardClip,
@@ -1332,15 +1333,41 @@ class EbookSectionForm(forms.ModelForm):
         model = EbookSection
         # Listed rather than "__all__", so a field added later is not exposed by accident.
         # Status is not here: publishing goes through the service, not the form.
-        fields = ["ebook", "title", "slug", "summary", "body_html", "media", "order", "publish_from"]
+        fields = [
+            "ebook",
+            "title",
+            "slug",
+            "summary",
+            "body_html",
+            "media",
+            "order",
+            "is_free_sample",
+            "sample_pdf",
+            "publish_from",
+        ]
+
+    def clean(self):
+        super().clean()
+        cleaned = self.cleaned_data
+        if cleaned.get("is_free_sample") and not cleaned.get("sample_pdf"):
+            raise forms.ValidationError(
+                {
+                    "sample_pdf": (
+                        "Upload a separate PDF holding only this chapter. That file is what visitors "
+                        "download for free, so without it there is nothing to give away — the book's "
+                        "full document is never offered in its place."
+                    )
+                }
+            )
+        return cleaned
 
 
 @admin.register(EbookSection)
 class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
     form = EbookSectionForm
-    list_display = ["title", "ebook", "order", "has_media", "sign_count", "state"]
+    list_display = ["title", "ebook", "order", "has_media", "sign_count", "free_sample", "state"]
     list_editable = ["order"]
-    list_filter = ["status", "ebook"]
+    list_filter = ["status", "ebook", "is_free_sample"]
     search_fields = ["title", "slug", "summary", "ebook__title"]
     prepopulated_fields = {"slug": ("title",)}
     list_select_related = ["ebook", "media"]
@@ -1365,6 +1392,18 @@ class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
             },
         ),
         (
+            "The free sample",
+            {
+                "fields": ("is_free_sample", "sample_pdf"),
+                "description": (
+                    "One chapter per book may be given away. Tick the box and upload a PDF of "
+                    "that chapter alone: it is served to anybody who asks for it, without signing "
+                    "in, from the public landing page. The book's own document is not touched by "
+                    "this and still needs a purchase and a signed link."
+                ),
+            },
+        ),
+        (
             "Publishing",
             {"fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link")},
         ),
@@ -1375,10 +1414,23 @@ class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
     def has_media(self, section: EbookSection) -> bool:
         return section.media_id is not None
 
+    @admin.display(description="Free sample", boolean=True)
+    def free_sample(self, section: EbookSection) -> bool:
+        return section.is_free_sample and section.has_sample_pdf
+
     @admin.display(description="Signs")
     def sign_count(self, section: EbookSection) -> int:
         """How many signs the text draws, so staff can see at a glance which sections show them."""
         return len(html.sign_codes_in(section.body_html))
+
+
+@admin.register(EbookSampleRequest)
+class EbookSampleRequestAdmin(ReadOnlyAdmin):
+    list_display = ["email", "ebook", "study_tips_consent", "consent_at", "created_at"]
+    list_filter = ["study_tips_consent", "ebook", "created_at"]
+    search_fields = ["email", "ebook__title"]
+    list_select_related = ["ebook"]
+    date_hierarchy = "created_at"
 
 
 @admin.register(EbookSectionProgress)

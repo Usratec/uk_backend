@@ -37,6 +37,7 @@ PROGRESS_MODELS = (
     "ebooksectionprogress",
 )
 WATCHING = tuple(f"learning.view_{model}" for model in PROGRESS_MODELS)
+LEADS = ("learning.view_ebooksamplerequest",)
 
 # Everything needed to write and change learning content, but not to release it.
 EDITING = tuple(f"learning.{action}_{model}" for model in CONTENT_MODELS for action in ("view", "add", "change"))
@@ -60,7 +61,7 @@ PUBLISHABLE = (
 )
 PUBLISHING = tuple(f"learning.publish_{model}" for model in PUBLISHABLE)
 
-CONTENT_EDITOR = StaffRole(name="Content Editor", permissions=EDITING + REMOVING + WATCHING)
-CONTENT_PUBLISHER = StaffRole(name="Content Publisher", permissions=EDITING + REMOVING + PUBLISHING + WATCHING)
+CONTENT_EDITOR = StaffRole(name="Content Editor", permissions=EDITING + REMOVING + WATCHING + LEADS)
+CONTENT_PUBLISHER = StaffRole(name="Content Publisher", permissions=EDITING + REMOVING + PUBLISHING + WATCHING + LEADS)
 
 ROLES = (CONTENT_EDITOR, CONTENT_PUBLISHER)

@@ -185,6 +185,7 @@ REST_FRAMEWORK = {
         "checkout": "30/hour",
         "promo_code": "60/hour",
         "order_status": "60/hour",
+        "ebook_sample_request": "10/hour",
     },
 }
 
@@ -619,6 +620,7 @@ JAZZMIN_SETTINGS = {
         "learning.HazardClip": "fas fa-video",
         "learning.Ebook": "fas fa-book",
         "learning.EbookSection": "fas fa-file-lines",
+        "learning.EbookSampleRequest": "fas fa-envelope-open-text",
         # What students have done, as opposed to what staff have written.
         "learning.HazardAttempt": "fas fa-triangle-exclamation",
         "learning.QuestionAttempt": "fas fa-pen-to-square",

@@ -10,13 +10,14 @@ than in the admin screens.
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
 from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
-from apps.core import audit, images
+from apps.core import audit, email, images
 from apps.core.models import PublishStatus
 from apps.learning import hazard_detection, html
 from apps.learning.models import (
@@ -24,6 +25,7 @@ from apps.learning.models import (
     Chapter,
     ContentType,
     Ebook,
+    EbookSampleRequest,
     EbookSection,
     EbookSectionProgress,
     ExamKind,
@@ -1744,3 +1746,118 @@ def student_view_of_ebook(ebook: Ebook) -> dict:
         "contentType": document.content_type if document else None,
         "sizeBytes": document.size_bytes if document else None,
     }
+
+
+class UnknownEbookError(Exception):
+    """No live e-book has that slug."""
+
+
+class NoFreeSampleError(Exception):
+    """The book gives no chapter away, or the chapter it gives away has no PDF yet."""
+
+
+def public_ebooks(at=None):
+    return live(Ebook.objects.all(), at=at).order_by("order", "title")
+
+
+PUBLIC_SECTION_FIELDS = ("id", "ebook_id", "slug", "title", "summary", "order", "is_free_sample", "sample_pdf")
+
+
+def public_view_of_ebook(ebook: Ebook) -> dict:
+    return {"slug": ebook.slug, "title": ebook.title, "description": ebook.description}
+
+
+def public_outline_of(section: EbookSection, number: int, *, sample_url) -> dict:
+    return {
+        "slug": section.slug,
+        "number": number,
+        "title": section.title,
+        "summary": section.summary,
+        "isFreeSample": section.is_free_sample,
+        "samplePdfUrl": sample_url(section) if section.is_free_sample and section.has_sample_pdf else None,
+    }
+
+
+def public_ebook_shelf(*, sample_url, at=None) -> list[dict]:
+    books = list(public_ebooks(at))
+    grouped = _public_sections_by_book(books, at)
+    return [
+        {
+            **public_view_of_ebook(book),
+            "sections": [
+                public_outline_of(section, number, sample_url=sample_url)
+                for number, section in enumerate(grouped.get(book.pk, []), start=1)
+            ],
+        }
+        for book in books
+    ]
+
+
+def _public_sections_by_book(books: list[Ebook], at=None) -> dict[int, list[EbookSection]]:
+    if not books:
+        return {}
+
+    grouped: dict[int, list[EbookSection]] = {}
+    sections = (
+        live(EbookSection.objects.filter(ebook__in=books), at=at)
+        .only(*PUBLIC_SECTION_FIELDS)
+        .order_by("ebook_id", "order", "title")
+    )
+    for section in sections:
+        grouped.setdefault(section.ebook_id, []).append(section)
+    return grouped
+
+
+def free_sample_section(slug: str, at=None) -> EbookSection | None:
+    return (
+        live(EbookSection.objects.select_related("ebook"), at=at)
+        .filter(slug=slug, is_free_sample=True, ebook__in=public_ebooks(at))
+        .exclude(sample_pdf="")
+        .first()
+    )
+
+
+def free_sample_of(ebook: Ebook, at=None) -> EbookSection | None:
+    return live(ebook.sections.all(), at=at).filter(is_free_sample=True).exclude(sample_pdf="").first()
+
+
+@dataclass(frozen=True)
+class SampleRequested:
+    record: EbookSampleRequest
+    section: EbookSection
+
+
+def record_sample_request(
+    *,
+    ebook_slug: str,
+    email_address: str,
+    study_tips_consent: bool,
+    sample_url,
+) -> SampleRequested:
+    ebook = public_ebooks().filter(slug=ebook_slug).first()
+    if ebook is None:
+        raise UnknownEbookError(ebook_slug)
+
+    section = free_sample_of(ebook)
+    if section is None:
+        raise NoFreeSampleError(ebook_slug)
+
+    now = timezone.now()
+    asked = EbookSampleRequest.objects.create(
+        ebook=ebook,
+        email=email_address,
+        study_tips_consent=study_tips_consent,
+        consent_at=now if study_tips_consent else None,
+    )
+
+    email.send(
+        template="ebook_sample",
+        subject=f"Your free chapter of {ebook.title}",
+        to=asked.email,
+        context={
+            "ebook_title": ebook.title,
+            "chapter_title": section.title,
+            "sample_url": sample_url(section),
+        },
+    )
+    return SampleRequested(record=asked, section=section)

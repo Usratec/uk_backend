@@ -38,6 +38,17 @@ urlpatterns = [
     path("learn/topics/", api.TopicListView.as_view(), name="learn-topics"),
     path("learn/lessons/<slug:slug>/", api.LessonDetailView.as_view(), name="learn-lesson"),
     path("learn/ebook/", api.EbookView.as_view(), name="learn-ebook"),
+    path("learn/ebook/public/", api.PublicEbookOutlineView.as_view(), name="learn-ebook-public"),
+    path(
+        "learn/ebook/public/samples/<slug:slug>/",
+        api.PublicEbookSampleView.as_view(),
+        name="learn-ebook-sample",
+    ),
+    path(
+        "learn/ebook/public/sample-request/",
+        api.PublicEbookSampleRequestView.as_view(),
+        name="learn-ebook-sample-request",
+    ),
     path("learn/ebook/<slug:slug>/", api.EbookDetailView.as_view(), name="learn-ebook-detail"),
     path("learn/ebook/<slug:slug>/read/", api.EbookSectionReadView.as_view(), name="learn-ebook-section-read"),
     path("learn/signs/", api.SignListView.as_view(), name="learn-signs"),

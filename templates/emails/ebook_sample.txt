@@ -1,0 +1,9 @@
+Hi there,
+
+Here is {{ chapter_title }} from {{ ebook_title }}, yours to read with no account needed:
+
+{{ sample_url }}
+
+The rest of the book comes with any 1Theory package.
+
+The 1Theory team

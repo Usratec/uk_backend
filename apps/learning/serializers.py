@@ -528,6 +528,63 @@ class EbookListResponseSerializer(serializers.Serializer):
     )
 
 
+class PublicEbookSectionSerializer(serializers.Serializer):
+    slug = serializers.SlugField()
+    number = serializers.IntegerField(help_text="Its position in the book, counted from 1.")
+    title = serializers.CharField()
+    summary = serializers.CharField(allow_blank=True)
+    isFreeSample = serializers.BooleanField(  # noqa: N815
+        help_text="Whether this is the one chapter anybody may read. One per book at most."
+    )
+    samplePdfUrl = serializers.URLField(  # noqa: N815
+        allow_null=True,
+        help_text=(
+            "Where to download this chapter's own PDF, without signing in. Null for every other "
+            "chapter, and for a free chapter whose sample PDF has not been uploaded yet."
+        ),
+    )
+
+
+class PublicEbookSerializer(serializers.Serializer):
+    slug = serializers.SlugField()
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    sections = PublicEbookSectionSerializer(many=True, help_text="Its chapter outline, in reading order.")
+
+
+class PublicEbookListResponseSerializer(serializers.Serializer):
+    ebooks = PublicEbookSerializer(many=True, help_text="Every published e-book, outline only.")
+
+
+class EbookSampleRequestSerializer(serializers.Serializer):
+    ALIASES = {"study_tips_consent": "studyTipsConsent", "ebook_slug": "ebookSlug"}
+
+    email = serializers.EmailField(max_length=254)
+    ebookSlug = serializers.SlugField(help_text="Which book's free chapter to send.")  # noqa: N815
+    studyTipsConsent = serializers.BooleanField(  # noqa: N815
+        required=False,
+        default=False,
+        help_text=(
+            "Only true if the visitor ticked the box. Leaving it out is not consent, and consent "
+            "is not needed to download the chapter."
+        ),
+    )
+
+    def to_internal_value(self, data):
+        if hasattr(data, "items"):
+            renamed = data.dict() if hasattr(data, "dict") else dict(data)
+            for alias, key in self.ALIASES.items():
+                if alias in renamed and key not in renamed:
+                    renamed[key] = renamed.pop(alias)
+            data = renamed
+        return super().to_internal_value(data)
+
+
+class EbookSampleRequestResponseSerializer(serializers.Serializer):
+    message = serializers.CharField()
+    samplePdfUrl = serializers.URLField(help_text="The same public link that was emailed.")  # noqa: N815
+
+
 class EbookSectionSerializer(EbookSectionSummarySerializer):
     """A section as it is handed over to be read: its contents entry, plus the material itself."""
 

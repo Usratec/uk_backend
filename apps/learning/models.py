@@ -968,6 +968,10 @@ def ebook_cover_path(instance, filename: str) -> str:
     return f"learning/ebook-cover/{filename}"
 
 
+def ebook_sample_path(instance, filename: str) -> str:
+    return f"learning/ebook-sample/{filename}"
+
+
 class Ebook(PublishableModel, TimestampedModel):
     slug = models.SlugField(
         unique=True,
@@ -1026,6 +1030,24 @@ class EbookSection(PublishableModel, TimestampedModel):
         help_text="A video or document from the media library, shown after the text. Optional.",
     )
     order = models.PositiveSmallIntegerField(default=0, help_text="Position within this book.")
+    is_free_sample = models.BooleanField(
+        default=False,
+        help_text=(
+            "The one chapter anybody may read before buying. It is shown on the public landing "
+            "page and its sample PDF can be downloaded without signing in, so tick it only for a "
+            "chapter the business is happy to give away. One per book."
+        ),
+    )
+    sample_pdf = SanitizedFileField(
+        upload_to=ebook_sample_path,
+        blank=True,
+        validators=[FileExtensionValidator(allowed_extensions=["pdf"])],
+        help_text=(
+            "A PDF of this chapter alone, uploaded here and served to anybody who asks. It is a "
+            "separate file on purpose: the book's own document stays behind a signed link, and "
+            "nothing here is ever served in its place."
+        ),
+    )
 
     class Meta:
         ordering = ["ebook", "order", "title"]
@@ -1033,12 +1055,37 @@ class EbookSection(PublishableModel, TimestampedModel):
         verbose_name = "ebook section"
         verbose_name_plural = "ebook sections"
         permissions = [("publish_ebooksection", "Can publish and unpublish ebook sections")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ebook"],
+                condition=models.Q(is_free_sample=True),
+                name="one_free_sample_section_per_ebook",
+                violation_error_message="This book already gives a chapter away. Untick that one first.",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.title
 
+    @property
+    def has_sample_pdf(self) -> bool:
+        return bool(self.sample_pdf)
+
+    def _check_sample_pdf(self) -> None:
+        if not self.sample_pdf or getattr(self.sample_pdf, "_committed", True):
+            return
+        try:
+            require_upload(self.sample_pdf, DOCUMENT_TYPES)
+        except ValidationError as error:
+            raise ValidationError({"sample_pdf": error.messages}) from error
+
+    def clean(self) -> None:
+        super().clean()
+        self._check_sample_pdf()
+
     def save(self, *args, **kwargs):
         self.body_html = html.clean(self.body_html)
+        self._check_sample_pdf()
         super().save(*args, **kwargs)
 
 
@@ -1055,6 +1102,41 @@ class EbookSectionProgress(models.Model):
 
     def __str__(self) -> str:
         return f"{self.student} · {self.section.title}"
+
+
+class EbookSampleRequest(TimestampedModel):
+    ebook = models.ForeignKey(
+        Ebook,
+        on_delete=models.PROTECT,
+        related_name="sample_requests",
+        help_text="The book whose free chapter was asked for.",
+    )
+    email = models.EmailField(help_text="Where the download link was sent. Taken from the form.")
+    study_tips_consent = models.BooleanField(
+        default=False,
+        help_text="Only true if the visitor ticked the box themselves. Asking for the sample is not consent.",
+    )
+    consent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="When they agreed. Empty where they never did.",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["ebook", "-created_at"])]
+        verbose_name = "ebook sample request"
+        verbose_name_plural = "ebook sample requests"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(study_tips_consent=False) | models.Q(consent_at__isnull=False),
+                name="ebook_sample_consent_is_dated",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.email} · {self.ebook.title}"
 
 
 def _unused_ebook_slug(base: str, exclude=None) -> str:
