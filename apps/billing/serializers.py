@@ -48,6 +48,11 @@ class PromoCodeValidateSerializer(serializers.Serializer):
     promo_code = serializers.CharField(max_length=50)
 
 
+class PaymentIntentSerializer(PurchaseConsentSerializer):
+    package_id = serializers.IntegerField()
+    promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+
+
 class OrderStatusSerializer(serializers.ModelSerializer):
     """What the storefront polls while waiting for Stripe to confirm the payment.
 
@@ -71,6 +76,8 @@ class OrderStatusSerializer(serializers.ModelSerializer):
             "final_price",
             "paid_at",
             "created_at",
+            "failure_code",
+            "failure_message",
         ]
 
 
@@ -107,6 +114,13 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
 class CheckoutResponseSerializer(serializers.Serializer):
     session_url = serializers.URLField(help_text="Send the customer here to pay.")
     order_id = serializers.UUIDField()
+
+
+class PaymentIntentResponseSerializer(serializers.Serializer):
+    order_id = serializers.UUIDField()
+    client_secret = serializers.CharField(help_text="Hand this to Stripe's Payment Element to take the payment.")
+    amount_pence = serializers.IntegerField(help_text="What will be charged, in pence, worked out here.")
+    currency = serializers.CharField(help_text="Always GBP; the site sells in pounds only.")
 
 
 class PromoCodeValidSerializer(serializers.Serializer):

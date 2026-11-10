@@ -185,6 +185,7 @@ REST_FRAMEWORK = {
         "email_resend": "5/hour",
         "profile_photo": "20/hour",
         "checkout": "30/hour",
+        "payment_intent": "60/hour",
         "promo_code": "60/hour",
         "order_status": "60/hour",
     },
@@ -289,6 +290,10 @@ CELERY_BEAT_SCHEDULE = {
     "delete-unfinished-orders": {
         "task": "apps.billing.tasks.delete_unfinished_orders",
         "schedule": crontab(hour="1", minute="0"),
+    },
+    "sweep-embedded-payments": {
+        "task": "apps.billing.tasks.sweep_embedded_payments",
+        "schedule": crontab(minute="*/5"),
     },
     "publish-scheduled-blog-posts": {
         "task": "apps.blog.tasks.publish_scheduled_posts",

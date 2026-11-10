@@ -27,7 +27,7 @@ class OrderAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
 
     list_display = ["email", "package", "status", "final_price", "paid_at", "created_at"]
     list_filter = ["status", "package"]
-    search_fields = ["email", "id", "stripe_session_id", "transaction_id"]
+    search_fields = ["email", "id", "stripe_session_id", "stripe_payment_intent_id", "transaction_id"]
     date_hierarchy = "created_at"
     list_select_related = ["package", "user"]
     readonly_fields = ["candidate"]

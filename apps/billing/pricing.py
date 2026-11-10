@@ -1,9 +1,4 @@
-"""Working out what a customer pays.
-
-One place decides prices, used by both the "check my promo code" endpoint and checkout itself, so
-the price quoted and the price charged cannot drift apart.
-"""
-
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -11,10 +6,16 @@ from decimal import Decimal
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.billing.models import Order, OrderStatus, PromoCode
+from apps.billing.models import UNSETTLED_STATUSES, Order, OrderStatus, PromoCode
 from apps.catalog.models import Package
 
+logger = logging.getLogger(__name__)
+
 PROMO_HOLD = timedelta(hours=1)
+
+
+class PromoCodeUnavailableError(Exception):
+    """The campaign is still running but every redemption has been claimed."""
 
 
 @dataclass(frozen=True)
@@ -30,22 +31,21 @@ class Quote:
 
 
 def uses_in_flight(promo_code: PromoCode, at=None) -> int:
-    """Orders holding a claim on this code that ``uses_count`` does not know about yet.
-
-    Two kinds, and both have to be counted or the limit leaks:
-
-    * a checkout started within the hold window and not yet paid, and
-    * one that *has* been paid but is still waiting to be fulfilled, which is the window in
-      which the count is incremented.
-    """
     at = at or timezone.now()
+    redirect_hold = Q(
+        status=OrderStatus.PENDING,
+        payment_intent_expires_at__isnull=True,
+        created_at__gt=at - PROMO_HOLD,
+    )
+    embedded_hold = Q(
+        status__in=UNSETTLED_STATUSES,
+        payment_intent_expires_at__isnull=False,
+        payment_intent_cancelled_at__isnull=True,
+        stripe_session_id="",
+    )
+    awaiting_fulfilment = Q(status=OrderStatus.PAID, subscription__isnull=True)
     return (
-        Order.objects.filter(promo_code=promo_code)
-        .filter(
-            Q(status=OrderStatus.PENDING, created_at__gt=at - PROMO_HOLD)
-            | Q(status=OrderStatus.PAID, subscription__isnull=True)
-        )
-        .count()
+        Order.objects.filter(promo_code=promo_code).filter(redirect_hold | embedded_hold | awaiting_fulfilment).count()
     )
 
 
@@ -86,3 +86,18 @@ def quote(package: Package, code: str = "") -> Quote:
         final_price=package.price - discount,
         promo_code=promo_code,
     )
+
+
+def claim_slot(code: str) -> None:
+    typed = code.strip()
+    if not typed:
+        return
+
+    promo_code = PromoCode.objects.select_for_update().filter(code__iexact=typed).first()
+    if promo_code is None or not promo_code.is_within_window():
+        return
+
+    remaining = slots_left(promo_code)
+    if remaining is not None and remaining <= 0:
+        logger.info("Refusing the purchase: every redemption of %s is claimed", promo_code.code)
+        raise PromoCodeUnavailableError

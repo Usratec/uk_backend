@@ -58,7 +58,7 @@ container start, so scaling out can't run them concurrently.
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
 | Sitemap | `GET /api/sitemap.xml` |
-| Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
+| Payments | `POST /api/payments/intent/`, `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
@@ -99,10 +99,29 @@ and password-reset links can be copied straight from `docker compose logs web`.
 Google sign-in needs `GOOGLE_CLIENT_IDS` set to the OAuth client ids the frontends use. While it
 is empty, those two endpoints refuse every token.
 
-Payments need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. Customers buy as guests: checkout
-creates a pending order and sends them to Stripe's hosted page, and the order only becomes paid
-when Stripe's signed webhook says so. To receive webhooks locally, forward them with the Stripe
-CLI:
+Payments need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. There are two ways to pay, and
+neither of them lets the browser decide what anything costs — the price is always worked out from
+the package and the promo code by `apps/billing/pricing.py`, and an order only becomes paid when
+Stripe's signed webhook says so.
+
+* **Embedded** (`POST /api/payments/intent/`, signed in). The card is taken on our own checkout
+  page with Stripe's Payment Element, so card details never reach this server, and there is no
+  redirect. Returns a `client_secret` the browser confirms, then the page polls
+  `GET /api/payments/orders/<uuid>/`. The outcome arrives as `payment_intent.succeeded` or
+  `payment_intent.payment_failed`.
+* **Redirect** (`POST /api/payments/checkout/`, open to guests). Creates a pending order and sends
+  the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
+  as the fallback while the embedded flow is being rolled out.
+
+Both end in the same fulfilment, and `automatic_payment_methods` is what lets the Payment Element
+offer Apple Pay and Google Pay — Stripe decides which wallets the customer's browser can actually
+show. Each paying domain has to be registered with Stripe first, in the dashboard or with:
+
+```bash
+uv run python manage.py register_stripe_apple_pay_domain stage.1theory.co.uk
+```
+
+To receive webhooks locally, forward them with the Stripe CLI:
 
 ```bash
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
