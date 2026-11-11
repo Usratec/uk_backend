@@ -103,11 +103,13 @@ def transcode_video(self, asset_id: int, job: str) -> str:
 
             source = transcode.probe(source_path)
             renditions = transcode.renditions_for(source)
+            encryption = media_processing.encryption_for(asset)
             output = transcode.to_hls(
                 source_path=source_path,
                 output_dir=str(output_dir),
                 source=source,
                 renditions=renditions,
+                encryption=encryption,
             )
 
             transcode.to_mp4(
@@ -169,6 +171,7 @@ def transcode_video(self, asset_id: int, job: str) -> str:
         height=source.height,
         mp4_key=stored.mp4_key,
         frame_rate=source.frame_rate,
+        hls_key=encryption.key if encryption is not None else None,
     )
     if not published:
         logger.warning("Discarding the output of superseded run %s for asset %s", job, asset_id)
