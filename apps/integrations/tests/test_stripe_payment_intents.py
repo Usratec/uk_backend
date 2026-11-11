@@ -7,6 +7,14 @@ from apps.integrations import stripe_client
 from apps.integrations.stripe_client import StripeError
 
 
+def test_the_installed_sdk_takes_the_parameter_we_send():
+    from stripe.params import PaymentIntentCreateParams
+
+    accepted = PaymentIntentCreateParams.__annotations__
+    assert "allowed_payment_method_types" in accepted
+    assert "payment_method_types" not in accepted
+
+
 class FakeIntent:
     def __init__(self, **fields):
         self.id = fields.get("id", "pi_test")
@@ -57,12 +65,25 @@ class TestCreate:
         assert params["amount"] == 2999
         assert params["currency"] == "gbp"
 
-    def test_wallets_are_left_to_stripe_to_offer(self, intents):
+    def test_only_card_payments_are_offered(self, intents):
         stripe_client.create_payment_intent(
             amount=Decimal("29.99"), description="30 day access", reference="order-1", user_id=7
         )
 
-        assert intents.calls[0][2]["params"]["automatic_payment_methods"] == {"enabled": True}
+        params = intents.calls[0][2]["params"]
+        assert params["allowed_payment_method_types"] == ["card"]
+        assert "automatic_payment_methods" not in params
+        assert "payment_method_types" not in params
+
+    def test_the_wallets_ride_on_card_rather_than_being_listed(self, intents):
+        stripe_client.create_payment_intent(
+            amount=Decimal("29.99"), description="30 day access", reference="order-1", user_id=7
+        )
+
+        offered = intents.calls[0][2]["params"]["allowed_payment_method_types"]
+        assert "apple_pay" not in offered
+        assert "google_pay" not in offered
+        assert not {"klarna", "link", "amazon_pay"} & set(offered)
 
     def test_the_order_and_buyer_travel_as_metadata(self, intents):
         stripe_client.create_payment_intent(

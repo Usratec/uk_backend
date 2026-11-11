@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 # anything else cannot be treated as the order we stored.
 CHECKOUT_CURRENCY = "gbp"
 
+CHECKOUT_PAYMENT_METHOD_TYPES = ["card"]
+
 
 class StripeError(Exception):
     """Stripe could not be reached, or refused the request."""
@@ -128,7 +130,7 @@ def create_payment_intent(
         "amount": to_pence(amount),
         "currency": CHECKOUT_CURRENCY,
         "description": description,
-        "automatic_payment_methods": {"enabled": True},
+        "allowed_payment_method_types": CHECKOUT_PAYMENT_METHOD_TYPES,
         "metadata": {"order_id": reference, "user_id": str(user_id)},
     }
     if receipt_email:
