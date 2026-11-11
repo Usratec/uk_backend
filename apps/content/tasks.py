@@ -23,7 +23,8 @@ def deliver_contact_message(self, submission_id: int) -> None:
         return
 
     try:
-        services.deliver(submission)
+        if not services.deliver(submission):
+            return
     except Exception as error:
         if self.request.retries >= self.max_retries:
             logger.exception(
@@ -50,8 +51,8 @@ def deliver_pending_contact_messages() -> int:
     for submission in owed:
         logger.warning("Contact message %s has not reached the mail provider; sending it now", submission.pk)
         try:
-            services.deliver(submission)
-            delivered += 1
+            if services.deliver(submission):
+                delivered += 1
         except Exception:
             services.mark_failed(submission)
             logger.exception("Could not deliver contact message %s; will try again next run", submission.pk)

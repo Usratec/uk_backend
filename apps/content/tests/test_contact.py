@@ -283,6 +283,115 @@ class TestDeliveryFailures:
         assert mail.outbox == []
 
 
+class TestOneMessageIsSentOnce:
+    def test_two_runs_racing_for_the_same_message_send_it_once(self, api):
+        submission = ContactSubmission.objects.create(**VALID)
+
+        first = services.deliver(submission)
+        second = services.deliver(submission)
+
+        assert (first, second) == (True, False)
+        assert len(mail.outbox) == 1
+
+    def test_the_sweep_leaves_a_message_the_queued_job_is_already_sending(self, api):
+        from apps.content.tasks import deliver_pending_contact_messages
+
+        submission = aged(ContactSubmission.objects.create(**VALID))
+        assert services.claim(submission)
+
+        assert deliver_pending_contact_messages() == 0
+        assert mail.outbox == []
+        assert ContactSubmission.objects.get().delivery_status == ContactDelivery.PENDING
+
+    def test_a_claim_left_behind_by_a_dead_worker_is_taken_over(self, api):
+        submission = aged(ContactSubmission.objects.create(**VALID))
+        ContactSubmission.objects.filter(pk=submission.pk).update(
+            delivery_claimed_at=timezone.now() - services.DELIVERY_CLAIM_TIMEOUT - timedelta(minutes=1)
+        )
+
+        assert services.deliver(submission) is True
+        assert len(mail.outbox) == 1
+
+    def test_a_failure_hands_the_claim_back_so_the_next_run_can_try(self, api, monkeypatch):
+        from apps.content.tasks import deliver_pending_contact_messages
+
+        def explode(**kwargs):
+            raise OSError("the mail server is refusing connections")
+
+        real_send_now = services.email.send_now
+        monkeypatch.setattr("apps.content.services.email.send_now", explode)
+        aged(ContactSubmission.objects.create(**VALID))
+
+        deliver_pending_contact_messages()
+
+        assert ContactSubmission.objects.get().delivery_claimed_at is None
+
+        monkeypatch.setattr("apps.content.services.email.send_now", real_send_now)
+
+        assert deliver_pending_contact_messages() == 1
+        assert ContactSubmission.objects.get().delivery_status == ContactDelivery.SENT
+
+    def test_a_message_already_handed_over_is_not_sent_again(self, api):
+        submit(api)
+        mail.outbox.clear()
+
+        assert services.deliver(ContactSubmission.objects.get()) is False
+        assert mail.outbox == []
+
+
+class TestAStaleTokenDoesNotBlockAVisitor:
+    def expired_token(self, user) -> str:
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = AccessToken.for_user(user)
+        token.set_exp(from_time=timezone.now() - timedelta(days=1))
+        return str(token)
+
+    def test_an_expired_token_is_ignored_rather_than_refused(self, api, student):
+        api.credentials(HTTP_AUTHORIZATION=f"Bearer {self.expired_token(student)}")
+
+        response = submit(api)
+
+        assert response.status_code == 201
+        assert ContactSubmission.objects.get().user is None
+
+    def test_a_token_that_is_not_a_token_is_ignored(self, api):
+        api.credentials(HTTP_AUTHORIZATION="Bearer not-a-real-token")
+
+        assert submit(api).status_code == 201
+
+    def test_a_malformed_authorization_header_is_ignored(self, api):
+        api.credentials(HTTP_AUTHORIZATION="Bearer")
+
+        assert submit(api).status_code == 201
+
+    def test_a_token_for_an_account_that_has_been_closed_is_ignored(self, api, student):
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = str(AccessToken.for_user(student))
+        student.is_active = False
+        student.save(update_fields=["is_active"])
+        api.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = submit(api)
+
+        assert response.status_code == 201
+        assert ContactSubmission.objects.get().user is None
+
+    def test_a_valid_token_is_still_read(self, api, student):
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        api.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(student)}")
+
+        assert submit(api).status_code == 201
+        assert ContactSubmission.objects.get().user == student
+
+    def test_endpoints_that_need_a_user_still_refuse_a_stale_token(self, api, student):
+        api.credentials(HTTP_AUTHORIZATION=f"Bearer {self.expired_token(student)}")
+
+        assert api.get(reverse("cabinet-profile")).status_code == 401
+
+
 class TestValidation:
     def test_a_missing_name_is_refused(self, api):
         response = submit(api, name=None)

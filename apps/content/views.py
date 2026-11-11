@@ -15,6 +15,7 @@ from apps.content.serializers import (
     TestimonialSerializer,
 )
 from apps.content.throttling import ContactAnonThrottle, ContactUserThrottle
+from apps.core.authentication import OptionalJWTAuthentication
 
 CONTACT_RECEIVED = "Your message has been sent successfully."
 
@@ -37,6 +38,7 @@ class TestimonialListView(ListAPIView):
 
 class ContactView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = [OptionalJWTAuthentication]
     throttle_classes = [ContactAnonThrottle, ContactUserThrottle]
 
     @extend_schema(

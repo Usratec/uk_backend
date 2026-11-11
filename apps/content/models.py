@@ -117,6 +117,12 @@ class ContactSubmission(TimestampedModel):
         editable=False,
         help_text="When the mail provider accepted it.",
     )
+    delivery_claimed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="When a run took ownership of sending it, so two runs cannot send it twice.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
