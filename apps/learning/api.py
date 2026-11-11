@@ -11,17 +11,26 @@ responses, so renaming things inside the product did not reach the API. Keys are
 lapsed plan answers 402, matching the contract the frontend already implements.
 """
 
+from collections.abc import Iterable
 from typing import cast
 
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from django.http import FileResponse, HttpResponseRedirect
+from django.http.response import HttpResponseBase
+from django.urls import reverse
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.negotiation import BaseContentNegotiation
+from rest_framework.parsers import BaseParser
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.renderers import BaseRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.accounts.serializers import DetailSerializer
+from apps.core.uploads import delivery_headers
 from apps.entitlements import services as entitlements
 from apps.learning import offline, services
 from apps.learning.models import (
@@ -43,6 +52,8 @@ from apps.learning.serializers import (
     DoneResponseSerializer,
     EbookDetailResponseSerializer,
     EbookListResponseSerializer,
+    EbookSampleRequestResponseSerializer,
+    EbookSampleRequestSerializer,
     ExamAttemptListResponseSerializer,
     ExamAttemptResultResponseSerializer,
     ExamDetailResponseSerializer,
@@ -59,6 +70,7 @@ from apps.learning.serializers import (
     OfflinePackResponseSerializer,
     PracticeSetResponseSerializer,
     ProgressSummaryResponseSerializer,
+    PublicEbookListResponseSerializer,
     ReadResponseSerializer,
     SavedResponseSerializer,
     SignListResponseSerializer,
@@ -66,6 +78,7 @@ from apps.learning.serializers import (
     VideoProgressRequestSerializer,
     VideoProgressSerializer,
 )
+from apps.learning.throttling import EbookSampleRequestThrottle
 
 PLAN_NEEDED = "An active plan is needed for this"
 # The modes the practice endpoint accepts. The ones that depend on past attempts are accepted
@@ -368,6 +381,115 @@ class EbookSectionReadView(APIView):
 
 def _not_found() -> Response:
     return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+def _sample_url_builder(request: Request):
+    def build(section: EbookSection) -> str:
+        return request.build_absolute_uri(reverse("learn-ebook-sample", args=[section.slug]))
+
+    return build
+
+
+class PublicEbookOutlineView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="listPublicEbooks",
+        summary="List the e-books and their chapter outline (public)",
+        responses={200: PublicEbookListResponseSerializer},
+    )
+    def get(self, request: Request) -> Response:
+        shelf = services.public_ebook_shelf(sample_url=_sample_url_builder(request))
+        return Response({"ebooks": shelf})
+
+
+class ServeWhateverIsAsked(BaseContentNegotiation):
+    def select_parser(self, request: Request, parsers: Iterable[BaseParser]) -> BaseParser | None:
+        return next(iter(parsers), None)
+
+    def select_renderer(
+        self, request: Request, renderers: Iterable[BaseRenderer], format_suffix: str | None = None
+    ) -> tuple[BaseRenderer, str]:
+        chosen = next(iter(renderers))
+        return chosen, chosen.media_type
+
+
+class PublicEbookSampleView(APIView):
+    permission_classes = [AllowAny]
+    content_negotiation_class = ServeWhateverIsAsked
+
+    @extend_schema(
+        operation_id="downloadPublicEbookSample",
+        summary="Download a free sample chapter (public)",
+        responses={
+            (200, "application/pdf"): OpenApiTypes.BINARY,
+            302: OpenApiResponse(description="Redirect to the sample's own short-lived bucket URL."),
+            404: DetailSerializer,
+        },
+    )
+    def get(self, request: Request, slug: str) -> HttpResponseBase:
+        section = services.free_sample_section(slug)
+        if section is None:
+            return _not_found()
+        return _pdf_response(section)
+
+
+def _pdf_response(section: EbookSection) -> HttpResponseBase:
+    sample = section.sample_pdf
+    try:
+        url = sample.url
+        if url.startswith(("http://", "https://")):
+            return HttpResponseRedirect(url)
+        stream = sample.open("rb")
+    except (OSError, ValueError):
+        return _not_found()
+
+    headers = delivery_headers("application/pdf", f"{section.slug}.pdf")
+    response = FileResponse(stream, content_type=headers["Content-Type"])
+    response["Content-Disposition"] = headers["Content-Disposition"]
+    response["X-Content-Type-Options"] = headers["X-Content-Type-Options"]
+    return response
+
+
+SAMPLE_SENT = "The free chapter is on its way to your inbox."
+NO_SAMPLE = "That book has no free chapter to send."
+
+
+class PublicEbookSampleRequestView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [EbookSampleRequestThrottle]
+
+    @extend_schema(
+        operation_id="requestPublicEbookSample",
+        summary="Email the free sample chapter's link (public)",
+        request=EbookSampleRequestSerializer,
+        responses={
+            201: EbookSampleRequestResponseSerializer,
+            404: DetailSerializer,
+            409: DetailSerializer,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        form = EbookSampleRequestSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        sample_url = _sample_url_builder(request)
+        try:
+            asked = services.record_sample_request(
+                ebook_slug=form.validated_data["ebookSlug"],
+                email_address=form.validated_data["email"],
+                study_tips_consent=form.validated_data["studyTipsConsent"],
+                sample_url=sample_url,
+            )
+        except services.UnknownEbookError:
+            return _not_found()
+        except services.NoFreeSampleError:
+            return Response({"detail": NO_SAMPLE}, status=status.HTTP_409_CONFLICT)
+
+        return Response(
+            {"message": SAMPLE_SENT, "samplePdfUrl": sample_url(asked.section)},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class SignListView(APIView):

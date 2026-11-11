@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block title %}Your free chapter of {{ ebook_title }} — 1Theory{% endblock %}
+{% block content %}
+<p style="margin:0 0 16px 0; font-size:18px; font-weight:bold; color:#1e3a5f;">Your free chapter</p>
+<p style="margin:0 0 16px 0;">Hi there,</p>
+<p style="margin:0 0 28px 0;">
+  Here is <strong>{{ chapter_title }}</strong> from <strong>{{ ebook_title }}</strong>, yours to
+  read with no account needed. The rest of the book comes with any 1Theory package.
+</p>
+
+{% include "emails/_button.html" with url=sample_url label="Download the chapter" %}
+
+<p style="margin:0; font-size:14px; color:#555555;">The 1Theory team</p>
+{% endblock %}
