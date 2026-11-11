@@ -85,6 +85,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.sitemaps",
     # Third party
     "corsheaders",
     "constance",
@@ -107,6 +108,7 @@ INSTALLED_APPS = [
     "apps.learning",
     "apps.content",
     "apps.landing",
+    "apps.blog",
     "apps.analytics",
     "apps.notifications",
 ]
@@ -183,6 +185,7 @@ REST_FRAMEWORK = {
         "email_resend": "5/hour",
         "profile_photo": "20/hour",
         "checkout": "30/hour",
+        "payment_intent": "60/hour",
         "promo_code": "60/hour",
         "order_status": "60/hour",
         "contact_anon": "5/hour",
@@ -292,6 +295,14 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.delete_unfinished_orders",
         "schedule": crontab(hour="1", minute="0"),
     },
+    "sweep-embedded-payments": {
+        "task": "apps.billing.tasks.sweep_embedded_payments",
+        "schedule": crontab(minute="*/5"),
+    },
+    "publish-scheduled-blog-posts": {
+        "task": "apps.blog.tasks.publish_scheduled_posts",
+        "schedule": crontab(minute="*/5"),
+    },
     "deliver-pending-contact-messages": {
         "task": "apps.content.tasks.deliver_pending_contact_messages",
         "schedule": crontab(minute="25"),
@@ -313,6 +324,9 @@ LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 
 STRIPE_SECRET_KEY = env.str("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
+
+# Versioned legal wording supplied by the business. An empty registry disables new purchases.
+PURCHASE_CONSENT_VERSIONS = env.json("PURCHASE_CONSENT_VERSIONS", default={})
 
 # --- Browser Web Push ----------------------------------------------------------------------------
 # Empty keys disable push until each deployment has its own stable VAPID pair.
@@ -593,6 +607,7 @@ JAZZMIN_SETTINGS = {
         "catalog",
         "content",
         "landing",
+        "blog",
         "billing",
         "entitlements",
         "accounts",
@@ -640,6 +655,11 @@ JAZZMIN_SETTINGS = {
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
         "content.ContactSubmission": "fas fa-envelope-open-text",
+        "blog": "fas fa-newspaper",
+        "blog.BlogPost": "fas fa-file-lines",
+        "blog.BlogCategory": "fas fa-folder-open",
+        "blog.BlogImage": "fas fa-image",
+        "blog.BlogPostRedirect": "fas fa-arrow-right-arrow-left",
         "landing": "fas fa-bullhorn",
         "landing.LandingText": "fas fa-font",
         "landing.LandingMedia": "fas fa-images",

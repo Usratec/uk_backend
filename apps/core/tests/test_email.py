@@ -127,3 +127,48 @@ class TestRegistration:
         assert mail.outbox == []
         assert "token=" not in str(queued.call_args.kwargs)
         assert queued.call_args.kwargs["template"] == "email_verification"
+
+
+class TestDevStageRecipientAllowlist:
+    def test_dev_blocks_disallowed_recipients(self, settings):
+        settings.ENVIRONMENT = "dev"
+        email.send_now(
+            template="password_changed",
+            subject="Hello",
+            to="sam@example.com",
+            context={"first_name": "Sam"},
+        )
+        assert mail.outbox == []
+
+    def test_stage_allows_nutheorie_and_orangeuni(self, settings):
+        settings.ENVIRONMENT = "stage"
+        email.send_now(
+            template="password_changed",
+            subject="Hello",
+            to=["ok@nutheorie.nl", "ok@orangeuni.com", "nope@example.com"],
+            context={"first_name": "Sam"},
+        )
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == ["ok@nutheorie.nl", "ok@orangeuni.com"]
+
+    def test_domain_match_is_case_insensitive(self, settings):
+        settings.ENVIRONMENT = "dev"
+        email.send_now(
+            template="password_changed",
+            subject="Hello",
+            to="Sam@NuTheorie.NL",
+            context={"first_name": "Sam"},
+        )
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == ["Sam@NuTheorie.NL"]
+
+    def test_other_environments_are_not_filtered(self, settings):
+        settings.ENVIRONMENT = "production"
+        email.send_now(
+            template="password_changed",
+            subject="Hello",
+            to="sam@example.com",
+            context={"first_name": "Sam"},
+        )
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == ["sam@example.com"]

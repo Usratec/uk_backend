@@ -23,6 +23,7 @@ The backend is implemented as a Django monolith containing:
 - Package entitlements and permissions
 - Online Learning Platform
 - Learning Admin
+- Blog and SEO content
 - Background processing
 - Media/storage integrations
 
@@ -55,7 +56,9 @@ container start, so scaling out can't run them concurrently.
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
-| Payments | `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
+| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
+| Sitemap | `GET /api/sitemap.xml` |
+| Payments | `POST /api/payments/intent/`, `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
@@ -64,6 +67,27 @@ container start, so scaling out can't run them concurrently.
 
 The catalogue and site-content reads are public and unpaginated: the pages that show them show
 them all at once, and unpublished items are never returned. Everything else needs a token.
+
+The blog is the one public list that *is* paginated, because it grows without limit: `GET /api/blog/`
+returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>`.
+`GET /api/blog/<slug>/` adds the post's rich text. Both return only posts that are published *and*
+whose publish date has passed, so a draft, an unpublished post and a post scheduled for next week
+are all 404 — the status and the date are checked in the query, not after it.
+
+When a post's slug changes, the old address keeps working: it answers `301 Moved Permanently` with a
+`Location` header for the post's new API address and a body of
+`{"detail": …, "slug": "<new-slug>", "path": "/blog/<new-slug>/"}`, so the frontend can send the
+reader on and search engines see a permanent move. Every slug a post has ever had is kept, redirects
+always point at the post rather than at another slug (so there are no chains and no loops), and a
+slug taken by a live post always wins over a redirect of the same name.
+
+`GET /api/sitemap.xml` lists the published blog posts as addresses on `FRONTEND_BASE_URL`, because
+the pages themselves are rendered by the storefront. Drafts, unpublished posts and posts whose
+publish date has not arrived are left out. A post with no `canonical_url` is listed at
+`/blog/<current slug>/`; one whose canonical URL points at the storefront is listed at that path
+instead; one canonical to another site is left out altogether, since the original lives elsewhere.
+Each app with public pages declares its own entries in `<app>/sitemaps.py`, collected by
+`apps/core/sitemaps.py`.
 
 Clients send `Authorization: Bearer <access token>`. Access tokens last 5 minutes; refresh tokens
 last 30 days with `remember_me`, otherwise 24 hours. Refreshing returns a new refresh token and
@@ -75,10 +99,29 @@ and password-reset links can be copied straight from `docker compose logs web`.
 Google sign-in needs `GOOGLE_CLIENT_IDS` set to the OAuth client ids the frontends use. While it
 is empty, those two endpoints refuse every token.
 
-Payments need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. Customers buy as guests: checkout
-creates a pending order and sends them to Stripe's hosted page, and the order only becomes paid
-when Stripe's signed webhook says so. To receive webhooks locally, forward them with the Stripe
-CLI:
+Payments need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. There are two ways to pay, and
+neither of them lets the browser decide what anything costs — the price is always worked out from
+the package and the promo code by `apps/billing/pricing.py`, and an order only becomes paid when
+Stripe's signed webhook says so.
+
+* **Embedded** (`POST /api/payments/intent/`, signed in). The card is taken on our own checkout
+  page with Stripe's Payment Element, so card details never reach this server, and there is no
+  redirect. Returns a `client_secret` the browser confirms, then the page polls
+  `GET /api/payments/orders/<uuid>/`. The outcome arrives as `payment_intent.succeeded` or
+  `payment_intent.payment_failed`.
+* **Redirect** (`POST /api/payments/checkout/`, open to guests). Creates a pending order and sends
+  the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
+  as the fallback while the embedded flow is being rolled out.
+
+Both end in the same fulfilment, and `automatic_payment_methods` is what lets the Payment Element
+offer Apple Pay and Google Pay — Stripe decides which wallets the customer's browser can actually
+show. Each paying domain has to be registered with Stripe first, in the dashboard or with:
+
+```bash
+uv run python manage.py register_stripe_apple_pay_domain stage.1theory.co.uk
+```
+
+To receive webhooks locally, forward them with the Stripe CLI:
 
 ```bash
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
@@ -99,6 +142,49 @@ Leading and trailing whitespace is trimmed from all three text fields. A success
 `{"message": "Your message has been sent successfully."}`; a bad form is `400` with DRF's
 field-level errors (`{"email": ["Enter a valid email address."]}`).
 
+### Purchase consent
+
+`POST /api/payments/checkout/` requires `terms_accepted: true`,
+`immediate_access_accepted: true` (JSON booleans), and `consent_version` (up to 32 characters).
+Missing or invalid values produce field errors with status 400, without creating an order or
+contacting Stripe. Clients must send the version of the exact wording shown to the buyer.
+The two checkboxes remain separate; accepting Terms alone never grants immediate-access consent.
+The successful response is unchanged.
+
+Before enabling purchases, add a version in **Django admin → Billing → Purchase consent versions**.
+Enter the version sent by checkout, both checkbox texts, and the Terms and Privacy Policy versions.
+The wording must match the frontend, and the document versions must identify the actual documents shown.
+For `2026-11-draft`, UK-315 specifies these checkbox texts:
+
+- “I have read the privacy policy and agree to the terms of 1theory.”
+- “I want my access to start straight away, and I understand that once it starts I lose my 14-day right to cancel.”
+
+Create a new version whenever wording or document versions change, and coordinate its identifier
+with the frontend. Saved texts and document versions are read-only. Clear **Is active** once clients
+no longer submit a version. Order snapshots remain available in the order admin.
+
+Existing `PURCHASE_CONSENT_VERSIONS` environment entries continue to work for identifiers absent
+from the admin. To move one into the admin, register the same identifier with identical wording and
+document versions. An inactive admin entry also disables the matching environment entry. Admin
+changes take effect without a restart. Unavailable consent configuration returns 503. An unknown
+version when consent is configured, or an inactive version, returns 400 on `consent_version`.
+
+The order stores both accepted values, server timestamp, consent version, exact checkbox wording
+and Terms/Privacy versions in the same transaction as the purchase attempt. A guest order has no
+user until the normal paid-order fulfilment links the account. Consent details are visible
+read-only in the order admin and are not exposed by public order-status responses.
+
+Payment confirmation emails use the order's saved immediate-access wording in both text and HTML,
+so later configuration changes cannot rewrite what the buyer accepted. Historical orders without
+a recorded consent omit this section. Failed Stripe requests and failed or cancelled payments
+retain the snapshot with the order; the existing cleanup removes unpaid/failed orders and their
+consent after 15 days. Paid and refunded orders follow their existing retention.
+
+The validation and snapshot resolver are reusable by the future UK-330 PaymentIntent endpoint;
+this change does not add that endpoint. Stage verification after deployment: configure the real
+legal versions, coordinate the matching FE consent version, then check a successful purchase,
+field-error responses, read-only admin details and both email formats.
+
 ### What happens after a payment
 
 Stripe's webhook marks the order paid and queues a background job, which creates the account if
@@ -111,7 +197,8 @@ Access is two dates. `package_expires_at` ends learning access; `account_expires
 in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
 for is lost.
 
-Scheduled jobs run from the `beat` service: expiry reminders at 09:00, telling learners their
+Scheduled jobs run from the `beat` service: publishing blog posts whose time has come every five
+minutes, expiry reminders at 09:00, telling learners their
 access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
 lost orders every ten minutes, telling the CRM about access it was never told about, hourly, and
 delivering contact messages that are still pending, hourly.
@@ -497,6 +584,7 @@ Roles are declared in code, in each app's `roles.py`, and created by a migration
 | Role | May |
 |---|---|
 | CRM Manager | Look customers up and read their records |
+| Support Agent | Read the contact form's messages |
 
 `uv run python manage.py sync_roles` sets each role group's permissions to exactly what the code
 declares, so permissions added by hand in the admin are taken back. No role carries

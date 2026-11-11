@@ -12,17 +12,25 @@ from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.accounts.serializers import DetailSerializer
-from apps.billing import checkout, history, pricing, webhooks
+from apps.billing import checkout, history, intent, pricing, webhooks
 from apps.billing.serializers import (
+    CURRENCY,
     CheckoutResponseSerializer,
     CheckoutSerializer,
     OrderHistoryItemSerializer,
     OrderHistorySerializer,
     OrderStatusSerializer,
+    PaymentIntentResponseSerializer,
+    PaymentIntentSerializer,
     PromoCodeValidateSerializer,
     PromoCodeValidSerializer,
 )
-from apps.billing.throttling import CheckoutThrottle, OrderStatusThrottle, PromoCodeThrottle
+from apps.billing.throttling import (
+    CheckoutThrottle,
+    OrderStatusThrottle,
+    PaymentIntentThrottle,
+    PromoCodeThrottle,
+)
 from apps.catalog.models import Package
 from apps.integrations import stripe_client
 
@@ -99,11 +107,12 @@ class CheckoutView(APIView):
             order, session_url = checkout.start_checkout(
                 package=package,
                 email=data.validated_data["email"],
+                consent=data.validated_data["consent_snapshot"],
                 first_name=data.validated_data["first_name"],
                 last_name=data.validated_data["last_name"],
                 promo_code=data.validated_data["promo_code"],
             )
-        except checkout.PromoCodeUnavailableError:
+        except pricing.PromoCodeUnavailableError:
             return Response(
                 {"detail": "This promo code has just been fully claimed. Please try again without it."},
                 status=status.HTTP_409_CONFLICT,
@@ -122,6 +131,70 @@ class CheckoutView(APIView):
 
         return Response(
             {"session_url": session_url, "order_id": str(order.id)},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PaymentIntentView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [PaymentIntentThrottle]
+
+    @extend_schema(
+        request=PaymentIntentSerializer,
+        responses={201: PaymentIntentResponseSerializer},
+        summary="Start an embedded payment",
+    )
+    def post(self, request: Request) -> Response:
+        data = PaymentIntentSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+
+        package = _active_package(data.validated_data["package_id"])
+        if package is None:
+            return Response({"package_id": [PACKAGE_UNAVAILABLE]}, status=status.HTTP_400_BAD_REQUEST)
+
+        typed_promo_code = data.validated_data["promo_code"].strip()
+        if typed_promo_code and pricing.find_usable_promo_code(typed_promo_code) is None:
+            return Response({"promo_code": [INVALID_PROMO_CODE]}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            started = intent.start_payment(
+                user=cast(User, request.user),
+                package=package,
+                promo_code=typed_promo_code,
+                consent=data.validated_data["consent_snapshot"],
+            )
+        except pricing.PromoCodeUnavailableError:
+            return Response(
+                {"promo_code": ["This promo code has just been fully claimed. Please try again without it."]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except checkout.FreeOrderNotSupportedError:
+            return Response(
+                {
+                    "promo_code": [
+                        "This discount covers the whole price. Please contact support to complete your order."
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except intent.PaymentInFlightError:
+            return Response(
+                {"detail": "Your payment is already going through. Please wait a moment for it to finish."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except (intent.PaymentUnverifiableError, stripe_client.StripeError):
+            return Response(
+                {"detail": "Payment could not be started. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(
+            {
+                "order_id": str(started.order.id),
+                "client_secret": started.client_secret,
+                "amount_pence": started.amount_pence,
+                "currency": CURRENCY,
+            },
             status=status.HTTP_201_CREATED,
         )
 
