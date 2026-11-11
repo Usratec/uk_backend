@@ -62,11 +62,13 @@ container start, so scaling out can't run them concurrently.
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
+| Public e-books | `GET /api/learn/ebook/public/`, `GET /api/learn/ebook/public/samples/<slug>/`, `POST /api/learn/ebook/public/sample-request/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
-The catalogue and site-content reads are public and unpaginated: the pages that show them show
-them all at once, and unpublished items are never returned. Everything else needs a token.
+The catalogue, site-content and public e-book reads are public and unpaginated: the pages that show
+them show them all at once, and unpublished items are never returned. Everything else needs a
+token.
 
 The blog is the one public list that *is* paginated, because it grows without limit: `GET /api/blog/`
 returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>`.
@@ -113,9 +115,12 @@ Stripe's signed webhook says so.
   the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
   as the fallback while the embedded flow is being rolled out.
 
-Both end in the same fulfilment, and `automatic_payment_methods` is what lets the Payment Element
-offer Apple Pay and Google Pay — Stripe decides which wallets the customer's browser can actually
-show. Each paying domain has to be registered with Stripe first, in the dashboard or with:
+Both end in the same fulfilment. The embedded intent is created with
+`allowed_payment_method_types: ["card"]`, which has to match the types the frontend builds its
+Payment Element with or Stripe refuses to confirm the payment. Apple Pay and Google Pay are not
+listed there because they are not payment method types of their own — both are cards, and `card`
+is what carries them. Each paying domain still has to be registered with Stripe before the wallet
+buttons appear, in the dashboard or with:
 
 ```bash
 uv run python manage.py register_stripe_apple_pay_domain stage.1theory.co.uk
@@ -411,6 +416,70 @@ and mock tests together — newest first, in one request instead of one request 
 }
 ```
 
+### The public e-book landing page
+
+Three endpoints serve the e-book landing page to visitors with no account. They are the only part
+of the learning material anybody can reach without a token, so they are built from their own
+whitelist of fields rather than by filtering the student's responses.
+
+`GET /api/learn/ebook/public/` returns every published e-book with its chapter outline:
+
+```json
+{
+  "ebooks": [
+    {
+      "slug": "study-guide",
+      "title": "Study guide",
+      "description": "Every rule, with room to write.",
+      "sections": [
+        {
+          "slug": "chapter-one",
+          "number": 1,
+          "title": "Introduction",
+          "summary": "Learn the fundamentals.",
+          "isFreeSample": true,
+          "samplePdfUrl": "https://api.example.com/api/learn/ebook/public/samples/chapter-one/"
+        },
+        {
+          "slug": "chapter-two",
+          "number": 2,
+          "title": "Advanced concepts",
+          "summary": "Explore advanced concepts.",
+          "isFreeSample": false,
+          "samplePdfUrl": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+That is the whole response. No chapter text, no cover, no reading progress, no link to the book's
+own document and nothing about any account — the query does not even read the `body_html` column.
+`isFreeSample` is the designation staff made in the back office; `samplePdfUrl` is null until the
+sample PDF for that chapter has actually been uploaded, so the page can tell the two apart instead
+of showing a button that cannot work.
+
+`GET /api/learn/ebook/public/samples/<slug>/` hands over that chapter's PDF, with no token. The slug names a row, never
+a path, and it is looked up only among live chapters of live books that staff flagged *and* gave a
+sample PDF of their own — anything else, including the chapters of the same book, answers 404. With
+a bucket configured the endpoint redirects to a short-lived signed URL for that one object, so the
+bytes never pass through the single worker.
+
+The sample is a separate file from the book, uploaded on the chapter under **The free sample** and
+stored under its own `learning/ebook-sample/` prefix. The book's own document is untouched by all
+of this: it is still served only to buyers, through `GET /api/learn/ebook/<slug>/`, as a signed URL
+that expires. Nothing in the public path reads it, and there is no fallback to it when a sample is
+missing. One chapter per book may be given away, enforced by a database constraint.
+
+`POST /api/learn/ebook/public/sample-request/` takes the "read chapter one for free" form with
+`{"email": "...", "ebookSlug": "study-guide", "studyTipsConsent": true}` and emails the public link above — never the book's own URL. It answers 201 with
+`{"message": ..., "samplePdfUrl": ...}`, 404 for a book that is not published and 409 for one with
+no free chapter, and is throttled to 10 requests an hour per IP address. `studyTipsConsent` is
+recorded only when the visitor ticks it, dated as the record of consent; left out it is false, and
+it is never a condition of the download, which needs no email address at all. The requests are
+listed read-only in the back office under **Ebook sample requests**.
+
 ### Learner notifications
 
 `GET /api/notifications/` returns the signed-in learner's notifications, newest first, as
@@ -574,6 +643,16 @@ section and hazard clip that plays the file, and the API hands them out with the
 Only videos show the table, only `.vtt` files whose contents really are WebVTT are accepted, and a
 video with no tracks is served exactly as it was before.
 
+E-books carry a free sample chapter. On a section's page, **The free sample** holds a tick box and
+an upload: tick the box for the one chapter the business is happy to give away, and upload a PDF of
+that chapter alone. The upload is refused unless the bytes really are a PDF, the form refuses the
+tick box without a file, and a second free chapter in the same book is refused by the database. The
+sample is stored apart from the book's own document, which is never served in its place — see *The
+public e-book landing page* above. Visitors who asked for the chapter by email are listed, read
+only, under **Ebook sample requests**, with whether they agreed to study tips and when. Those rows
+are addresses and marketing consent rather than course material, so writing or releasing e-books
+does not come with them: they are granted by the **Marketing Support** role alone.
+
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a
 way in — a superuser must grant themselves the permission first. That is least privilege by
@@ -584,6 +663,7 @@ Roles are declared in code, in each app's `roles.py`, and created by a migration
 | Role | May |
 |---|---|
 | CRM Manager | Look customers up and read their records |
+| Marketing Support | Read the visitors who asked for a free sample chapter |
 | Support Agent | Read the contact form's messages |
 
 `uv run python manage.py sync_roles` sets each role group's permissions to exactly what the code
