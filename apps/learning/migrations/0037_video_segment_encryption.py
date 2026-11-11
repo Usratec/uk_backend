@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('learning', '0033_offline_answer_sync'),
+        ('learning', '0036_marketing_support_role'),
     ]
 
     operations = [
