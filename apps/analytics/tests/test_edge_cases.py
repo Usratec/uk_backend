@@ -495,7 +495,7 @@ def test_a_search_with_many_matches_is_capped(db):
 def test_the_student_page_renders_for_somebody_who_has_done_nothing(looking, student):
     response = looking.get(reverse("admin:analytics_student", args=[student.pk]))
     assert response.status_code == 200
-    assert "has never studied" in response.content.decode()
+    assert "Never" in response.content.decode()
 
 
 def test_the_student_page_renders_for_somebody_who_has_done_everything(looking, package, student):

@@ -49,6 +49,8 @@ class TestOrderStatus:
             "final_price",
             "paid_at",
             "created_at",
+            "failure_code",
+            "failure_message",
         }
 
     def test_does_not_reveal_the_buyer_email(self, signed_in, order):
@@ -71,6 +73,24 @@ class TestOrderStatus:
         order.save(update_fields=["status"])
 
         assert signed_in.get(status_url(order.id)).data["status"] == "paid"
+
+    def test_shows_why_a_payment_was_refused(self, signed_in, order):
+        order.status = OrderStatus.FAILED
+        order.failure_code = "card_declined"
+        order.failure_message = "Your card was declined."
+        order.save(update_fields=["status", "failure_code", "failure_message"])
+
+        response = signed_in.get(status_url(order.id))
+
+        assert response.data["status"] == "failed"
+        assert response.data["failure_code"] == "card_declined"
+        assert response.data["failure_message"] == "Your card was declined."
+
+    def test_a_pending_order_has_nothing_to_explain(self, signed_in, order):
+        response = signed_in.get(status_url(order.id))
+
+        assert response.data["failure_code"] == ""
+        assert response.data["failure_message"] == ""
 
     def test_an_order_linked_to_the_account_is_readable(self, signed_in, buyer, order):
         order.user = buyer

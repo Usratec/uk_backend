@@ -39,6 +39,43 @@ ALLOWED_HOSTS: list[str] = env.list("ALLOWED_HOSTS", default=[])
 
 TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "%(asctime)s %(levelname)s %(name)s [pid=%(process)d tid=%(thread)d] %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        "django.server": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
 INSTALLED_APPS = [
     # Before django.contrib.admin, because it replaces the admin's templates.
     "jazzmin",
@@ -48,6 +85,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.sitemaps",
     # Third party
     "corsheaders",
     "constance",
@@ -70,6 +108,7 @@ INSTALLED_APPS = [
     "apps.learning",
     "apps.content",
     "apps.landing",
+    "apps.blog",
     "apps.analytics",
     "apps.notifications",
 ]
@@ -146,6 +185,7 @@ REST_FRAMEWORK = {
         "email_resend": "5/hour",
         "profile_photo": "20/hour",
         "checkout": "30/hour",
+        "payment_intent": "60/hour",
         "promo_code": "60/hour",
         "order_status": "60/hour",
     },
@@ -169,6 +209,7 @@ SPECTACULAR_SETTINGS = {
     # Using the exam's own type to name its components keeps the names consistent and predictable.
     "ENUM_NAME_OVERRIDES": {
         "ExamKindEnum": "apps.learning.models.ExamKind.choices",
+        "QuestionTypeEnum": "apps.learning.models.QuestionType.choices",
         "OrderStatusEnum": "apps.billing.models.OrderStatus.choices",
         "VideoProcessingStatusEnum": "apps.learning.models.VideoProcessingStatus.choices",
     },
@@ -250,6 +291,14 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.delete_unfinished_orders",
         "schedule": crontab(hour="1", minute="0"),
     },
+    "sweep-embedded-payments": {
+        "task": "apps.billing.tasks.sweep_embedded_payments",
+        "schedule": crontab(minute="*/5"),
+    },
+    "publish-scheduled-blog-posts": {
+        "task": "apps.blog.tasks.publish_scheduled_posts",
+        "schedule": crontab(minute="*/5"),
+    },
     "sweep-abandoned-video-uploads": {
         "task": "apps.learning.tasks.sweep_abandoned_uploads",
         "schedule": crontab(minute="*/15"),
@@ -267,6 +316,9 @@ LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 
 STRIPE_SECRET_KEY = env.str("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
+
+# Versioned legal wording supplied by the business. An empty registry disables new purchases.
+PURCHASE_CONSENT_VERSIONS = env.json("PURCHASE_CONSENT_VERSIONS", default={})
 
 # --- Browser Web Push ----------------------------------------------------------------------------
 # Empty keys disable push until each deployment has its own stable VAPID pair.
@@ -549,6 +601,7 @@ JAZZMIN_SETTINGS = {
         "catalog",
         "content",
         "landing",
+        "blog",
         "billing",
         "entitlements",
         "accounts",
@@ -595,6 +648,11 @@ JAZZMIN_SETTINGS = {
         "content": "fas fa-pen-nib",
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
+        "blog": "fas fa-newspaper",
+        "blog.BlogPost": "fas fa-file-lines",
+        "blog.BlogCategory": "fas fa-folder-open",
+        "blog.BlogImage": "fas fa-image",
+        "blog.BlogPostRedirect": "fas fa-arrow-right-arrow-left",
         "landing": "fas fa-bullhorn",
         "landing.LandingText": "fas fa-font",
         "landing.LandingMedia": "fas fa-images",

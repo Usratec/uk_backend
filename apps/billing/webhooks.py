@@ -9,6 +9,7 @@ the order row is locked while it is read and written.
 """
 
 import logging
+import uuid
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -29,6 +30,10 @@ FAILED_EVENTS = {
     "checkout.session.expired",
     "checkout.session.async_payment_failed",
 }
+
+INTENT_PAID_EVENT = "payment_intent.succeeded"
+INTENT_FAILED_EVENT = "payment_intent.payment_failed"
+
 REFUNDED_EVENT = "charge.refunded"
 DISPUTE_OPENED_EVENT = "charge.dispute.created"
 DISPUTE_CLOSED_EVENT = "charge.dispute.closed"
@@ -58,6 +63,10 @@ def handle_event(event: dict) -> None:
             _mark_paid(session)
         elif event_type in FAILED_EVENTS:
             _mark_failed(session)
+        elif event_type == INTENT_PAID_EVENT:
+            _mark_intent_paid(session)
+        elif event_type == INTENT_FAILED_EVENT:
+            _mark_intent_failed(session)
         elif event_type == REFUNDED_EVENT:
             _handle_refund(session)
         elif event_type == DISPUTE_OPENED_EVENT:
@@ -72,9 +81,15 @@ def handle_event(event: dict) -> None:
         raise
 
 
-def _order_id_from(session: dict) -> str:
-    """Stripe carries our order id in metadata, with client_reference_id as a fallback."""
-    return (session.get("metadata") or {}).get("order_id") or session.get("client_reference_id") or ""
+def _order_id_from(session: dict) -> uuid.UUID | None:
+    for value in ((session.get("metadata") or {}).get("order_id"), session.get("client_reference_id")):
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            return uuid.UUID(value.strip())
+        except ValueError:
+            logger.warning("Ignoring a Stripe session whose order reference is not a UUID")
+    return None
 
 
 def _mark_paid(session: dict) -> None:
@@ -215,6 +230,131 @@ def _mark_failed(session: dict) -> None:
     )
     if updated:
         logger.info("Order %s failed", order_id)
+
+
+def _our_order_id(intent: dict) -> uuid.UUID | None:
+    order_id = (intent.get("metadata") or {}).get("order_id")
+    if not isinstance(order_id, str) or not order_id.strip():
+        return None
+
+    try:
+        return uuid.UUID(order_id.strip())
+    except ValueError:
+        logger.warning("Ignoring a payment intent event whose order_id is not a UUID")
+        return None
+
+
+def _order_for_intent(intent: dict) -> Order | None:
+    intent_id = intent.get("id") or ""
+    order = Order.objects.filter(stripe_payment_intent_id=intent_id).first() if intent_id else None
+    if order is not None:
+        return order
+
+    order_id = _our_order_id(intent)
+    if order_id is None:
+        logger.info("No order of ours matches payment intent %s", intent_id or "(no id)")
+        return None
+
+    order = Order.objects.filter(pk=order_id).first()
+    if order is None:
+        logger.error("Stripe reported a payment for unknown order %s", order_id)
+    return order
+
+
+def _intent_matches_order(order: Order, intent: dict, amount_field: str) -> bool:
+    raw_order_id = (intent.get("metadata") or {}).get("order_id")
+    if raw_order_id not in (None, "") and _our_order_id(intent) != order.id:
+        return False
+
+    currency = intent.get("currency")
+    if not isinstance(currency, str) or currency.lower() != CHECKOUT_CURRENCY:
+        return False
+
+    amount = intent.get(amount_field)
+    if type(amount) is not int:
+        return False
+    return amount == to_pence(order.final_price)
+
+
+def _mark_intent_paid(intent: dict) -> None:
+    order = _order_for_intent(intent)
+    if order is None:
+        return
+
+    intent_id = intent.get("id") or ""
+
+    with transaction.atomic():
+        locked = Order.objects.select_for_update().filter(pk=order.pk).first()
+        if locked is None:
+            return
+
+        if locked.status == OrderStatus.PAID:
+            logger.info("Order %s is already paid", locked.id)
+            return
+
+        if locked.status not in {OrderStatus.PENDING, OrderStatus.FAILED}:
+            logger.error("Refusing to mark order %s paid, which is %s", locked.id, locked.status)
+            return
+
+        if not _intent_matches_order(locked, intent, "amount_received"):
+            logger.error("Refusing to mark order %s paid: the payment does not match the stored order", locked.id)
+            return
+
+        if intent_id and Order.objects.filter(transaction_id=intent_id).exclude(pk=locked.pk).exists():
+            logger.error("Payment %s is already credited to another order", intent_id)
+            return
+
+        if locked.payment_intent_cancelled_at is not None:
+            logger.error("Order %s was paid on an intent we recorded as cancelled", locked.id)
+
+        locked.status = OrderStatus.PAID
+        locked.stripe_payment_intent_id = intent_id
+        locked.transaction_id = intent_id or None
+        locked.paid_at = timezone.now()
+        locked.failure_code = ""
+        locked.failure_message = ""
+        locked.payment_intent_cancel_requested_at = None
+        locked.payment_intent_cancelled_at = None
+        locked.payment_intent_expires_at = None
+        locked.save(
+            update_fields=[
+                "status",
+                "stripe_payment_intent_id",
+                "transaction_id",
+                "paid_at",
+                "failure_code",
+                "failure_message",
+                "payment_intent_cancel_requested_at",
+                "payment_intent_cancelled_at",
+                "payment_intent_expires_at",
+                "updated_at",
+            ]
+        )
+
+    logger.info("Order %s is paid", order.pk)
+
+    transaction.on_commit(lambda: _fulfil(str(order.pk)))
+
+
+def _mark_intent_failed(intent: dict) -> None:
+    order = _order_for_intent(intent)
+    if order is None:
+        return
+
+    error = intent.get("last_payment_error") or {}
+    code = str(error.get("decline_code") or error.get("code") or "")[:100]
+    message = str(error.get("message") or "")[:255]
+
+    updated = Order.objects.filter(pk=order.pk, status=OrderStatus.PENDING).update(
+        status=OrderStatus.FAILED,
+        failure_code=code,
+        failure_message=message,
+        updated_at=timezone.now(),
+    )
+    if updated:
+        logger.info("Order %s failed (%s)", order.pk, code or "no code given")
+    else:
+        logger.info("Leaving order %s as it is; a failed payment does not change a settled order", order.pk)
 
 
 def _order_for_payment(obj: dict) -> Order | None:

@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('learning', '0031_video_mp4_output'),
+        ('learning', '0033_offline_answer_sync'),
     ]
 
     operations = [

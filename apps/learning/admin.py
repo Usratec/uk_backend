@@ -774,11 +774,11 @@ class ReadOnlyAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 
 @admin.register(QuestionAttempt)
 class QuestionAttemptAdmin(ReadOnlyAdmin):
-    list_display = ["student", "question", "was_correct", "created_at"]
-    list_filter = ["was_correct", "question__chapter", "created_at"]
+    list_display = ["student", "question", "was_correct", "answered_at", "created_at"]
+    list_filter = ["was_correct", "question__chapter", "answered_at"]
     search_fields = ["student__email", "question__key", "question__prompt"]
     list_select_related = ["student", "question"]
-    date_hierarchy = "created_at"
+    date_hierarchy = "answered_at"
 
 
 @admin.register(MockAttempt)
