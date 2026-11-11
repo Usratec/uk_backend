@@ -113,9 +113,12 @@ Stripe's signed webhook says so.
   the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
   as the fallback while the embedded flow is being rolled out.
 
-Both end in the same fulfilment, and `automatic_payment_methods` is what lets the Payment Element
-offer Apple Pay and Google Pay — Stripe decides which wallets the customer's browser can actually
-show. Each paying domain has to be registered with Stripe first, in the dashboard or with:
+Both end in the same fulfilment. The embedded intent is created with
+`allowed_payment_method_types: ["card"]`, which has to match the types the frontend builds its
+Payment Element with or Stripe refuses to confirm the payment. Apple Pay and Google Pay are not
+listed there because they are not payment method types of their own — both are cards, and `card`
+is what carries them. Each paying domain still has to be registered with Stripe before the wallet
+buttons appear, in the dashboard or with:
 
 ```bash
 uv run python manage.py register_stripe_apple_pay_domain stage.1theory.co.uk
