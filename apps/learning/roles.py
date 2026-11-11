@@ -1,8 +1,12 @@
 """Learning roles.
 
-Two jobs, deliberately separated: writing content and releasing it. An editor can draft and
-change anything; only a publisher can put it in front of students. That way a mistake in a draft
+Three jobs, deliberately separated. Writing content and releasing it: an editor can draft and
+change anything; only a publisher can put it in front of students, so a mistake in a draft
 cannot reach anybody because the wrong person pressed save.
+
+Answering the people who ask for a free chapter is the third, and it is nobody's job by default.
+Those rows are visitors' email addresses and their marketing consent, which writing an e-book
+never needs to see, so they are granted on their own and to whoever actually answers that inbox.
 """
 
 from apps.staff.roles import StaffRole
@@ -61,7 +65,8 @@ PUBLISHABLE = (
 )
 PUBLISHING = tuple(f"learning.publish_{model}" for model in PUBLISHABLE)
 
-CONTENT_EDITOR = StaffRole(name="Content Editor", permissions=EDITING + REMOVING + WATCHING + LEADS)
-CONTENT_PUBLISHER = StaffRole(name="Content Publisher", permissions=EDITING + REMOVING + PUBLISHING + WATCHING + LEADS)
+CONTENT_EDITOR = StaffRole(name="Content Editor", permissions=EDITING + REMOVING + WATCHING)
+CONTENT_PUBLISHER = StaffRole(name="Content Publisher", permissions=EDITING + REMOVING + PUBLISHING + WATCHING)
+MARKETING_SUPPORT = StaffRole(name="Marketing Support", permissions=LEADS)
 
-ROLES = (CONTENT_EDITOR, CONTENT_PUBLISHER)
+ROLES = (CONTENT_EDITOR, CONTENT_PUBLISHER, MARKETING_SUPPORT)

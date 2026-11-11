@@ -534,7 +534,9 @@ that chapter alone. The upload is refused unless the bytes really are a PDF, the
 tick box without a file, and a second free chapter in the same book is refused by the database. The
 sample is stored apart from the book's own document, which is never served in its place — see *The
 public e-book landing page* above. Visitors who asked for the chapter by email are listed, read
-only, under **Ebook sample requests**, with whether they agreed to study tips and when.
+only, under **Ebook sample requests**, with whether they agreed to study tips and when. Those rows
+are addresses and marketing consent rather than course material, so writing or releasing e-books
+does not come with them: they are granted by the **Marketing Support** role alone.
 
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a
@@ -546,6 +548,7 @@ Roles are declared in code, in each app's `roles.py`, and created by a migration
 | Role | May |
 |---|---|
 | CRM Manager | Look customers up and read their records |
+| Marketing Support | Read the visitors who asked for a free sample chapter |
 
 `uv run python manage.py sync_roles` sets each role group's permissions to exactly what the code
 declares, so permissions added by hand in the admin are taken back. No role carries

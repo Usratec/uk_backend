@@ -1,26 +1,35 @@
 import pytest
 from django.core import mail
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.urls import reverse
 
 from apps.accounts.models import User
-from apps.learning import services
+from apps.learning import roles, services
 from apps.learning.admin import EbookSectionForm
 from apps.learning.models import EbookSampleRequest, EbookSection
-from apps.learning.tests.conftest import PASSWORD, sign_in
+from apps.learning.tests.conftest import PASSWORD, sign_in, staff_member
 
 pytestmark = pytest.mark.django_db
 
 OUTLINE_URL = reverse("learn-ebook-public")
 REQUEST_URL = reverse("learn-ebook-sample-request")
 EBOOK_URL = reverse("learn-ebook")
+LEADS_URL = reverse("admin:learning_ebooksamplerequest_changelist")
 
 SAMPLE_BYTES = b"%PDF-1.4 the first chapter, free to all"
 
 BOOK_KEYS = {"slug", "title", "description", "sections"}
 SECTION_KEYS = {"slug", "number", "title", "summary", "isFreeSample", "samplePdfUrl"}
+
+
+@pytest.fixture(autouse=True)
+def clear_throttle_counters():
+    cache.clear()
+    yield
+    cache.clear()
 
 
 def sample_url(slug: str) -> str:
@@ -355,3 +364,65 @@ class TestAskingForTheSampleByEmail:
     def test_the_download_needs_no_form_and_no_consent(self, api, landing_page):
         assert api.get(sample_url("chapter-one")).status_code == 200
         assert EbookSampleRequest.objects.count() == 0
+
+    def test_the_eleventh_request_from_one_address_is_throttled(self, api, landing_page):
+        for attempt in range(10):
+            sent = api.post(
+                REQUEST_URL, {"email": f"visitor{attempt}@example.com", "ebookSlug": "study-guide"}, format="json"
+            )
+            assert sent.status_code == 201
+
+        response = api.post(
+            REQUEST_URL, {"email": "one-too-many@example.com", "ebookSlug": "study-guide"}, format="json"
+        )
+
+        assert response.status_code == 429
+        assert len(mail.outbox) == 10
+        assert EbookSampleRequest.objects.count() == 10
+
+    def test_the_throttle_counts_requests_that_sent_nothing(self, api, landing_page):
+        for _ in range(10):
+            api.post(REQUEST_URL, {"email": "not-an-address", "ebookSlug": "study-guide"}, format="json")
+
+        response = api.post(REQUEST_URL, {"email": "visitor@example.com", "ebookSlug": "study-guide"}, format="json")
+
+        assert response.status_code == 429
+        assert mail.outbox == []
+
+
+class TestWhoCanSeeTheLeads:
+    def test_writing_content_does_not_come_with_the_addresses(self, client, editor):
+        client.force_login(editor)
+
+        assert client.get(LEADS_URL).status_code == 403
+
+    def test_releasing_content_does_not_come_with_them_either(self, client, publisher):
+        client.force_login(publisher)
+
+        assert client.get(LEADS_URL).status_code == 403
+
+    def test_the_support_role_can_read_them(self, client, db, landing_page):
+        support = staff_member("support@example.com", "Marketing Support")
+        client.force_login(support)
+
+        response = client.get(LEADS_URL)
+
+        assert response.status_code == 200
+
+    def test_the_support_role_cannot_change_or_delete_them(self, client, db, landing_page):
+        asked = EbookSampleRequest.objects.create(ebook=landing_page, email="visitor@example.com")
+        client.force_login(staff_member("support@example.com", "Marketing Support"))
+
+        change = client.get(reverse("admin:learning_ebooksamplerequest_change", args=[asked.pk]))
+        deletion = client.post(reverse("admin:learning_ebooksamplerequest_delete", args=[asked.pk]), {"post": "yes"})
+
+        assert b"_save" not in change.content
+        assert deletion.status_code == 403
+        assert EbookSampleRequest.objects.count() == 1
+
+    def test_the_support_role_carries_nothing_but_the_addresses(self):
+        assert roles.MARKETING_SUPPORT.permissions == ("learning.view_ebooksamplerequest",)
+
+    def test_no_content_role_declares_them(self):
+        for role in (roles.CONTENT_EDITOR, roles.CONTENT_PUBLISHER):
+            assert "learning.view_ebooksamplerequest" not in role.permissions
