@@ -12,6 +12,7 @@ editor inside a nested inline is unusable.
 from typing import cast
 
 from django import forms
+from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
@@ -25,6 +26,7 @@ from django_ckeditor_5.widgets import CKEditor5Widget  # type: ignore[import-unt
 from apps.accounts.models import User
 from apps.core.models import PublishStatus
 from apps.core.uploads import require_upload
+from apps.integrations import s3_client
 from apps.learning import html, media_processing, media_services, services
 from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
@@ -1075,6 +1077,8 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
             rows.append(("Frame rate", f"{float(asset.source_frame_rate):g} fps, kept in every output"))
         if asset.mp4_key:
             rows.append(("Progressive MP4", "produced, with fast start"))
+        if asset.is_streaming:
+            rows.append(("Segments", "AES-128 encrypted" if asset.hls_key else "not encrypted — reprocess to add it"))
         if asset.processing_attempts:
             rows.append(("Attempts", str(asset.processing_attempts)))
         if asset.processing_status == VideoProcessingStatus.PROCESSING and asset.processing_heartbeat_at:
@@ -1134,7 +1138,33 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
         # Recorded here because the request knows who is uploading and the model does not.
         if not change:
             obj.uploaded_by = cast(User, request.user)
+
+        fresh_video = obj.kind == MediaKind.VIDEO and bool(obj.file) and (not change or "file" in form.changed_data)
+        if fresh_video:
+            obj.processing_status = VideoProcessingStatus.UPLOADED
+            obj.processing_job = None
+            obj.processing_error = ""
+
         super().save_model(request, obj, form, change)
+
+        if fresh_video:
+            self._queue_upload(request, obj)
+
+    def _queue_upload(self, request: HttpRequest, asset: MediaAsset) -> None:
+        if media_processing.queue_processing(asset, actor=cast(User, request.user)) is not None:
+            self.message_user(request, f"“{asset.title}” is queued for processing.", messages.INFO)
+            return
+
+        if not settings.VIDEO_TRANSCODING_ENABLED:
+            self.message_user(
+                request, "Video processing is switched off, so this file is served as it was uploaded.", messages.INFO
+            )
+        elif not s3_client.is_configured():
+            self.message_user(
+                request,
+                "There is no uploads bucket configured, so this file cannot be transcoded here.",
+                messages.WARNING,
+            )
 
 
 class HazardWindowInline(admin.TabularInline):

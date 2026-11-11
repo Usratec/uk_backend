@@ -77,9 +77,10 @@ def ffmpeg(monkeypatch):
         calls["probe"] += 1
         return calls["source"]
 
-    def fake_to_hls(*, source_path, output_dir, source, renditions):
+    def fake_to_hls(*, source_path, output_dir, source, renditions, encryption=None):
         calls["to_hls"] += 1
         calls["renditions"] = renditions
+        calls["encryption"] = encryption
         return write_fake_output(output_dir, renditions)
 
     def fake_to_mp4(*, source_path, output_path, source, rendition):
@@ -717,3 +718,52 @@ class TestUnrelatedMediaIsUntouched:
         assert clip.media.processing_status == VideoProcessingStatus.LEGACY
         assert clip.media.hls_master_key == ""
         assert clip.media.kind == MediaKind.VIDEO
+
+
+class TestTheEncryptionIv:
+    def encryption(self, *, iv: bytes | None = None) -> transcode.HlsEncryption:
+        if iv is None:
+            return transcode.HlsEncryption(key=transcode.new_hls_key(), key_uri="https://api.test/key/")
+        return transcode.HlsEncryption(key=transcode.new_hls_key(), key_uri="https://api.test/key/", iv=iv)
+
+    def test_an_iv_is_sixteen_bytes(self):
+        assert len(transcode.new_hls_iv()) == 16
+
+    def test_one_is_generated_without_being_asked_for(self):
+        assert len(self.encryption().iv) == 16
+
+    def test_it_is_never_all_zeros(self):
+        assert self.encryption().iv != bytes(16)
+
+    def test_every_job_gets_its_own(self):
+        ivs = {self.encryption().iv for _ in range(20)}
+
+        assert len(ivs) == 20
+
+    def test_an_iv_of_the_wrong_size_is_refused(self):
+        with pytest.raises(transcode.TranscodeError, match="IV is 16 bytes"):
+            self.encryption(iv=b"short")
+
+    def test_one_given_explicitly_is_kept(self):
+        chosen = bytes(range(16))
+
+        assert self.encryption(iv=chosen).iv == chosen
+
+    def test_the_key_info_file_hands_ffmpeg_the_iv_as_hex(self, tmp_path):
+        encryption = self.encryption()
+
+        info = transcode._key_info_file(encryption, tmp_path)
+
+        uri, key_path, iv = info.read_text().splitlines()
+        assert uri == "https://api.test/key/"
+        assert Path(key_path).read_bytes() == encryption.key
+        # ffmpeg wants the bare hex here and writes the 0x form into the playlist itself.
+        assert iv == encryption.iv.hex()
+        assert len(iv) == 32
+        assert not iv.startswith("0x")
+
+    def test_the_key_file_is_only_readable_by_the_worker(self, tmp_path):
+        info = transcode._key_info_file(self.encryption(), tmp_path)
+
+        key_path = Path(info.read_text().splitlines()[1])
+        assert oct(key_path.stat().st_mode)[-3:] == "600"

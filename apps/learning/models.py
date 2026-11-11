@@ -269,6 +269,13 @@ class MediaAsset(TimestampedModel):
     )
     hls_prefix = models.CharField(max_length=255, blank=True, editable=False)
     hls_master_key = models.CharField(max_length=255, blank=True, editable=False)
+    hls_key = models.BinaryField(
+        max_length=16,
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="The AES-128 key its segments are encrypted with. Never served from the bucket.",
+    )
     mp4_key = models.CharField(
         max_length=255,
         blank=True,
@@ -332,15 +339,18 @@ class MediaAsset(TimestampedModel):
     def is_playable_source(self) -> bool:
         if not self.file:
             return False
-        if self.processing_status in (VideoProcessingStatus.LEGACY, VideoProcessingStatus.READY):
-            return True
-        return self.is_streaming
+        if self.processing_status in (VideoProcessingStatus.PENDING_UPLOAD, VideoProcessingStatus.CANCELLED):
+            return False
+        if self.processing_status == VideoProcessingStatus.FAILED:
+            return self.is_streaming
+        return True
 
     def save(self, *args, **kwargs):
         # The browser's declared type is ignored. The bytes decide, and they have to match the kind.
         # A picture is rewritten without metadata first, so that check reads the file that is stored.
         allowed = MEDIA_KIND_TYPES[MediaKind(self.kind)]
-        if self.file and not getattr(self.file, "_committed", True):
+        through_django = bool(self.file) and not getattr(self.file, "_committed", True)
+        if through_django:
             self.file = images.without_metadata_if_image(self.file.file)
             self.content_type = require_upload(self.file, allowed)
         elif self.file and not self.content_type:
@@ -356,9 +366,10 @@ class MediaAsset(TimestampedModel):
             else:
                 self.content_type = require_upload(self.file, allowed)
 
-        # Only a file that came through Django has its size read here. A direct upload's object
-        # may not exist yet, and asking the bucket for it would be a network call per save.
-        if self.file and self.processing_status == VideoProcessingStatus.LEGACY:
+        # Only a file that came through Django has its size read here, and it is read from the
+        # upload still in memory. A direct upload's object may not exist yet, and asking the
+        # bucket for it would be a network call on every save.
+        if through_django:
             self.size_bytes = getattr(self.file, "size", 0) or 0
         super().save(*args, **kwargs)
 
