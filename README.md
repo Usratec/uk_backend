@@ -528,6 +528,32 @@ pipeline encodes every output at exactly the rate the source arrived at — `fps
 `30000/1001`, not 30 — and a rate outside `VIDEO_MIN_FRAME_RATE`–`VIDEO_MAX_FRAME_RATE` is refused
 with a message saying what to re-export at, rather than being quietly halved or capped to fit.
 
+Staff upload a video on **Media assets → Add media asset** and it is queued for processing as the
+page saves — the job is dispatched on commit, so the worker can never read a row that is not there
+yet. The asset shows `queued`, then `processing`, then `ready` in the list, with the reason in the
+admin if a run fails. Replacing the file on an existing asset queues the new one; renaming it does
+not. While a first upload is being transcoded the learner is served its source file, as the site
+did before there was any transcoding, so uploading a lesson video does not take it off the site for
+the length of an encode.
+
+#### Encrypted segments
+
+Segments are AES-128 encrypted, so a `.ts` file lifted off the wire will not play in anything. Each
+video has its own key, held in the database and **never** written to the bucket or served through
+CloudFront — the encoder writes the key to a directory outside the one that gets uploaded. The
+playlist points at this API:
+
+```
+#EXT-X-KEY:METHOD=AES-128,URI="https://api.example.com/api/learn/media/<id>/key/"
+```
+
+`GET /api/learn/media/<id>/key/` answers with the raw 16 bytes as `application/octet-stream` and
+`Cache-Control: private, no-store`, for a signed-in learner who may watch *that* video — the same
+check playback uses — and 401/403 otherwise.
+
+Be clear about what this buys: it stops casual copying, not a determined ripper. Anyone allowed to
+watch can read the key out of their own browser. It is not DRM and should not be described as such.
+
 ### PWA Web Push
 
 Browser push is separate from native-app Firebase tokens. Generate one stable VAPID pair per

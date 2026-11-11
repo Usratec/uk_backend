@@ -2,17 +2,20 @@ import logging
 from typing import cast
 
 from django.conf import settings
+from django.http import HttpResponse
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from apps.accounts.models import User
 from apps.entitlements import services as entitlements
 from apps.integrations import s3_client
-from apps.learning import media_processing, media_services
+from apps.learning import key_auth, media_processing, media_services
 from apps.learning.media_serializers import (
     MediaStatusResponseSerializer,
     PlaybackResponseSerializer,
@@ -32,6 +35,7 @@ NOT_FOUND = "Not found."
 PLAN_NEEDED = "An active plan is needed for this"
 STORAGE_UNAVAILABLE = "The storage service is unavailable. Try again shortly."
 NOT_READY = "This video is not ready to play yet."
+NO_ACCESS = "You do not have access to this video."
 
 
 def _error(message: str, code: int) -> Response:
@@ -280,4 +284,45 @@ class MediaPlaybackView(APIView):
                 httponly=True,
                 samesite="None",
             )
+
+        if signed:
+            response.set_cookie(
+                key_auth.COOKIE_NAME,
+                key_auth.issue(user=student),
+                domain=settings.CLOUDFRONT_COOKIE_DOMAIN or None,
+                expires=playback.expires_at,
+                path="/",
+                secure=True,
+                httponly=True,
+                samesite="None",
+            )
+        return response
+
+
+class MediaKeyView(APIView):
+    authentication_classes = [JWTAuthentication, key_auth.MediaKeyCookieAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="getMediaKey",
+        summary="Fetch the decryption key for a video's segments",
+        description=(
+            "Called by the player, not by application code. Answers with the raw 16-byte AES-128 "
+            "key as `application/octet-stream`. hls.js should send the usual bearer token; "
+            "Safari's native player sends the cookie the playback endpoint set."
+        ),
+        responses={200: OpenApiTypes.BINARY, 401: None, 403: None, 404: None},
+    )
+    def get(self, request: Request, media_id) -> HttpResponse:
+        student = cast(User, request.user)
+        asset = media_processing.media_for_playback(media_id)
+        if asset is None or not asset.hls_key:
+            return _error(NOT_FOUND, status.HTTP_404_NOT_FOUND)
+
+        if not media_processing.may_watch(student=student, asset=asset):
+            return _error(NO_ACCESS, status.HTTP_403_FORBIDDEN)
+
+        response = HttpResponse(bytes(asset.hls_key), content_type="application/octet-stream")
+        response["Cache-Control"] = "private, no-store"
+        response["Content-Length"] = str(len(bytes(asset.hls_key)))
         return response

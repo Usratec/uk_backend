@@ -21,7 +21,7 @@ def ffmpeg(monkeypatch):
     def fake_probe(path: str) -> transcode.SourceVideo:
         return SOURCE_1080
 
-    def fake_to_hls(*, source_path, output_dir, source, renditions):
+    def fake_to_hls(*, source_path, output_dir, source, renditions, encryption=None):
         return write_fake_output(output_dir, renditions)
 
     def fake_to_mp4(*, source_path, output_path, source, rendition):

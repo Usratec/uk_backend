@@ -30,6 +30,11 @@ urlpatterns = [
     ),
     # What a learner asks for when they press play.
     path(
+        "learn/media/<uuid:media_id>/key/",
+        media_views.MediaKeyView.as_view(),
+        name="learn-media-key",
+    ),
+    path(
         "learn/media/<uuid:media_id>/playback/",
         media_views.MediaPlaybackView.as_view(),
         name="learn-media-playback",

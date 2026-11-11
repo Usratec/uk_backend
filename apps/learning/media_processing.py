@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urljoin
 from uuid import UUID, uuid4
 
 from django.conf import settings
@@ -13,7 +14,7 @@ from django.utils import timezone
 from apps.core import audit
 from apps.entitlements import services as entitlements
 from apps.integrations import cloudfront, s3_client
-from apps.learning import services
+from apps.learning import services, transcode
 from apps.learning.models import (
     ACTIVE_PROCESSING_STATUSES,
     Chapter,
@@ -96,6 +97,9 @@ def queue_processing(asset: MediaAsset, *, actor=None, force: bool = False) -> U
     if not settings.VIDEO_TRANSCODING_ENABLED:
         logger.info("Video processing is switched off, so asset %s stays unprocessed", asset.pk)
         return None
+    if not s3_client.is_configured():
+        logger.info("No uploads bucket is configured, so asset %s stays unprocessed", asset.pk)
+        return None
 
     startable: tuple[VideoProcessingStatus, ...] = (VideoProcessingStatus.UPLOADED,)
     if force:
@@ -150,6 +154,19 @@ def record_heartbeat(*, asset_id: int, job: UUID) -> bool:
     return bool(beaten)
 
 
+def key_url_for(asset: MediaAsset) -> str:
+    path = reverse("learn-media-key", kwargs={"media_id": asset.upload_token})
+    return urljoin(settings.BACKEND_BASE_URL, path.lstrip("/"))
+
+
+def encryption_for(asset: MediaAsset) -> transcode.HlsEncryption | None:
+    if not settings.VIDEO_HLS_ENCRYPTION_ENABLED:
+        return None
+
+    key = bytes(asset.hls_key) if asset.hls_key else transcode.new_hls_key()
+    return transcode.HlsEncryption(key=key, key_uri=key_url_for(asset))
+
+
 def hls_prefix_for(asset: MediaAsset) -> str:
     return f"{settings.VIDEO_HLS_PREFIX.strip('/')}/{asset.upload_token}"
 
@@ -170,6 +187,7 @@ def mark_processing_ready(
     height: int,
     mp4_key: str = "",
     frame_rate: float = 0.0,
+    hls_key: bytes | None = None,
 ) -> Published | None:
     with transaction.atomic():
         previous = (
@@ -188,6 +206,7 @@ def mark_processing_ready(
             processing_status=VideoProcessingStatus.READY,
             hls_prefix=prefix,
             hls_master_key=master_key,
+            hls_key=hls_key,
             mp4_key=mp4_key,
             renditions=renditions,
             duration_seconds=round(duration_seconds, 2),
