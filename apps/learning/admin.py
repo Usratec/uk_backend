@@ -1177,9 +1177,22 @@ class HazardWindowInline(admin.TabularInline):
 
     model = HazardWindow
     extra = 1
-    fields = ["order", "label", "starts_at", "ends_at", "bands"]
-    readonly_fields = ["bands"]
+    fields = ["order", "label", "starts_at", "ends_at", "bands", "timing_check"]
+    readonly_fields = ["bands", "timing_check"]
     ordering = ["starts_at"]
+
+    @admin.display(description="")
+    def timing_check(self, window: HazardWindow) -> SafeString:
+        """Flags a window past Length without refusing the save — publish readiness blocks instead."""
+        if window.pk is None or window.clip_id is None:
+            return placeholder()
+        length = window.clip.duration_seconds
+        if length is None:
+            return placeholder()
+        messages = services.messages_for_window_past_length(window, length)
+        if not messages:
+            return placeholder()
+        return format_html_join(mark_safe("<br>"), "{}", ((message,) for message in messages))
 
     @admin.display(description="Scores 5 → 1 across")
     def bands(self, window: HazardWindow) -> SafeString:
@@ -1239,7 +1252,8 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
                     "Each hazard below is worth 5 down to 1, depending on how early in its window "
                     "the student clicks. Clicking more often than the limit scores nothing at all, "
                     "as does clicking in a regular pattern, in rapid bursts, or evenly across the "
-                    "whole clip. The length is only needed for that last check."
+                    "whole clip. Length is also used to check that hazard windows sit inside the "
+                    "video — without it, that check is skipped and publishing is still allowed."
                 ),
             },
         ),

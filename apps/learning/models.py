@@ -874,8 +874,8 @@ class HazardClip(PublishableModel, TimestampedModel):
         blank=True,
         validators=[MinValueValidator(Decimal("0.01"))],
         help_text=(
-            "How long the video runs. Needed to spot clicking spread evenly across the whole "
-            "clip — leave empty and that one check is skipped for this clip."
+            "How long the video runs. Used to check hazard windows sit inside the clip, and to "
+            "spot clicking spread evenly across it — leave empty and both checks are skipped."
         ),
     )
     order = models.PositiveSmallIntegerField(default=0)
