@@ -62,6 +62,7 @@ jq --arg image "$image" --arg container "$service" --arg secret_arn "$runtime_se
                 {name: "WEB_THREADS", value: "8"},
                 {name: "PORT", value: "8000"},
                 {name: "AWS_REGION", value: "eu-west-2"},
+                {name: "AWS_ENDPOINT_URL_S3", value: "https://s3.eu-west-2.amazonaws.com"},
                 {name: "S3_BUCKET_NAME", value: "1theorycouk-shared-stage"},
                 {name: "S3_ENDPOINT_URL", value: "https://s3.eu-west-2.amazonaws.com"},
                 {name: "S3_REGION", value: "eu-west-2"},

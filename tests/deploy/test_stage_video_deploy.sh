@@ -22,7 +22,7 @@ aws() {
         jq -e '.containerDefinitions[0].environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")' "$file" >/dev/null
         echo worker:2
       else
-        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "CELERY_QUEUES" and .value == "celery")] | length == 1) and ([.environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")] | length == 1) and ([.secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY" and .valueFrom == "signing-arn")] | length == 1)' "$file" >/dev/null
+        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "CELERY_QUEUES" and .value == "celery")] | length == 1) and ([.environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")] | length == 1) and ([.environment[] | select(.name == "AWS_ENDPOINT_URL_S3" and .value == "https://s3.eu-west-2.amazonaws.com")] | length == 1) and ([.secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY" and .valueFrom == "signing-arn")] | length == 1)' "$file" >/dev/null
         echo web:2
       fi ;;
     'ecs update-service') if [[ "$*" == *uk-video-stage-videoworker* ]]; then touch "$TEST_TMP/worker"; else touch "$TEST_TMP/web"; fi; echo ok ;;
