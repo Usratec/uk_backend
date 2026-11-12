@@ -56,7 +56,7 @@ container start, so scaling out can't run them concurrently.
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
-| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
+| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/cover-image/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
 | Sitemap | `GET /api/sitemap.xml` |
 | Payments | `POST /api/payments/intent/`, `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
 | Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
@@ -71,10 +71,20 @@ them show them all at once, and unpublished items are never returned. Everything
 token.
 
 The blog is the one public list that *is* paginated, because it grows without limit: `GET /api/blog/`
-returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>`.
-`GET /api/blog/<slug>/` adds the post's rich text. Both return only posts that are published *and*
-whose publish date has passed, so a draft, an unpublished post and a post scheduled for next week
-are all 404 — the status and the date are checked in the query, not after it.
+returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>` and
+`?featured=true|false`. `GET /api/blog/<slug>/` adds the post's rich text. Both return only posts
+that are published *and* whose publish date has passed, so a draft, an unpublished post and a post
+scheduled for next week are all 404 — the status and the date are checked in the query, not after it.
+
+Each post carries what the blog design shows: `excerpt` (the summary on the cards, written
+separately from `meta_description`, which is for search engines), `cover_image`
+(`{url, alt, width, height}`, or null — the cover on the cards and at the top of the article, which
+is not the sharing image in `social_image_url`), `reading_time` in minutes, `featured` for the
+Featured read at the top of the blog, and `updated_at` for `<lastmod>`. The detail response adds
+`study_tip` (`{title, text, button_label, button_link}`, or null) for the Study tip box under the
+article. Reading time is worked out from the content on every save, so the listing carries it
+without the content; a cover needs a description, and a study tip needs both a title and its words,
+with a button label and link that stand or fall together.
 
 When a post's slug changes, the old address keeps working: it answers `301 Moved Permanently` with a
 `Location` header for the post's new API address and a body of

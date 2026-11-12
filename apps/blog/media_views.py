@@ -23,10 +23,22 @@ def image_file(request, key) -> HttpResponseBase:
 
 @require_GET
 def social_image(request, slug: str) -> HttpResponseBase:
-    post = services.live_post(slug=slug) or services.redirect_target(slug=slug)
+    post = _readable_post(slug)
     if post is None or not post.social_image:
         return HttpResponse(MISSING, status=404)
     return _serve(post.social_image, "")
+
+
+@require_GET
+def cover_image(request, slug: str) -> HttpResponseBase:
+    post = _readable_post(slug)
+    if post is None or not post.cover_image:
+        return HttpResponse(MISSING, status=404)
+    return _serve(post.cover_image, "")
+
+
+def _readable_post(slug: str):
+    return services.live_post(slug=slug) or services.redirect_target(slug=slug)
 
 
 def _serve(field, content_type: str) -> HttpResponseBase:
