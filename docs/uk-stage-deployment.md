@@ -22,3 +22,19 @@ AWS account: `501588779980`, region `eu-west-2`. The Stage site is `https://stag
 Each job builds an image tagged with the source revision, pushes it to the matching Stage ECR repository, updates only its Stage ECS service, and waits for the new ECS revision to become healthy. Stage-only deployment scripts reject any environment other than `stage`.
 
 Stage email delivery is disabled until a Stage Postmark test token is available. Stripe keys are also empty, so payment flows need Stage test keys before they can be verified.
+
+## Stage video
+
+Stage uses `uk-video-stage-videoworker` for the `video` queue and keeps the
+existing embedded general worker and scheduler on the `celery` queue. The
+`uk-video-stage-media` CloudFormation stack owns private video storage, signed
+CloudFront delivery, DNS, and scoped Jenkins permissions. The backend task
+holds the media settings and a reference to the signing secret; do not print or
+copy the private key. The Stage deploy script preserves these settings and
+updates the backend and VideoWorker to the same image, checking both revisions.
+A partial rollout should be repaired by redeploying or rolling both services
+back together. The queue uses the existing Stage Redis logical database.
+
+Before replacing the stack or changing video buckets, account for existing
+video-source and HLS objects. Confirm that outstanding video jobs are drained
+and copy existing objects before switching the web and worker configurations.

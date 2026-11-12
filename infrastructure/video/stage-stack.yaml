@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private stage video storage and signed CloudFront delivery.
+Parameters:
+  Environment:
+    Type: String
+    Default: stage
+    AllowedValues: [stage]
+  SigningPublicKey:
+    Type: String
+  SigningSecretArn:
+    Type: String
+  RuntimeSecretArn:
+    Type: String
+  MediaDomain:
+    Type: String
+  CertificateArn:
+    Type: String
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  AllowedOrigins:
+    Type: CommaDelimitedList
+  WebTaskRoleName:
+    Type: String
+  ExecutionRoleName:
+    Type: String
+  JenkinsRoleName:
+    Type: String
+    Description: Existing Jenkins role used for Stage backend releases.
+Resources:
+  VideoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+        - ObjectOwnership: BucketOwnerEnforced
+      CorsConfiguration:
+        CorsRules:
+        - AllowedOrigins:
+            Ref: AllowedOrigins
+          AllowedMethods:
+          - PUT
+          - GET
+          - HEAD
+          AllowedHeaders:
+          - '*'
+          ExposedHeaders:
+          - ETag
+          MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+        - Id: AbortIncompleteUploads
+          Status: Enabled
+          Prefix: learning/video-source/
+          AbortIncompleteMultipartUpload:
+            DaysAfterInitiation: 7
+      Tags:
+      - Key: Environment
+        Value:
+          Ref: Environment
+      - Key: Task
+        Value: UK-246
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  OriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  PublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Properties:
+      PublicKeyConfig:
+        CallerReference:
+          Fn::Sub: ${AWS::StackName}-video
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        EncodedKey:
+          Ref: SigningPublicKey
+  KeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        Items:
+        - Ref: PublicKey
+  Headers:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-video
+        CorsConfig:
+          AccessControlAllowCredentials: true
+          AccessControlAllowHeaders:
+            Items:
+            - Range
+            - Content-Type
+          AccessControlAllowMethods:
+            Items:
+            - GET
+            - HEAD
+          AccessControlAllowOrigins:
+            Items:
+              Ref: AllowedOrigins
+          AccessControlExposeHeaders:
+            Items:
+            - ETag
+            - Accept-Ranges
+            - Content-Range
+            - Content-Length
+          OriginOverride: true
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment:
+          Fn::Sub: UK-246 ${Environment} private HLS
+        Aliases:
+        - Ref: MediaDomain
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+        - Id: video
+          DomainName:
+            Fn::GetAtt:
+            - VideoBucket
+            - RegionalDomainName
+          OriginAccessControlId:
+            Ref: OriginAccess
+          S3OriginConfig:
+            OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: video
+          ViewerProtocolPolicy: https-only
+          AllowedMethods:
+          - GET
+          - HEAD
+          CachedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          TrustedKeyGroups:
+          - Ref: KeyGroup
+          ResponseHeadersPolicyId:
+            Ref: Headers
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          MinTTL: 0
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+        ViewerCertificate:
+          AcmCertificateArn:
+            Ref: CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: VideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: cloudfront.amazonaws.com
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub: ${VideoBucket.Arn}/learning/video-hls/*
+          Condition:
+            StringEquals:
+              AWS:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+        - Effect: Deny
+          Principal: '*'
+          Action: s3:*
+          Resource:
+          - Fn::GetAtt:
+            - VideoBucket
+            - Arn
+          - Fn::Sub: ${VideoBucket.Arn}/*
+          Condition:
+            Bool:
+              aws:SecureTransport: 'false'
+  MediaDns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Ref: HostedZoneId
+      Name:
+        Ref: MediaDomain
+      Type: A
+      AliasTarget:
+        DNSName:
+          Fn::GetAtt:
+          - Distribution
+          - DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+  MediaDnsIpv6:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Ref: HostedZoneId
+      Name:
+        Ref: MediaDomain
+      Type: AAAA
+      AliasTarget:
+        DNSName:
+          Fn::GetAtt:
+          - Distribution
+          - DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+  WebVideoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-video
+      Roles:
+      - Ref: WebTaskRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+            Fn::GetAtt:
+            - VideoBucket
+            - Arn
+          Condition:
+            StringLike:
+              s3:prefix:
+              - learning/video-source/*
+              - learning/video-hls/*
+        - Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:PutObject
+          - s3:DeleteObject
+          - s3:AbortMultipartUpload
+          - s3:ListMultipartUploadParts
+          Resource:
+          - Fn::Sub: ${VideoBucket.Arn}/learning/video-source/*
+          - Fn::Sub: ${VideoBucket.Arn}/learning/video-hls/*
+  ExecutionSecretsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-secrets
+      Roles:
+      - Ref: ExecutionRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: secretsmanager:GetSecretValue
+          Resource:
+          - Ref: RuntimeSecretArn
+          - Ref: SigningSecretArn
+  JenkinsVideoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-jenkins-video
+      Roles:
+      - Ref: JenkinsRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: ecs:DescribeServices
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/shared-spot-dev/uk-video-stage-videoworker
+        - Effect: Allow
+          Action: ecs:TagResource
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/uk-video-stage-videoworker:*
+Outputs:
+  VideoBucketName:
+    Value: {Ref: VideoBucket}
+  CloudFrontDomain:
+    Value: {Ref: MediaDomain}
+  CloudFrontKeyPairId:
+    Value: {Ref: PublicKey}
+  SigningSecretArn:
+    Value: {Ref: SigningSecretArn}
+  DistributionId:
+    Value: {Ref: Distribution}
