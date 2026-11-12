@@ -17,6 +17,7 @@ class AuthMethod(models.TextChoices):
 
     EMAIL = "email", "Email + password"
     GOOGLE = "google", "Google sign-in"
+    APPLE = "apple", "Apple sign-in"
 
 
 class ConfidenceLevel(models.TextChoices):
@@ -122,6 +123,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimestampedModel):
 
     auth_method = models.CharField(max_length=10, choices=AuthMethod.choices, default=AuthMethod.EMAIL)
     google_id = models.CharField("Google account id", max_length=255, unique=True, null=True, blank=True)
+    apple_id = models.CharField("Apple account id", max_length=255, unique=True, null=True, blank=True)
 
     email_verified = models.BooleanField(default=False)
 

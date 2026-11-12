@@ -4,7 +4,7 @@ Views parse input and choose a status code; everything that decides what *happen
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 
 from django.core.cache import cache
@@ -229,6 +229,11 @@ def invalidate_tokens(user: User, purposes: Sequence[str], at=None) -> int:
 def send_email_verification(user: User) -> bool:
     token = SecurityToken.objects.issue(TokenPurpose.EMAIL_VERIFICATION, user, EMAIL_VERIFICATION_VALID_FOR)
     return emails.send_quietly(emails.send_email_verification, user, token)
+
+
+def queue_email_verification(user: User, *, on_failure: Callable[[], None]) -> None:
+    token = SecurityToken.objects.issue(TokenPurpose.EMAIL_VERIFICATION, user, EMAIL_VERIFICATION_VALID_FOR)
+    emails.queue_security_link(token, "email_verification", after_commit=True, on_failure=on_failure)
 
 
 def verify_email(raw_token: str) -> User | None:

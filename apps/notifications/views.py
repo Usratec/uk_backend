@@ -10,8 +10,11 @@ from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.accounts.serializers import DetailSerializer
+from apps.accounts.throttling import AuthUserThrottle
 from apps.notifications import push_subscriptions, services
 from apps.notifications.serializers import (
+    DeviceTokenRemoveSerializer,
+    DeviceTokenSerializer,
     MarkAllReadSerializer,
     NotificationListSerializer,
     NotificationSerializer,
@@ -21,6 +24,31 @@ from apps.notifications.serializers import (
 )
 
 NOT_FOUND = "Notification not found."
+
+
+class DeviceTokenView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [AuthUserThrottle]
+
+    @extend_schema(
+        request=DeviceTokenSerializer, responses={204: None}, summary="Save this device for push notifications"
+    )
+    def post(self, request: Request) -> Response:
+        from apps.notifications.mobile_push import register_device
+
+        data = DeviceTokenSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        register_device(user=cast(User, request.user), **data.validated_data)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(request=DeviceTokenRemoveSerializer, responses={204: None}, summary="Stop push notifications here")
+    def delete(self, request: Request) -> Response:
+        from apps.notifications.mobile_push import remove_device_token
+
+        data = DeviceTokenRemoveSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        remove_device_token(user=cast(User, request.user), **data.validated_data)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class NotificationListView(APIView):

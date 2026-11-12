@@ -3,6 +3,7 @@ from django.urls import path
 from apps.notifications import views
 
 urlpatterns = [
+    path("notifications/devices/", views.DeviceTokenView.as_view(), name="notification-device"),
     path("notifications/push/public-key/", views.PushPublicKeyView.as_view(), name="push-public-key"),
     path("notifications/push/subscriptions/", views.PushSubscriptionView.as_view(), name="push-subscription"),
     path("notifications/", views.NotificationListView.as_view(), name="notification-list"),
