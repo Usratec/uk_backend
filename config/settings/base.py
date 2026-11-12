@@ -189,6 +189,8 @@ REST_FRAMEWORK = {
         "promo_code": "60/hour",
         "order_status": "60/hour",
         "ebook_sample_request": "10/hour",
+        "contact_anon": "5/hour",
+        "contact_user": "10/hour",
     },
 }
 
@@ -239,6 +241,8 @@ DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="1Theory <info@1theor
 # happens in a worker now, but a worker stuck forever on one message stops sending every other
 # one, so the wait is bounded wherever it happens.
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
+
+SUPPORT_EMAIL = env.str("SUPPORT_EMAIL", default="support@1theory.co.uk")
 
 # --- Background work -----------------------------------------------------------------------------
 # Local Redis uses a separate database for Celery. Deployed environments can use a dedicated broker.
@@ -299,6 +303,10 @@ CELERY_BEAT_SCHEDULE = {
     "publish-scheduled-blog-posts": {
         "task": "apps.blog.tasks.publish_scheduled_posts",
         "schedule": crontab(minute="*/5"),
+    },
+    "deliver-pending-contact-messages": {
+        "task": "apps.content.tasks.deliver_pending_contact_messages",
+        "schedule": crontab(minute="25"),
     },
     "sweep-abandoned-video-uploads": {
         "task": "apps.learning.tasks.sweep_abandoned_uploads",
@@ -650,6 +658,7 @@ JAZZMIN_SETTINGS = {
         "content": "fas fa-pen-nib",
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
+        "content.ContactSubmission": "fas fa-envelope-open-text",
         "blog": "fas fa-newspaper",
         "blog.BlogPost": "fas fa-file-lines",
         "blog.BlogCategory": "fas fa-folder-open",

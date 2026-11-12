@@ -54,7 +54,7 @@ container start, so scaling out can't run them concurrently.
 | Authentication | `POST /api/auth/register/`, `login/`, `logout/`, `token/refresh/`, `password/reset/`, `password/reset/confirm/`; `GET /api/auth/email/verify/`, `POST /api/auth/email/verify/resend/` |
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
 | Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
-| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
+| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
 | Sitemap | `GET /api/sitemap.xml` |
@@ -132,6 +132,21 @@ To receive webhooks locally, forward them with the Stripe CLI:
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
 ```
 
+### Contact form
+
+`POST /api/content/contact/` takes the contact page's form and delivers it to the support inbox.
+It is public: a visitor who is not signed in may send a message, and no token is required.
+
+```json
+{ "name": "Ada Lovelace", "email": "ada@example.com", "topic": "billing", "message": "My card was charged twice." }
+```
+
+`name` is 2–60 characters, `email` must be a valid address, `message` is required and at most
+5000 characters, and `topic` is optional — one of `account`, `billing`, `course`, `other`.
+Leading and trailing whitespace is trimmed from all three text fields. A success is `201` with
+`{"message": "Your message has been sent successfully."}`; a bad form is `400` with DRF's
+field-level errors (`{"email": ["Enter a valid email address."]}`).
+
 ### Purchase consent
 
 `POST /api/payments/checkout/` requires `terms_accepted: true`,
@@ -190,7 +205,8 @@ for is lost.
 Scheduled jobs run from the `beat` service: publishing blog posts whose time has come every five
 minutes, expiry reminders at 09:00, telling learners their
 access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
-lost orders every ten minutes, and telling the CRM about access it was never told about, hourly.
+lost orders every ten minutes, telling the CRM about access it was never told about, hourly, and
+delivering contact messages that are still pending, hourly.
 There is deliberately no job to revoke learning access, because access is derived from the dates
 every time it is checked.
 
@@ -620,6 +636,15 @@ model permissions rather than a role, so a superuser can edit it without grantin
 Each list edits the sort order and the published flag in place, and carries publish and unpublish
 actions for a selection.
 
+Messages sent through the contact form sit in the same section, as *Contact messages*, but are
+read-only and gated like the CRM — the Support Agent role, or `content.view_contactsubmission`
+granted to an account — because they hold a visitor's name, address and whatever they wrote. Each
+row says whether the support inbox has received it, so a message the mail server rejected is
+visible rather than lost. A signed-in visitor's account is shown by id rather than by email
+address: reading contact messages should not also reveal the address a customer registered under,
+which is the CRM's to show. Nothing on these screens can be edited or deleted, whatever
+permissions an account is given.
+
 The landing page is managed under **Landing page**, on the same model permissions. Its wording is
 a flat key → value store, so marketing can reword the page without a frontend deploy; the note
 beside each key says where the text appears and is never sent to the site. Its pictures and videos
@@ -665,6 +690,7 @@ Roles are declared in code, in each app's `roles.py`, and created by a migration
 |---|---|
 | CRM Manager | Look customers up and read their records |
 | Marketing Support | Read the visitors who asked for a free sample chapter |
+| Support Agent | Read the contact form's messages |
 
 `uv run python manage.py sync_roles` sets each role group's permissions to exactly what the code
 declares, so permissions added by hand in the admin are taken back. No role carries
