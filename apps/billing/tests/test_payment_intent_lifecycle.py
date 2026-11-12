@@ -14,6 +14,7 @@ from apps.billing.models import Order, OrderStatus, StripeEvent
 from apps.billing.pricing import PROMO_HOLD, slots_left, uses_in_flight
 from apps.billing.tasks import delete_unfinished_orders, sweep_embedded_payments
 from apps.catalog.models import Package
+from apps.entitlements.models import Subscription
 from apps.integrations import stripe_client
 from apps.integrations.stripe_client import StripeError
 
@@ -440,3 +441,165 @@ class TestSweeperScope:
         order = Order.objects.get()
         assert order.payment_intent_expires_at is not None
         assert order.payment_intent_expires_at < timezone.now() + PROMO_HOLD + timedelta(minutes=1)
+
+
+def settled_intent_event(order, event_type, event_id, **intent):
+    obj = {
+        "id": order.stripe_payment_intent_id,
+        "metadata": {"order_id": str(order.pk), "user_id": str(order.user_id)},
+        "amount": stripe_client.to_pence(order.final_price),
+        "amount_received": stripe_client.to_pence(order.final_price),
+        "currency": "gbp",
+        **intent,
+    }
+    return {"id": event_id, "type": event_type, "data": {"object": obj}}
+
+
+class TestAPaymentStillSettlingWhenItExpires:
+    @pytest.fixture
+    def settling(self, signed_in, package, stripe):
+        start(signed_in, package)
+        order = age(Order.objects.get(), days=1)
+        stripe.set_status(order.stripe_payment_intent_id, "processing")
+        return order
+
+    @pytest.mark.parametrize("intent_status", ["processing", "requires_capture"])
+    def test_an_expired_order_whose_payment_is_settling_is_left_alone_but_still_tracked(
+        self, settling, stripe, intent_status
+    ):
+        stripe.set_status(settling.stripe_payment_intent_id, intent_status)
+
+        assert sweep_embedded_payments() == 0
+
+        settling.refresh_from_db()
+        assert stripe.cancelled == []
+        assert settling.status == OrderStatus.PENDING
+        assert settling.payment_intent_cancelled_at is None
+        assert settling.payment_intent_expires_at is not None
+        assert settling.payment_intent_cancel_requested_at is not None
+        assert Order.objects.holding_a_live_payment().filter(pk=settling.pk).exists()
+        assert Order.objects.payment_cancellable().filter(pk=settling.pk).exists()
+
+    def test_repeated_sweeps_while_it_settles_change_nothing(self, settling, stripe):
+        sweep_embedded_payments()
+        first = Order.objects.get(pk=settling.pk)
+
+        for _ in range(3):
+            assert sweep_embedded_payments() == 0
+
+        settling.refresh_from_db()
+        assert stripe.cancelled == []
+        assert settling.status == OrderStatus.PENDING
+        assert settling.payment_intent_expires_at == first.payment_intent_expires_at
+        assert settling.payment_intent_cancel_requested_at == first.payment_intent_cancel_requested_at
+
+    def test_a_payment_that_then_fails_is_cancelled_and_the_order_closed(self, settling, stripe):
+        sweep_embedded_payments()
+        stripe.set_status(settling.stripe_payment_intent_id, "requires_payment_method")
+        webhooks.handle_event(
+            settled_intent_event(
+                settling,
+                "payment_intent.payment_failed",
+                "evt_settling_failed",
+                status="requires_payment_method",
+                last_payment_error={"code": "card_declined", "message": "Your card was declined."},
+            )
+        )
+        assert Order.objects.get(pk=settling.pk).status == OrderStatus.PENDING
+
+        assert sweep_embedded_payments() == 1
+
+        settling.refresh_from_db()
+        assert stripe.cancelled == [settling.stripe_payment_intent_id]
+        assert settling.status == OrderStatus.FAILED
+        assert settling.payment_intent_cancelled_at is not None
+        assert settling.failure_code == "card_declined"
+        assert Order.objects.safe_to_delete().filter(pk=settling.pk).exists()
+
+    def test_a_payment_that_stripe_cancels_closes_the_order(self, settling, stripe):
+        sweep_embedded_payments()
+        stripe.set_status(settling.stripe_payment_intent_id, "canceled")
+
+        assert sweep_embedded_payments() == 1
+
+        settling.refresh_from_db()
+        assert settling.status == OrderStatus.FAILED
+        assert settling.payment_intent_cancelled_at is not None
+
+    def test_the_closed_order_is_not_swept_again(self, settling, stripe):
+        sweep_embedded_payments()
+        stripe.set_status(settling.stripe_payment_intent_id, "requires_payment_method")
+        sweep_embedded_payments()
+        closed = Order.objects.get(pk=settling.pk)
+
+        assert sweep_embedded_payments() == 0
+        assert sweep_embedded_payments() == 0
+
+        assert stripe.cancelled == [settling.stripe_payment_intent_id]
+        assert Order.objects.get(pk=settling.pk).updated_at == closed.updated_at
+
+    def test_a_payment_that_then_succeeds_is_paid_and_never_downgraded(
+        self, settling, stripe, django_capture_on_commit_callbacks
+    ):
+        sweep_embedded_payments()
+        stripe.set_status(settling.stripe_payment_intent_id, "succeeded")
+        with django_capture_on_commit_callbacks(execute=True):
+            webhooks.handle_event(
+                settled_intent_event(settling, "payment_intent.succeeded", "evt_settled", status="succeeded")
+            )
+
+        for _ in range(3):
+            assert sweep_embedded_payments() == 0
+
+        settling.refresh_from_db()
+        assert stripe.cancelled == []
+        assert settling.status == OrderStatus.PAID
+        assert settling.payment_intent_cancelled_at is None
+        assert settling.payment_intent_cancel_requested_at is None
+        assert Subscription.objects.filter(order=settling).count() == 1
+
+    def test_a_success_seen_by_the_sweeper_before_the_webhook_stops_the_sweeping(
+        self, settling, stripe, django_capture_on_commit_callbacks
+    ):
+        sweep_embedded_payments()
+        stripe.set_status(settling.stripe_payment_intent_id, "succeeded")
+
+        assert sweep_embedded_payments() == 0
+
+        settling.refresh_from_db()
+        assert stripe.cancelled == []
+        assert settling.status == OrderStatus.PENDING
+        assert settling.payment_intent_expires_at is None
+        assert settling.payment_intent_cancel_requested_at is None
+
+        with django_capture_on_commit_callbacks(execute=True):
+            webhooks.handle_event(
+                settled_intent_event(settling, "payment_intent.succeeded", "evt_settled", status="succeeded")
+            )
+
+        settling.refresh_from_db()
+        assert settling.status == OrderStatus.PAID
+
+    def test_a_paid_order_with_a_cancellation_still_requested_is_never_failed(self, settling, stripe):
+        sweep_embedded_payments()
+        Order.objects.filter(pk=settling.pk).update(status=OrderStatus.PAID, paid_at=timezone.now())
+        stripe.set_status(settling.stripe_payment_intent_id, "succeeded")
+
+        sweep_embedded_payments()
+        intent_service.cancel_payment(str(settling.pk))
+
+        settling.refresh_from_db()
+        assert settling.status == OrderStatus.PAID
+        assert settling.payment_intent_cancelled_at is None
+        assert stripe.cancelled == []
+
+    def test_a_second_purchase_waits_for_the_settling_payment_instead_of_charging_again(
+        self, signed_in, package, settling, stripe
+    ):
+        sweep_embedded_payments()
+
+        response = start(signed_in, package)
+
+        assert response.status_code == 409
+        assert Order.objects.count() == 1
+        assert len(stripe.created) == 1
