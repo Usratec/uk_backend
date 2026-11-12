@@ -3,7 +3,8 @@ set -euo pipefail
 set +x
 
 expected_revision=${1:?Pass the newly registered Stage task-definition ARN}
-if [[ ! "$expected_revision" =~ ^arn:aws:ecs:eu-west-2:501588779980:task-definition/1theorycouk-shared-stage-back:[0-9]+$ ]]; then
+service=${2:-1theorycouk-shared-stage-back}
+if [[ ! "$service" =~ ^(1theorycouk-shared-stage-back|uk-video-stage-videoworker)$ ]] || [[ ! "$expected_revision" =~ ^arn:aws:ecs:eu-west-2:501588779980:task-definition/${service}:[0-9]+$ ]]; then
     printf 'Refusing to wait for a task definition outside UK Stage.\n' >&2
     exit 1
 fi
@@ -28,7 +29,7 @@ printf 'Waiting up to %ss for Stage revision %s.\n' "$timeout" "$expected_revisi
 
 while true; do
     if state=$(AWS_MAX_ATTEMPTS=3 aws ecs describe-services --region eu-west-2 \
-        --cluster shared-spot-dev --services 1theorycouk-shared-stage-back \
+        --cluster shared-spot-dev --services "$service" \
         --cli-connect-timeout 10 --cli-read-timeout 30 --output json \
         --query 'services[0].{taskDefinition:taskDefinition,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,deployments:deployments[].{taskDefinition:taskDefinition,status:status,rolloutState:rolloutState,rolloutStateReason:rolloutStateReason},events:events[:3].message}'); then
         read_failures=0
