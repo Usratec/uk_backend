@@ -7,7 +7,6 @@ so one customer can never read or change another's data.
 import logging
 from typing import cast
 
-from django.conf import settings
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
@@ -22,7 +21,6 @@ from apps.accounts.models import User
 from apps.accounts.serializers import (
     DetailSerializer,
     EmailChangeSerializer,
-    LearningUrlSerializer,
     PasswordChangeSerializer,
     ProfilePhotoSerializer,
     ProfileSerializer,
@@ -31,7 +29,6 @@ from apps.accounts.serializers import (
 )
 from apps.accounts.throttling import EmailResendThrottle, ProfilePhotoThrottle
 from apps.entitlements import services as entitlements
-from apps.entitlements.permissions import EXPIRED, NO_SUBSCRIPTION
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +207,8 @@ class SubscriptionStatusView(APIView):
                     "online_platform_activated": False,
                     "purchase_date": None,
                     "days_remaining": None,
+                    "features": [],
+                    "exam_sittings_remaining": 0,
                     "periods": [],
                 }
             )
@@ -226,27 +225,10 @@ class SubscriptionStatusView(APIView):
                 "online_platform_activated": live,
                 "purchase_date": subscription.order.paid_at,
                 "days_remaining": subscription.days_remaining,
+                "features": entitlements.features_of(user),
+                "exam_sittings_remaining": entitlements.exam_sittings_left(user),
                 "periods": SubscriptionPeriodSerializer(
                     entitlements.subscription_periods(user), many=True, context={"at": timezone.now()}
                 ).data,
             }
         )
-
-
-class LearningUrlView(APIView):
-    """Where to send a customer who presses "start learning"."""
-
-    permission_classes = [IsAuthenticated]
-
-    @extend_schema(
-        responses={200: LearningUrlSerializer},
-        summary="Enter the learning platform",
-    )
-    def get(self, request: Request) -> Response:
-        user = cast(User, request.user)
-
-        if not entitlements.has_access(user):
-            reason = EXPIRED if entitlements.current_subscription(user) else NO_SUBSCRIPTION
-            return Response({"detail": reason}, status=status.HTTP_403_FORBIDDEN)
-
-        return Response({"url": settings.LEARNING_URL})

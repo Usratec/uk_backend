@@ -32,6 +32,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
 
+from apps.catalog.models import Feature
 from apps.core import images
 from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import PublishableModel, TimestampedModel
@@ -270,6 +271,13 @@ class MediaAsset(TimestampedModel):
     )
     hls_prefix = models.CharField(max_length=255, blank=True, editable=False)
     hls_master_key = models.CharField(max_length=255, blank=True, editable=False)
+    hls_key = models.BinaryField(
+        max_length=16,
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="The AES-128 key its segments are encrypted with. Never served from the bucket.",
+    )
     mp4_key = models.CharField(
         max_length=255,
         blank=True,
@@ -333,15 +341,18 @@ class MediaAsset(TimestampedModel):
     def is_playable_source(self) -> bool:
         if not self.file:
             return False
-        if self.processing_status in (VideoProcessingStatus.LEGACY, VideoProcessingStatus.READY):
-            return True
-        return self.is_streaming
+        if self.processing_status in (VideoProcessingStatus.PENDING_UPLOAD, VideoProcessingStatus.CANCELLED):
+            return False
+        if self.processing_status == VideoProcessingStatus.FAILED:
+            return self.is_streaming
+        return True
 
     def save(self, *args, **kwargs):
         # The browser's declared type is ignored. The bytes decide, and they have to match the kind.
         # A picture is rewritten without metadata first, so that check reads the file that is stored.
         allowed = MEDIA_KIND_TYPES[MediaKind(self.kind)]
-        if self.file and not getattr(self.file, "_committed", True):
+        through_django = bool(self.file) and not getattr(self.file, "_committed", True)
+        if through_django:
             self.file = images.without_metadata_if_image(self.file.file)
             self.content_type = require_upload(self.file, allowed)
         elif self.file and not self.content_type:
@@ -357,9 +368,10 @@ class MediaAsset(TimestampedModel):
             else:
                 self.content_type = require_upload(self.file, allowed)
 
-        # Only a file that came through Django has its size read here. A direct upload's object
-        # may not exist yet, and asking the bucket for it would be a network call per save.
-        if self.file and self.processing_status == VideoProcessingStatus.LEGACY:
+        # Only a file that came through Django has its size read here, and it is read from the
+        # upload still in memory. A direct upload's object may not exist yet, and asking the
+        # bucket for it would be a network call on every save.
+        if through_django:
             self.size_bytes = getattr(self.file, "size", 0) or 0
         super().save(*args, **kwargs)
 
@@ -698,6 +710,14 @@ class QuestionAttempt(TimestampedModel):
 class MockAttempt(TimestampedModel):
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="mock_attempts")
     exam = models.ForeignKey(PracticeExam, on_delete=models.CASCADE, related_name="attempts")
+    subscription = models.ForeignKey(
+        "entitlements.Subscription",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sittings",
+        help_text="The purchase this sitting was charged to, which is what a limit on sittings counts.",
+    )
     score = models.PositiveSmallIntegerField(help_text="Questions answered correctly.")
     total = models.PositiveSmallIntegerField(help_text="Questions asked.")
     passed = models.BooleanField()
@@ -863,8 +883,8 @@ class HazardClip(PublishableModel, TimestampedModel):
         blank=True,
         validators=[MinValueValidator(Decimal("0.01"))],
         help_text=(
-            "How long the video runs. Needed to spot clicking spread evenly across the whole "
-            "clip — leave empty and that one check is skipped for this clip."
+            "How long the video runs. Used to check hazard windows sit inside the clip, and to "
+            "spot clicking spread evenly across it — leave empty and both checks are skipped."
         ),
     )
     order = models.PositiveSmallIntegerField(default=0)
@@ -968,6 +988,21 @@ def ebook_cover_path(instance, filename: str) -> str:
     return f"learning/ebook-cover/{filename}"
 
 
+def ebook_sample_path(instance, filename: str) -> str:
+    return f"learning/ebook-sample/{filename}"
+
+
+class EbookEdition(models.TextChoices):
+    """Which e-book product a book is. Each is unlocked by its own package feature."""
+
+    FULL = "full", "Full e-book"
+    COMPACT = "compact", "Compact e-book"
+
+
+#: The package feature that unlocks each edition.
+EDITION_FEATURES: dict[str, str] = {EbookEdition.FULL: Feature.EBOOK, EbookEdition.COMPACT: Feature.COMPACT_EBOOK}
+
+
 class Ebook(PublishableModel, TimestampedModel):
     slug = models.SlugField(
         unique=True,
@@ -976,6 +1011,12 @@ class Ebook(PublishableModel, TimestampedModel):
     )
     title = models.CharField(max_length=160)
     description = models.CharField(max_length=300, blank=True, help_text="A sentence or two, shown on the shelf.")
+    edition = models.CharField(
+        max_length=10,
+        choices=EbookEdition.choices,
+        default=EbookEdition.FULL,
+        help_text="The full e-book comes with the course; the compact one with mock test packages.",
+    )
     file = models.ForeignKey(
         "learning.MediaAsset",
         on_delete=models.PROTECT,
@@ -999,6 +1040,11 @@ class Ebook(PublishableModel, TimestampedModel):
 
     def __str__(self) -> str:
         return self.title
+
+    @property
+    def feature(self) -> str:
+        """The package feature a reader needs to open this book."""
+        return EDITION_FEATURES[self.edition]
 
     @property
     def cover_url(self) -> str | None:
@@ -1026,6 +1072,24 @@ class EbookSection(PublishableModel, TimestampedModel):
         help_text="A video or document from the media library, shown after the text. Optional.",
     )
     order = models.PositiveSmallIntegerField(default=0, help_text="Position within this book.")
+    is_free_sample = models.BooleanField(
+        default=False,
+        help_text=(
+            "The one chapter anybody may read before buying. It is shown on the public landing "
+            "page and its sample PDF can be downloaded without signing in, so tick it only for a "
+            "chapter the business is happy to give away. One per book."
+        ),
+    )
+    sample_pdf = SanitizedFileField(
+        upload_to=ebook_sample_path,
+        blank=True,
+        validators=[FileExtensionValidator(allowed_extensions=["pdf"])],
+        help_text=(
+            "A PDF of this chapter alone, uploaded here and served to anybody who asks. It is a "
+            "separate file on purpose: the book's own document stays behind a signed link, and "
+            "nothing here is ever served in its place."
+        ),
+    )
 
     class Meta:
         ordering = ["ebook", "order", "title"]
@@ -1033,12 +1097,37 @@ class EbookSection(PublishableModel, TimestampedModel):
         verbose_name = "ebook section"
         verbose_name_plural = "ebook sections"
         permissions = [("publish_ebooksection", "Can publish and unpublish ebook sections")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ebook"],
+                condition=models.Q(is_free_sample=True),
+                name="one_free_sample_section_per_ebook",
+                violation_error_message="This book already gives a chapter away. Untick that one first.",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.title
 
+    @property
+    def has_sample_pdf(self) -> bool:
+        return bool(self.sample_pdf)
+
+    def _check_sample_pdf(self) -> None:
+        if not self.sample_pdf or getattr(self.sample_pdf, "_committed", True):
+            return
+        try:
+            require_upload(self.sample_pdf, DOCUMENT_TYPES)
+        except ValidationError as error:
+            raise ValidationError({"sample_pdf": error.messages}) from error
+
+    def clean(self) -> None:
+        super().clean()
+        self._check_sample_pdf()
+
     def save(self, *args, **kwargs):
         self.body_html = html.clean(self.body_html)
+        self._check_sample_pdf()
         super().save(*args, **kwargs)
 
 
@@ -1055,6 +1144,41 @@ class EbookSectionProgress(models.Model):
 
     def __str__(self) -> str:
         return f"{self.student} · {self.section.title}"
+
+
+class EbookSampleRequest(TimestampedModel):
+    ebook = models.ForeignKey(
+        Ebook,
+        on_delete=models.PROTECT,
+        related_name="sample_requests",
+        help_text="The book whose free chapter was asked for.",
+    )
+    email = models.EmailField(help_text="Where the download link was sent. Taken from the form.")
+    study_tips_consent = models.BooleanField(
+        default=False,
+        help_text="Only true if the visitor ticked the box themselves. Asking for the sample is not consent.",
+    )
+    consent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="When they agreed. Empty where they never did.",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["ebook", "-created_at"])]
+        verbose_name = "ebook sample request"
+        verbose_name_plural = "ebook sample requests"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(study_tips_consent=False) | models.Q(consent_at__isnull=False),
+                name="ebook_sample_consent_is_dated",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.email} · {self.ebook.title}"
 
 
 def _unused_ebook_slug(base: str, exclude=None) -> str:

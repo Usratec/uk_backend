@@ -12,6 +12,7 @@ editor inside a nested inline is unusable.
 from typing import cast
 
 from django import forms
+from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
@@ -25,6 +26,7 @@ from django_ckeditor_5.widgets import CKEditor5Widget  # type: ignore[import-unt
 from apps.accounts.models import User
 from apps.core.models import PublishStatus
 from apps.core.uploads import require_upload
+from apps.integrations import s3_client
 from apps.learning import html, media_processing, media_services, services
 from apps.learning.models import (
     AVAILABLE_CONTENT_TYPES,
@@ -33,6 +35,7 @@ from apps.learning.models import (
     Chapter,
     ContentType,
     Ebook,
+    EbookSampleRequest,
     EbookSection,
     EbookSectionProgress,
     ExamHazardClip,
@@ -170,11 +173,23 @@ class PublishableAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 
     @admin.action(description="Take the selected material off the site")
     def unpublish_selected(self, request: HttpRequest, queryset) -> None:
+        unpublished = 0
+        already_draft = 0
         for instance in queryset:
+            was_draft = instance.status == PublishStatus.DRAFT
             try:
                 services.unpublish(actor=request.user, instance=instance)
             except Exception:
                 self.message_user(request, f"You may not unpublish {instance}.", level=messages.ERROR)
+                continue
+            if was_draft:
+                already_draft += 1
+            else:
+                unpublished += 1
+        if unpublished:
+            self.message_user(request, f"Took {unpublished} item(s) off the site.", level=messages.SUCCESS)
+        if already_draft:
+            self.message_user(request, f"{already_draft} item(s) were already a draft.", level=messages.INFO)
 
     def get_actions(self, request: HttpRequest):
         """Hide the publish actions from staff who may not use them."""
@@ -1075,6 +1090,8 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
             rows.append(("Frame rate", f"{float(asset.source_frame_rate):g} fps, kept in every output"))
         if asset.mp4_key:
             rows.append(("Progressive MP4", "produced, with fast start"))
+        if asset.is_streaming:
+            rows.append(("Segments", "AES-128 encrypted" if asset.hls_key else "not encrypted — reprocess to add it"))
         if asset.processing_attempts:
             rows.append(("Attempts", str(asset.processing_attempts)))
         if asset.processing_status == VideoProcessingStatus.PROCESSING and asset.processing_heartbeat_at:
@@ -1134,7 +1151,33 @@ class MediaAssetAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
         # Recorded here because the request knows who is uploading and the model does not.
         if not change:
             obj.uploaded_by = cast(User, request.user)
+
+        fresh_video = obj.kind == MediaKind.VIDEO and bool(obj.file) and (not change or "file" in form.changed_data)
+        if fresh_video:
+            obj.processing_status = VideoProcessingStatus.UPLOADED
+            obj.processing_job = None
+            obj.processing_error = ""
+
         super().save_model(request, obj, form, change)
+
+        if fresh_video:
+            self._queue_upload(request, obj)
+
+    def _queue_upload(self, request: HttpRequest, asset: MediaAsset) -> None:
+        if media_processing.queue_processing(asset, actor=cast(User, request.user)) is not None:
+            self.message_user(request, f"“{asset.title}” is queued for processing.", messages.INFO)
+            return
+
+        if not settings.VIDEO_TRANSCODING_ENABLED:
+            self.message_user(
+                request, "Video processing is switched off, so this file is served as it was uploaded.", messages.INFO
+            )
+        elif not s3_client.is_configured():
+            self.message_user(
+                request,
+                "There is no uploads bucket configured, so this file cannot be transcoded here.",
+                messages.WARNING,
+            )
 
 
 class HazardWindowInline(admin.TabularInline):
@@ -1146,9 +1189,22 @@ class HazardWindowInline(admin.TabularInline):
 
     model = HazardWindow
     extra = 1
-    fields = ["order", "label", "starts_at", "ends_at", "bands"]
-    readonly_fields = ["bands"]
+    fields = ["order", "label", "starts_at", "ends_at", "bands", "timing_check"]
+    readonly_fields = ["bands", "timing_check"]
     ordering = ["starts_at"]
+
+    @admin.display(description="")
+    def timing_check(self, window: HazardWindow) -> SafeString:
+        """Flags a window past Length without refusing the save — publish readiness blocks instead."""
+        if window.pk is None or window.clip_id is None:
+            return placeholder()
+        length = window.clip.duration_seconds
+        if length is None:
+            return placeholder()
+        messages = services.messages_for_window_past_length(window, length)
+        if not messages:
+            return placeholder()
+        return format_html_join(mark_safe("<br>"), "{}", ((message,) for message in messages))
 
     @admin.display(description="Scores 5 → 1 across")
     def bands(self, window: HazardWindow) -> SafeString:
@@ -1208,7 +1264,8 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
                     "Each hazard below is worth 5 down to 1, depending on how early in its window "
                     "the student clicks. Clicking more often than the limit scores nothing at all, "
                     "as does clicking in a regular pattern, in rapid bursts, or evenly across the "
-                    "whole clip. The length is only needed for that last check."
+                    "whole clip. Length is also used to check that hazard windows sit inside the "
+                    "video — without it, that check is skipped and publishing is still allowed."
                 ),
             },
         ),
@@ -1260,11 +1317,11 @@ class EbookSectionInline(ChildInline):
 
 @admin.register(Ebook)
 class EbookAdmin(PreviewMixin, PublishableAdmin):
-    list_display = ["cover_thumbnail", "title", "slug", "file", "section_count", "order", "state"]
+    list_display = ["cover_thumbnail", "title", "slug", "edition", "file", "section_count", "order", "state"]
     # The title, not the picture, is what staff click to open one.
     list_display_links = ["title"]
     list_editable = ["order"]
-    list_filter = ["status", "created_at"]
+    list_filter = ["status", "edition", "created_at"]
     search_fields = ["title", "slug", "description"]
     # Filled in from the title as staff type, and editable afterwards: the slug is in links, so a
     # published e-book's slug is a decision rather than something to regenerate.
@@ -1277,7 +1334,7 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
         (
             None,
             {
-                "fields": ("title", "slug", "description", "order"),
+                "fields": ("title", "slug", "description", "edition", "order"),
                 "description": "The slug is how the API addresses this e-book. Changing it breaks saved links.",
             },
         ),
@@ -1332,15 +1389,41 @@ class EbookSectionForm(forms.ModelForm):
         model = EbookSection
         # Listed rather than "__all__", so a field added later is not exposed by accident.
         # Status is not here: publishing goes through the service, not the form.
-        fields = ["ebook", "title", "slug", "summary", "body_html", "media", "order", "publish_from"]
+        fields = [
+            "ebook",
+            "title",
+            "slug",
+            "summary",
+            "body_html",
+            "media",
+            "order",
+            "is_free_sample",
+            "sample_pdf",
+            "publish_from",
+        ]
+
+    def clean(self):
+        super().clean()
+        cleaned = self.cleaned_data
+        if cleaned.get("is_free_sample") and not cleaned.get("sample_pdf"):
+            raise forms.ValidationError(
+                {
+                    "sample_pdf": (
+                        "Upload a separate PDF holding only this chapter. That file is what visitors "
+                        "download for free, so without it there is nothing to give away — the book's "
+                        "full document is never offered in its place."
+                    )
+                }
+            )
+        return cleaned
 
 
 @admin.register(EbookSection)
 class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
     form = EbookSectionForm
-    list_display = ["title", "ebook", "order", "has_media", "sign_count", "state"]
+    list_display = ["title", "ebook", "order", "has_media", "sign_count", "free_sample", "state"]
     list_editable = ["order"]
-    list_filter = ["status", "ebook"]
+    list_filter = ["status", "ebook", "is_free_sample"]
     search_fields = ["title", "slug", "summary", "ebook__title"]
     prepopulated_fields = {"slug": ("title",)}
     list_select_related = ["ebook", "media"]
@@ -1365,6 +1448,18 @@ class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
             },
         ),
         (
+            "The free sample",
+            {
+                "fields": ("is_free_sample", "sample_pdf"),
+                "description": (
+                    "One chapter per book may be given away. Tick the box and upload a PDF of "
+                    "that chapter alone: it is served to anybody who asks for it, without signing "
+                    "in, from the public landing page. The book's own document is not touched by "
+                    "this and still needs a purchase and a signed link."
+                ),
+            },
+        ),
+        (
             "Publishing",
             {"fields": ("status", "publish_from", "published_at", "published_by", "readiness", "preview_link")},
         ),
@@ -1375,10 +1470,23 @@ class EbookSectionAdmin(PreviewMixin, PublishableAdmin):
     def has_media(self, section: EbookSection) -> bool:
         return section.media_id is not None
 
+    @admin.display(description="Free sample", boolean=True)
+    def free_sample(self, section: EbookSection) -> bool:
+        return section.is_free_sample and section.has_sample_pdf
+
     @admin.display(description="Signs")
     def sign_count(self, section: EbookSection) -> int:
         """How many signs the text draws, so staff can see at a glance which sections show them."""
         return len(html.sign_codes_in(section.body_html))
+
+
+@admin.register(EbookSampleRequest)
+class EbookSampleRequestAdmin(ReadOnlyAdmin):
+    list_display = ["email", "ebook", "study_tips_consent", "consent_at", "created_at"]
+    list_filter = ["study_tips_consent", "ebook", "created_at"]
+    search_fields = ["email", "ebook__title"]
+    list_select_related = ["ebook"]
+    date_hierarchy = "created_at"
 
 
 @admin.register(EbookSectionProgress)

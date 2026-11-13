@@ -44,6 +44,7 @@ class Filters:
     group: str
     package: Package | None
     status: str
+    custom_range_reset: bool = False
 
     @property
     def days(self) -> int:
@@ -82,9 +83,11 @@ def parse(params) -> Filters:
         range_key = DEFAULT_RANGE
 
     start, end = _dates_for(range_key, params, today)
+    custom_range_reset = range_key == "custom" and start > end
+    if custom_range_reset:
+        range_key = DEFAULT_RANGE
+        start, end = _dates_for(range_key, params, today)
     start, end = _in_reach(start, today), _in_reach(end, today)
-    if start > end:
-        start, end = end, start
     if (end - start).days > MAX_RANGE_DAYS:
         start = end - timedelta(days=MAX_RANGE_DAYS)
 
@@ -103,6 +106,7 @@ def parse(params) -> Filters:
         group=group,
         package=_package(params.get("package")),
         status=status,
+        custom_range_reset=custom_range_reset,
     )
 
 

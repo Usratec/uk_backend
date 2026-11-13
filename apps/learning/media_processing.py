@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urljoin
 from uuid import UUID, uuid4
 
 from django.conf import settings
@@ -10,19 +11,21 @@ from django.db.models import F, Q
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.catalog.models import Feature
 from apps.core import audit
 from apps.entitlements import services as entitlements
 from apps.integrations import cloudfront, s3_client
-from apps.learning import services
+from apps.learning import services, transcode
 from apps.learning.models import (
     ACTIVE_PROCESSING_STATUSES,
+    EDITION_FEATURES,
     Chapter,
-    Ebook,
     EbookSection,
     HazardClip,
     LearningContent,
     MediaAsset,
     MediaKind,
+    PracticeExam,
     Subchapter,
     VideoProcessingStatus,
 )
@@ -96,6 +99,9 @@ def queue_processing(asset: MediaAsset, *, actor=None, force: bool = False) -> U
     if not settings.VIDEO_TRANSCODING_ENABLED:
         logger.info("Video processing is switched off, so asset %s stays unprocessed", asset.pk)
         return None
+    if not s3_client.is_configured():
+        logger.info("No uploads bucket is configured, so asset %s stays unprocessed", asset.pk)
+        return None
 
     startable: tuple[VideoProcessingStatus, ...] = (VideoProcessingStatus.UPLOADED,)
     if force:
@@ -150,6 +156,19 @@ def record_heartbeat(*, asset_id: int, job: UUID) -> bool:
     return bool(beaten)
 
 
+def key_url_for(asset: MediaAsset) -> str:
+    path = reverse("learn-media-key", kwargs={"media_id": asset.upload_token})
+    return urljoin(settings.BACKEND_BASE_URL, path.lstrip("/"))
+
+
+def encryption_for(asset: MediaAsset) -> transcode.HlsEncryption | None:
+    if not settings.VIDEO_HLS_ENCRYPTION_ENABLED:
+        return None
+
+    key = bytes(asset.hls_key) if asset.hls_key else transcode.new_hls_key()
+    return transcode.HlsEncryption(key=key, key_uri=key_url_for(asset))
+
+
 def hls_prefix_for(asset: MediaAsset) -> str:
     return f"{settings.VIDEO_HLS_PREFIX.strip('/')}/{asset.upload_token}"
 
@@ -170,6 +189,7 @@ def mark_processing_ready(
     height: int,
     mp4_key: str = "",
     frame_rate: float = 0.0,
+    hls_key: bytes | None = None,
 ) -> Published | None:
     with transaction.atomic():
         previous = (
@@ -188,6 +208,7 @@ def mark_processing_ready(
             processing_status=VideoProcessingStatus.READY,
             hls_prefix=prefix,
             hls_master_key=master_key,
+            hls_key=hls_key,
             mp4_key=mp4_key,
             renditions=renditions,
             duration_seconds=round(duration_seconds, 2),
@@ -349,29 +370,42 @@ def playback_for(*, student, asset: MediaAsset) -> Playback:
 
 
 def may_watch(*, student, asset: MediaAsset) -> bool:
-    if not entitlements.has_access(student):
+    """Whether the student's package unlocks something live that shows this asset.
+
+    Asked per place the asset can appear, each against the feature that serves it there, so a
+    mock test package plays the clips in its exams but not the lesson videos or the clip library.
+    """
+    now = timezone.now()
+    unlocked = set(entitlements.features_of(student, at=now))
+    if not unlocked:
         return False
 
-    now = timezone.now()
-    if _visible_lesson_content(student, asset, now).exists():
+    if Feature.LESSONS in unlocked and _visible_lesson_content(student, asset, now).exists():
         return True
-    if services.live(HazardClip.objects.filter(media=asset), at=now).exists():
+
+    clips = services.live(HazardClip.objects.filter(media=asset), at=now)
+    if Feature.HAZARD in unlocked and clips.exists():
         return True
-    if (
-        services.live(EbookSection.objects.filter(media=asset), at=now)
-        .filter(ebook__in=services.live_ebooks(at=now))
-        .exists()
-    ):
+    live_exams = services.live(PracticeExam.objects.all(), at=now)
+    if Feature.EXAMS in unlocked and clips.filter(exams__in=live_exams).exists():
         return True
-    return services.live(Ebook.objects.filter(file=asset), at=now).exists()
+
+    editions = [edition for edition, feature in EDITION_FEATURES.items() if feature in unlocked]
+    books = services.live_ebooks(at=now).filter(edition__in=editions)
+    if services.live(EbookSection.objects.filter(media=asset, ebook__in=books), at=now).exists():
+        return True
+    return books.filter(file=asset).exists()
 
 
 def _visible_lesson_content(student, asset: MediaAsset, now):
-    content = services.live(LearningContent.objects.filter(media=asset), at=now).filter(
+    """Live lesson material showing the asset, as a video or as a hazard clip inside the lesson."""
+    content = services.live(
+        LearningContent.objects.filter(Q(media=asset) | Q(hazard_clip__media=asset)), at=now
+    ).filter(
         subchapter__in=services.live(Subchapter.objects.all(), at=now),
         subchapter__chapter__in=services.live(Chapter.objects.all(), at=now),
     )
-    return entitlements.visible_content(student, content, at=now)
+    return entitlements.visible_content(student, content, at=now, feature=Feature.LESSONS)
 
 
 def stale_processing(at=None):

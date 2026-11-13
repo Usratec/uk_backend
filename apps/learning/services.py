@@ -10,13 +10,14 @@ than in the admin screens.
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
 from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
-from apps.core import audit, images
+from apps.core import audit, email, images
 from apps.core.models import PublishStatus
 from apps.learning import hazard_detection, html
 from apps.learning.models import (
@@ -24,6 +25,7 @@ from apps.learning.models import (
     Chapter,
     ContentType,
     Ebook,
+    EbookSampleRequest,
     EbookSection,
     EbookSectionProgress,
     ExamKind,
@@ -181,6 +183,11 @@ def problems_with_clip(clip: HazardClip) -> list[str]:
         # Without one there is nothing to spot, and every attempt would score nothing.
         problems.append("This clip has no hazards marked yet.")
 
+    length = clip.duration_seconds
+    if length is not None:
+        for window in windows:
+            problems.extend(messages_for_window_past_length(window, length, named=True))
+
     # Overlapping windows would let one click score for two hazards at once.
     in_order = sorted(windows, key=lambda window: window.starts_at)
     for earlier, later in zip(in_order, in_order[1:], strict=False):
@@ -188,6 +195,22 @@ def problems_with_clip(clip: HazardClip) -> list[str]:
             problems.append(f"'{earlier.label}' and '{later.label}' overlap, so one click would score twice.")
 
     return problems
+
+
+def messages_for_window_past_length(window: HazardWindow, length, *, named: bool = False) -> list[str]:
+    """What to say when a hazard window sits after the clip's Length.
+
+    Saving is still allowed (managers draft timings before Length is settled); these messages
+    feed the readiness check that blocks publish, and the non-blocking note on each admin row.
+    """
+    length_text = f"{float(length):g}"
+    subject = f"'{window.label}'" if named else "This window"
+    messages = []
+    if float(window.starts_at) > float(length):
+        messages.append(f"{subject} starts after the video ({length_text} s)")
+    if float(window.ends_at) > float(length):
+        messages.append(f"{subject} ends after the video ({length_text} s)")
+    return messages
 
 
 def _problems_with_chapter(chapter: Chapter) -> list[str]:
@@ -252,7 +275,10 @@ def warnings_about(instance) -> list[str]:
             return ["No section of this book is published yet and it has no document, so students will see it empty."]
     if isinstance(instance, HazardClip):
         if instance.duration_seconds is None:
-            return ["This clip has no length, so clicking spread evenly across it will not be spotted."]
+            return [
+                "This clip has no length, so its hazard windows cannot be checked against the video.",
+                "This clip has no length, so clicking spread evenly across it will not be spotted.",
+            ]
     return []
 
 
@@ -416,6 +442,9 @@ def unpublish(*, actor, instance, reason: str = ""):
     require_permission(actor, publish_permission_for(instance))
 
     was = instance.status
+    if was == PublishStatus.DRAFT:
+        return instance
+
     instance.status = PublishStatus.DRAFT
     instance.save(update_fields=["status", "updated_at"])
 
@@ -1135,7 +1164,13 @@ def time_taken_for(exam: PracticeExam, seconds: int | None) -> int | None:
 
 
 @transaction.atomic
-def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds: int | None = None) -> MockAttempt:
+def record_sitting(
+    student,
+    exam: PracticeExam,
+    result: dict,
+    time_taken_seconds: int | None = None,
+    subscription=None,
+) -> MockAttempt:
     """Remember one exam sitting: the score, and every answer and clip that made it up.
 
     The answers are recorded too, so a question got wrong in a mock turns up under "mistakes"
@@ -1143,12 +1178,16 @@ def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds
     the same reason: a clip sat in a mock is a go at that clip, and leaving it out would make a
     student's hazard history disagree with the mocks they have sat.
 
+    ``subscription`` is the purchase the sitting is charged to, from
+    ``entitlements.claim_exam_sitting``; a limit on sittings counts the attempts charged to it.
+
     Atomic, so a sitting is never half recorded: the attempt, its answers and its clips are one
     record of one event.
     """
     attempt = MockAttempt.objects.create(
         student=student,
         exam=exam,
+        subscription=subscription,
         score=result["score"],
         total=result["total"],
         passed=result["passed"],
@@ -1744,3 +1783,118 @@ def student_view_of_ebook(ebook: Ebook) -> dict:
         "contentType": document.content_type if document else None,
         "sizeBytes": document.size_bytes if document else None,
     }
+
+
+class UnknownEbookError(Exception):
+    """No live e-book has that slug."""
+
+
+class NoFreeSampleError(Exception):
+    """The book gives no chapter away, or the chapter it gives away has no PDF yet."""
+
+
+def public_ebooks(at=None):
+    return live(Ebook.objects.all(), at=at).order_by("order", "title")
+
+
+PUBLIC_SECTION_FIELDS = ("id", "ebook_id", "slug", "title", "summary", "order", "is_free_sample", "sample_pdf")
+
+
+def public_view_of_ebook(ebook: Ebook) -> dict:
+    return {"slug": ebook.slug, "title": ebook.title, "description": ebook.description}
+
+
+def public_outline_of(section: EbookSection, number: int, *, sample_url) -> dict:
+    return {
+        "slug": section.slug,
+        "number": number,
+        "title": section.title,
+        "summary": section.summary,
+        "isFreeSample": section.is_free_sample,
+        "samplePdfUrl": sample_url(section) if section.is_free_sample and section.has_sample_pdf else None,
+    }
+
+
+def public_ebook_shelf(*, sample_url, at=None) -> list[dict]:
+    books = list(public_ebooks(at))
+    grouped = _public_sections_by_book(books, at)
+    return [
+        {
+            **public_view_of_ebook(book),
+            "sections": [
+                public_outline_of(section, number, sample_url=sample_url)
+                for number, section in enumerate(grouped.get(book.pk, []), start=1)
+            ],
+        }
+        for book in books
+    ]
+
+
+def _public_sections_by_book(books: list[Ebook], at=None) -> dict[int, list[EbookSection]]:
+    if not books:
+        return {}
+
+    grouped: dict[int, list[EbookSection]] = {}
+    sections = (
+        live(EbookSection.objects.filter(ebook__in=books), at=at)
+        .only(*PUBLIC_SECTION_FIELDS)
+        .order_by("ebook_id", "order", "title")
+    )
+    for section in sections:
+        grouped.setdefault(section.ebook_id, []).append(section)
+    return grouped
+
+
+def free_sample_section(slug: str, at=None) -> EbookSection | None:
+    return (
+        live(EbookSection.objects.select_related("ebook"), at=at)
+        .filter(slug=slug, is_free_sample=True, ebook__in=public_ebooks(at))
+        .exclude(sample_pdf="")
+        .first()
+    )
+
+
+def free_sample_of(ebook: Ebook, at=None) -> EbookSection | None:
+    return live(ebook.sections.all(), at=at).filter(is_free_sample=True).exclude(sample_pdf="").first()
+
+
+@dataclass(frozen=True)
+class SampleRequested:
+    record: EbookSampleRequest
+    section: EbookSection
+
+
+def record_sample_request(
+    *,
+    ebook_slug: str,
+    email_address: str,
+    study_tips_consent: bool,
+    sample_url,
+) -> SampleRequested:
+    ebook = public_ebooks().filter(slug=ebook_slug).first()
+    if ebook is None:
+        raise UnknownEbookError(ebook_slug)
+
+    section = free_sample_of(ebook)
+    if section is None:
+        raise NoFreeSampleError(ebook_slug)
+
+    now = timezone.now()
+    asked = EbookSampleRequest.objects.create(
+        ebook=ebook,
+        email=email_address,
+        study_tips_consent=study_tips_consent,
+        consent_at=now if study_tips_consent else None,
+    )
+
+    email.send(
+        template="ebook_sample",
+        subject=f"Your free chapter of {ebook.title}",
+        to=asked.email,
+        context={
+            "ebook_title": ebook.title,
+            "chapter_title": section.title,
+            "sample_url": sample_url(section),
+        },
+    )
+    return SampleRequested(record=asked, section=section)

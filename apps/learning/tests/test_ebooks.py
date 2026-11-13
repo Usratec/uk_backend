@@ -345,6 +345,7 @@ def book_form(**overrides) -> dict:
         "title": "Road signs workbook",
         "slug": "road-signs-workbook",
         "description": "Every sign, with room to write.",
+        "edition": "full",
         "file": "",
         "order": 1,
         "publish_from": "",
@@ -386,6 +387,12 @@ class TestTheAdminSection:
 
         assert response.status_code == 200
         assert Ebook.objects.get(slug="road-signs-workbook").file is None
+
+    def test_an_editor_can_make_the_compact_edition(self, editor_client, db):
+        response = editor_client.post(reverse("admin:learning_ebook_add"), book_form(edition="compact"), follow=True)
+
+        assert response.status_code == 200
+        assert Ebook.objects.get(slug="road-signs-workbook").edition == "compact"
 
     def test_a_slug_already_in_use_is_refused_with_a_message(self, editor_client, make_ebook):
         make_ebook(slug="workbook", title="Workbook")

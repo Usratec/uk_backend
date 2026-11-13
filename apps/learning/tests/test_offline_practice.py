@@ -412,7 +412,7 @@ class TestIdempotency:
         answer = offline.Answer("raced", live_question.pk, ["a"], days_ago(1))
         periods = entitlements.access_periods
 
-        def another_request_gets_there_first(user):
+        def another_request_gets_there_first(user, feature=None):
             QuestionAttempt.objects.create(
                 student=learner,
                 question=live_question,
@@ -422,7 +422,7 @@ class TestIdempotency:
                 client_payload=offline.digest_of(answer),
             )
             monkeypatch.setattr(entitlements, "access_periods", periods)
-            return periods(user)
+            return periods(user, feature)
 
         monkeypatch.setattr(entitlements, "access_periods", another_request_gets_there_first)
 

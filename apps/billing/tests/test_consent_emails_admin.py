@@ -1,7 +1,5 @@
 """Purchase consent remains an order snapshot in receipts and the back office."""
 
-from unittest.mock import patch
-
 import pytest
 from django.contrib.auth.models import Permission
 from django.core import mail
@@ -44,11 +42,15 @@ def test_confirmation_uses_the_recorded_wording_in_both_formats(consent_order):
 
 
 def test_a_delayed_receipt_and_retry_use_the_order_snapshot(consent_order, settings):
-    with patch("apps.core.tasks.send_email.delay") as queued:
-        emails.send_order_confirmation(consent_order)
+    context = emails.order_confirmation_context(consent_order)
 
     settings.PURCHASE_CONSENT_VERSIONS = {"2026-11-draft": {"immediate_access_wording": "New wording"}}
-    send_now(**queued.call_args.kwargs)
+    send_now(
+        template=emails.ORDER_CONFIRMATION_TEMPLATE,
+        subject=emails.ORDER_CONFIRMATION_SUBJECT,
+        to=consent_order.email,
+        context=context,
+    )
     emails.send_order_confirmation(consent_order)
 
     assert len(mail.outbox) == 2
