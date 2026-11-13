@@ -198,10 +198,6 @@ class SubscriptionStatusSerializer(serializers.Serializer):
     periods = SubscriptionPeriodSerializer(many=True)
 
 
-class LearningUrlSerializer(serializers.Serializer):
-    url = serializers.URLField()
-
-
 # --- Response shapes, declared so the OpenAPI schema documents them ------------------------------
 
 

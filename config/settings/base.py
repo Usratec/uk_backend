@@ -318,12 +318,6 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# --- Learning ------------------------------------------------------------------------------------
-# Where the cabinet sends a student with active access. Today that is the external platform the
-# product still uses; it becomes an internal URL when learning moves in-house.
-
-LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
-
 # --- Payments ------------------------------------------------------------------------------------
 # The webhook secret is what proves a webhook came from Stripe; without it no payment is accepted.
 
