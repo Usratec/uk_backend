@@ -40,9 +40,17 @@ class BlogPostForm(forms.ModelForm):
             "title",
             "slug",
             "category",
+            "featured",
             "author",
             "author_name",
+            "excerpt",
             "body_html",
+            "cover_image",
+            "cover_image_alt",
+            "study_tip_title",
+            "study_tip_text",
+            "study_tip_button_label",
+            "study_tip_button_link",
             "publish_at",
             "meta_title",
             "meta_description",
@@ -137,18 +145,54 @@ class BlogPostRedirectAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 class BlogPostAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     form = BlogPostForm
     preview_template = "admin/blog/preview.html"
-    list_display = ["title", "category", "byline", "publish_at", "state"]
-    list_filter = ["status", "category"]
+    list_display = ["title", "category", "byline", "publish_at", "state", "featured"]
+    list_filter = ["status", "category", "featured"]
     search_fields = ["title", "slug", "meta_title", "meta_description"]
     prepopulated_fields = {"slug": ("title",)}
     list_select_related = ["category", "author"]
     autocomplete_fields = ["category"]
     date_hierarchy = "publish_at"
     actions = ["publish_selected", "schedule_selected", "unpublish_selected"]
-    readonly_fields = ["status", "published_by", "readiness", "preview_link", "former_addresses"]
+    readonly_fields = [
+        "status",
+        "published_by",
+        "reading_time",
+        "readiness",
+        "preview_link",
+        "former_addresses",
+    ]
     fieldsets = (
-        (None, {"fields": ("title", "slug", "category", "author", "author_name")}),
-        ("Content", {"fields": ("body_html",)}),
+        (None, {"fields": ("title", "slug", "category", "featured", "author", "author_name")}),
+        (
+            "Content",
+            {
+                "fields": ("excerpt", "body_html", "reading_time"),
+                "description": "The summary heads the cards on the blog; the content is the article itself.",
+            },
+        ),
+        (
+            "Cover picture",
+            {
+                "fields": ("cover_image", "cover_image_alt"),
+                "description": "Shown on the cards and at the top of the post, unlike the sharing image below.",
+            },
+        ),
+        (
+            "Study tip",
+            {
+                "fields": (
+                    "study_tip_title",
+                    "study_tip_text",
+                    "study_tip_button_label",
+                    "study_tip_button_link",
+                ),
+                "classes": ["collapse"],
+                "description": (
+                    "Optional. Fill the title and the tip to show a Study tip box under the post. "
+                    "A button needs both a label and a link, or neither."
+                ),
+            },
+        ),
         (
             "Search and sharing",
             {
@@ -198,6 +242,12 @@ class BlogPostAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     @admin.display(description="Status", ordering="status")
     def state(self, post: BlogPost) -> SafeString:
         return badge(post.get_status_display(), STATUS_TONES.get(post.status, "neutral"))
+
+    @admin.display(description="Reading time")
+    def reading_time(self, post: BlogPost) -> str:
+        if post.pk is None or not post.reading_minutes:
+            return "—"
+        return f"{post.reading_minutes} min"
 
     @admin.display(description="Ready to publish")
     def readiness(self, post: BlogPost) -> SafeString:

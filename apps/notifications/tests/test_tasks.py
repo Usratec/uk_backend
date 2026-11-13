@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from apps.catalog.models import Feature
 from apps.entitlements.models import RevocationReason
 from apps.notifications import services
 from apps.notifications.models import Notification, NotificationKind
@@ -40,6 +41,19 @@ class TestExpiredPackages:
     def test_a_learner_who_has_bought_again_is_not_told_their_access_ended(self, learner, make_subscription):
         make_subscription(learner, days=-0.5)
         make_subscription(learner, days=25)
+
+        assert notify_expired_packages() == 0
+
+    def test_a_course_ending_while_mock_tests_run_on_is_announced(self, learner, make_subscription):
+        """The lessons have gone; mock tests still running do not make up for them."""
+        make_subscription(learner, days=-0.5)
+        make_subscription(learner, days=20, features=[Feature.EXAMS, Feature.COMPACT_EBOOK], exam_sittings=5)
+
+        assert notify_expired_packages() == 1
+
+    def test_mock_tests_ending_during_a_course_are_not_announced(self, learner, make_subscription):
+        make_subscription(learner, days=-0.5, features=[Feature.EXAMS, Feature.COMPACT_EBOOK], exam_sittings=5)
+        make_subscription(learner, days=20)
 
         assert notify_expired_packages() == 0
 

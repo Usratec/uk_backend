@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.models import Order, OrderStatus
-from apps.catalog.models import Package
+from apps.catalog.models import Package, ProductLine
 from apps.core.models import PublishStatus
 from apps.entitlements.models import Subscription
 from apps.learning.models import (
@@ -21,6 +21,15 @@ from apps.learning.models import (
 )
 
 PASSWORD = "Riverbank42"
+
+
+@pytest.fixture(autouse=True)
+def without_seeded_packages(request):
+    """Start from no packages: these tests count the catalogue, which a migration seeds with mock tests."""
+    if "db" not in request.fixturenames:
+        return
+    request.getfixturevalue("db")
+    Package.objects.filter(product_line=ProductLine.MOCK_TESTS, orders__isnull=True).delete()
 
 
 @pytest.fixture

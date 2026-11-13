@@ -188,6 +188,9 @@ REST_FRAMEWORK = {
         "payment_intent": "60/hour",
         "promo_code": "60/hour",
         "order_status": "60/hour",
+        "ebook_sample_request": "10/hour",
+        "contact_anon": "5/hour",
+        "contact_user": "10/hour",
     },
 }
 
@@ -239,6 +242,8 @@ DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="1Theory <info@1theor
 # one, so the wait is bounded wherever it happens.
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
 
+SUPPORT_EMAIL = env.str("SUPPORT_EMAIL", default="support@1theory.co.uk")
+
 # --- Background work -----------------------------------------------------------------------------
 # Local Redis uses a separate database for Celery. Deployed environments can use a dedicated broker.
 CELERY_BROKER_URL = env.str("CELERY_BROKER_URL", default="redis://localhost:6379/1")
@@ -277,6 +282,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.fulfil_unfulfilled_orders",
         "schedule": crontab(minute="*/10"),
     },
+    "send-pending-confirmation-emails": {
+        "task": "apps.billing.tasks.send_pending_confirmation_emails",
+        "schedule": crontab(minute="35"),
+    },
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),
@@ -299,17 +308,15 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.blog.tasks.publish_scheduled_posts",
         "schedule": crontab(minute="*/5"),
     },
+    "deliver-pending-contact-messages": {
+        "task": "apps.content.tasks.deliver_pending_contact_messages",
+        "schedule": crontab(minute="25"),
+    },
     "sweep-abandoned-video-uploads": {
         "task": "apps.learning.tasks.sweep_abandoned_uploads",
         "schedule": crontab(minute="*/15"),
     },
 }
-
-# --- Learning ------------------------------------------------------------------------------------
-# Where the cabinet sends a student with active access. Today that is the external platform the
-# product still uses; it becomes an internal URL when learning moves in-house.
-
-LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 
 # --- Payments ------------------------------------------------------------------------------------
 # The webhook secret is what proves a webhook came from Stripe; without it no payment is accepted.
@@ -464,6 +471,8 @@ VIDEO_PROCESSING_MAX_ATTEMPTS = env.int("VIDEO_PROCESSING_MAX_ATTEMPTS", default
 
 VIDEO_MIN_FRAME_RATE = env.float("VIDEO_MIN_FRAME_RATE", default=10.0)
 VIDEO_MAX_FRAME_RATE = env.float("VIDEO_MAX_FRAME_RATE", default=60.0)
+
+VIDEO_HLS_ENCRYPTION_ENABLED = env.bool("VIDEO_HLS_ENCRYPTION_ENABLED", default=True)
 
 VIDEO_WORKSPACE_DIR = env.str("VIDEO_WORKSPACE_DIR", default="")
 VIDEO_WORKSPACE_HEADROOM_FACTOR = env.float("VIDEO_WORKSPACE_HEADROOM_FACTOR", default=3.5)
@@ -634,6 +643,7 @@ JAZZMIN_SETTINGS = {
         "learning.HazardClip": "fas fa-video",
         "learning.Ebook": "fas fa-book",
         "learning.EbookSection": "fas fa-file-lines",
+        "learning.EbookSampleRequest": "fas fa-envelope-open-text",
         # What students have done, as opposed to what staff have written.
         "learning.HazardAttempt": "fas fa-triangle-exclamation",
         "learning.QuestionAttempt": "fas fa-pen-to-square",
@@ -646,6 +656,7 @@ JAZZMIN_SETTINGS = {
         "content": "fas fa-pen-nib",
         "content.FAQ": "fas fa-circle-question",
         "content.Testimonial": "fas fa-quote-right",
+        "content.ContactSubmission": "fas fa-envelope-open-text",
         "blog": "fas fa-newspaper",
         "blog.BlogPost": "fas fa-file-lines",
         "blog.BlogCategory": "fas fa-folder-open",

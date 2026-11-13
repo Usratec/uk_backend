@@ -73,3 +73,22 @@ class TestAPictureInAPost:
         post = make_post(body_html="<p>Hi</p><script>alert(1)</script>")
 
         assert "<script>" not in BlogPost.objects.get(pk=post.pk).body_html
+
+
+class TestReadingTime:
+    def test_counts_the_words_a_reader_sees(self):
+        assert html.minutes_to_read("<p>" + " ".join(["word"] * 400) + "</p>") == 2
+
+    def test_rounds_to_the_nearest_minute(self):
+        assert html.minutes_to_read("<p>" + " ".join(["word"] * 250) + "</p>") == 1
+
+    def test_the_shortest_post_still_takes_a_minute(self):
+        assert html.minutes_to_read("<p>Hello.</p>") == 1
+
+    def test_nothing_to_read_takes_no_time(self):
+        assert html.minutes_to_read("") == 0
+        assert html.minutes_to_read(None) == 0
+        assert html.minutes_to_read("<p>&nbsp;</p>") == 0
+
+    def test_markup_and_attributes_are_not_counted(self):
+        assert html.minutes_to_read('<p class="lead"><a href="https://example.test/">Hi</a></p>') == 1

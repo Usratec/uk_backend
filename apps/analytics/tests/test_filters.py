@@ -37,10 +37,43 @@ def test_a_custom_range_is_read_from_the_dates():
 
 
 @pytest.mark.django_db
-def test_dates_the_wrong_way_round_are_swapped_rather_than_refused():
+def test_a_same_day_custom_range_is_kept_as_one_day():
+    filters = filter_utils.parse({"range": "custom", "start": "2026-01-10", "end": "2026-01-10"})
+
+    assert (filters.start, filters.end) == (date(2026, 1, 10), date(2026, 1, 10))
+    assert filters.days == 1
+    assert filters.custom_range_reset is False
+
+
+@pytest.mark.django_db
+def test_a_custom_range_with_from_after_to_resets_to_the_last_thirty_days():
+    today = timezone.localdate()
+    start, end = today + timedelta(days=20), today + timedelta(days=10)
+
+    filters = filter_utils.parse({"range": "custom", "start": start.isoformat(), "end": end.isoformat()})
+
+    assert filters.range_key == "30d"
+    assert (filters.start, filters.end) == (today - timedelta(days=29), today)
+    assert filters.days == 30
+    assert filters.custom_range_reset is True
+
+
+@pytest.mark.django_db
+def test_a_reset_custom_range_is_not_swapped():
     filters = filter_utils.parse({"range": "custom", "start": "2026-01-20", "end": "2026-01-10"})
 
-    assert filters.start < filters.end
+    assert (filters.start, filters.end) != (date(2026, 1, 10), date(2026, 1, 20))
+    assert filters.range_key == "30d"
+
+
+@pytest.mark.django_db
+def test_a_reset_custom_range_carries_the_default_range_in_its_links():
+    filters = filter_utils.parse({"range": "custom", "start": "2026-01-20", "end": "2026-01-10"})
+    query = filters.as_query()
+
+    assert query["range"] == "30d"
+    assert query["start"] == filters.start.isoformat()
+    assert query["end"] == filters.end.isoformat()
 
 
 @pytest.mark.django_db
@@ -48,6 +81,40 @@ def test_an_unparseable_date_does_not_raise():
     filters = filter_utils.parse({"range": "custom", "start": "the tenth", "end": "2026-01-20"})
 
     assert filters.end == date(2026, 1, 20)
+    assert filters.start == date(2026, 1, 20) - timedelta(days=29)
+    assert filters.custom_range_reset is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"range": "custom"},
+        {"range": "custom", "start": "", "end": ""},
+        {"range": "custom", "start": "2026-01-10"},
+        {"range": "custom", "end": "not a date"},
+    ],
+)
+def test_a_custom_range_without_usable_dates_keeps_its_fallback(params):
+    filters = filter_utils.parse(params)
+
+    assert filters.range_key == "custom"
+    assert filters.start <= filters.end
+    assert filters.custom_range_reset is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("range_key", "days"),
+    [("today", 1), ("7d", 7), ("30d", 30), ("90d", 90)],
+)
+def test_a_predefined_range_is_untouched_by_the_custom_range_check(range_key, days):
+    filters = filter_utils.parse({"range": range_key, "start": "2026-01-20", "end": "2026-01-10"})
+
+    assert filters.range_key == range_key
+    assert filters.days == days
+    assert filters.end == timezone.localdate()
+    assert filters.custom_range_reset is False
 
 
 @pytest.mark.django_db

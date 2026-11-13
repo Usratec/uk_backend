@@ -240,13 +240,15 @@ class TestPaymentMustMatchTheOrder:
 
 
 class TestPaymentFailed:
-    def test_marks_the_order_failed(self, api, embedded_order, stripe_event):
+    def test_a_declined_card_leaves_the_order_pending_for_another_try(self, api, embedded_order, stripe_event):
         stripe_event(failed_event(embedded_order))
 
         assert post_webhook(api).status_code == 200
 
         embedded_order.refresh_from_db()
-        assert embedded_order.status == OrderStatus.FAILED
+        assert embedded_order.status == OrderStatus.PENDING
+        assert embedded_order.stripe_payment_intent_id == "pi_embedded_1"
+        assert embedded_order.payment_intent_cancelled_at is None
         assert not Subscription.objects.filter(order=embedded_order).exists()
 
     def test_stores_a_reason_the_learner_can_act_on(self, api, embedded_order, stripe_event):
@@ -292,10 +294,25 @@ class TestEventsOutOfOrder:
         assert embedded_order.failure_code == ""
         assert Subscription.objects.filter(order=embedded_order).count() == 1
 
-    def test_a_retried_card_pays_an_order_that_had_failed(self, api, embedded_order, stripe_event, capture):
+    def test_a_retried_card_pays_an_order_whose_first_card_was_declined(
+        self, api, embedded_order, stripe_event, capture
+    ):
         stripe_event(failed_event(embedded_order, event_id="evt_failed"))
         post_webhook(api)
-        assert Order.objects.get(pk=embedded_order.pk).status == OrderStatus.FAILED
+        assert Order.objects.get(pk=embedded_order.pk).status == OrderStatus.PENDING
+
+        stripe_event(succeeded_event(embedded_order, event_id="evt_then_paid"))
+        post_webhook(api, capture)
+
+        embedded_order.refresh_from_db()
+        assert embedded_order.status == OrderStatus.PAID
+        assert embedded_order.failure_code == ""
+        assert Subscription.objects.filter(order=embedded_order).count() == 1
+
+    def test_an_order_already_marked_failed_by_a_decline_can_still_be_paid(
+        self, api, embedded_order, stripe_event, capture
+    ):
+        Order.objects.filter(pk=embedded_order.pk).update(status=OrderStatus.FAILED, failure_code="card_declined")
 
         stripe_event(succeeded_event(embedded_order, event_id="evt_then_paid"))
         post_webhook(api, capture)

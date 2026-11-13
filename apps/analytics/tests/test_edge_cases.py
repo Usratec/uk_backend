@@ -259,10 +259,15 @@ def test_a_leap_day_is_a_day_like_any_other(db):
     assert filter_utils.buckets(parsed) == [date(2024, 2, 29)]
 
 
-def test_a_range_that_starts_after_it_ends_is_turned_round(db):
+def test_a_range_that_starts_after_it_ends_is_discarded(db):
+    today = timezone.localdate()
+
     parsed = filter_utils.parse({"range": "custom", "start": "2026-10-22", "end": "2026-01-01"})
-    assert parsed.start == date(2026, 1, 1)
-    assert parsed.end == date(2026, 10, 22)
+
+    assert parsed.range_key == "30d"
+    assert parsed.start == today - timedelta(days=29)
+    assert parsed.end == today
+    assert parsed.custom_range_reset is True
 
 
 def test_a_range_of_one_day_is_one_bucket(db):

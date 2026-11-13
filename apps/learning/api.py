@@ -6,26 +6,43 @@ What a student is served is decided twice over, and never by the browser:
 * only material their **package** includes, checked against the item, its subchapter and its
   chapter, so a package that excludes a chapter excludes everything inside it.
 
+Each endpoint also asks whether the student's package unlocks its part of the product — lessons,
+practice, hazard clips, exams or an e-book edition — so a mock test package opens the exams and
+the compact e-book and nothing else.
+
 The frontend keeps its own words. A chapter is a "topic" and a subchapter is a "lesson" in these
 responses, so renaming things inside the product did not reach the API. Keys are camelCase and a
 lapsed plan answers 402, matching the contract the frontend already implements.
 """
 
+from collections.abc import Iterable
 from typing import cast
 
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from django.db import transaction
+from django.http import FileResponse, HttpResponseRedirect
+from django.http.response import HttpResponseBase
+from django.urls import reverse
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.negotiation import BaseContentNegotiation
+from rest_framework.parsers import BaseParser
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.renderers import BaseRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.accounts.serializers import DetailSerializer
+from apps.catalog.models import Feature
+from apps.core.uploads import delivery_headers
 from apps.entitlements import services as entitlements
 from apps.learning import offline, services
 from apps.learning.models import (
+    EDITION_FEATURES,
     Chapter,
+    EbookEdition,
     EbookSection,
     ExamKind,
     HazardClip,
@@ -43,6 +60,8 @@ from apps.learning.serializers import (
     DoneResponseSerializer,
     EbookDetailResponseSerializer,
     EbookListResponseSerializer,
+    EbookSampleRequestResponseSerializer,
+    EbookSampleRequestSerializer,
     ExamAttemptListResponseSerializer,
     ExamAttemptResultResponseSerializer,
     ExamDetailResponseSerializer,
@@ -59,6 +78,7 @@ from apps.learning.serializers import (
     OfflinePackResponseSerializer,
     PracticeSetResponseSerializer,
     ProgressSummaryResponseSerializer,
+    PublicEbookListResponseSerializer,
     ReadResponseSerializer,
     SavedResponseSerializer,
     SignListResponseSerializer,
@@ -66,8 +86,10 @@ from apps.learning.serializers import (
     VideoProgressRequestSerializer,
     VideoProgressSerializer,
 )
+from apps.learning.throttling import EbookSampleRequestThrottle
 
 PLAN_NEEDED = "An active plan is needed for this"
+NO_SITTINGS_LEFT = "No mock tests left. Buy more to sit another."
 # The modes the practice endpoint accepts. The ones that depend on past attempts are accepted
 # but practise everything, because progress is not recorded yet.
 MODES = ["random", "topic", "mistakes", "weak", "saved", "review"]
@@ -78,6 +100,11 @@ BATCH_TOO_LARGE = f"Send at most {offline.MAX_BATCH_ITEMS} answers per request."
 def plan_needed() -> Response:
     """402 rather than 403: the student is signed in, they simply have nothing to read with."""
     return Response({"detail": PLAN_NEEDED}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+
+def no_sittings_left() -> Response:
+    """402 as well: the exams are theirs, but the sittings they bought are spent."""
+    return Response({"detail": NO_SITTINGS_LEFT}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
 
 def sign_map(codes) -> dict:
@@ -113,17 +140,17 @@ class TopicListView(APIView):
 
         # Asked once. Neither answer can change while this request is being served, and asking
         # per chapter is what made the whole course take seconds to list.
-        has_access = entitlements.has_access(student)
-        package_id = entitlements.package_of(student) if has_access else None
+        has_access = entitlements.has_feature(student, Feature.LESSONS)
+        package_ids = entitlements.packages_of(student, Feature.LESSONS) if has_access else []
 
         chapters = services.live(Chapter.objects.all()).order_by("order", "title")
         if has_access:
-            chapters = entitlements.visible_chapters(student, chapters)
+            chapters = entitlements.visible_chapters(student, chapters, feature=Feature.LESSONS)
         chapters = list(chapters)
 
         done = services.completed_lesson_ids(student)
         mastery = services.mastery_by_chapter(student, chapters)
-        lessons = self._lessons_by_chapter(student, chapters, has_access, package_id)
+        lessons = self._lessons_by_chapter(student, chapters, has_access, package_ids)
         resumable = services.resumable_videos_by_lesson(
             student, [subchapter for group in lessons.values() for subchapter in group]
         )
@@ -154,7 +181,7 @@ class TopicListView(APIView):
             }
         )
 
-    def _lessons_by_chapter(self, student, chapters, has_access, package_id) -> dict[int, list]:
+    def _lessons_by_chapter(self, student, chapters, has_access, package_ids) -> dict[int, list]:
         """Every listed chapter's live subchapters, in one query, grouped by chapter.
 
         Fetching them a chapter at a time is correct but costs a round trip each, and the
@@ -167,7 +194,7 @@ class TopicListView(APIView):
             "chapter_id", "order", "title"
         )
         if has_access:
-            subchapters = entitlements.visible_subchapters(student, subchapters, package_id=package_id)
+            subchapters = entitlements.visible_subchapters(student, subchapters, package_ids=package_ids)
 
         grouped: dict[int, list] = {}
         for subchapter in subchapters:
@@ -191,13 +218,13 @@ class LessonDetailView(APIView):
         if subchapter is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not entitlements.can_view(student, subchapter):
+        if not entitlements.can_view(student, subchapter, feature=Feature.LESSONS):
             # The same answer whether the plan lapsed or the package never included this, so the
             # endpoint cannot be used to map out what other packages contain.
             return plan_needed()
 
         content = (
-            entitlements.visible_content(student, services.live_content_of(subchapter))
+            entitlements.visible_content(student, services.live_content_of(subchapter), feature=Feature.LESSONS)
             .select_related("media", "hazard_clip__media")
             .prefetch_related("media__subtitles", "hazard_clip__media__subtitles", "hazard_clip__windows")
             .order_by("order", "title")
@@ -273,7 +300,7 @@ class EbookView(APIView):
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
 
-        books = list(services.live_ebooks())
+        books = list(services.live_ebooks().filter(edition__in=_editions_on_the_shelf(student)))
         read = services.sections_read_by(student)
         sections = self._sections_by_book(books)
 
@@ -302,6 +329,17 @@ class EbookView(APIView):
         return grouped
 
 
+def _editions_on_the_shelf(student) -> list[str]:
+    """The editions this student has bought; the full one, to look at, when they have neither.
+
+    Somebody with the compact e-book is not shown the full one they cannot open, but somebody
+    deciding what to buy still sees what the course comes with, as before editions existed.
+    """
+    unlocked = set(entitlements.features_of(student))
+    owned = [edition for edition, feature in EDITION_FEATURES.items() if feature in unlocked]
+    return owned or [EbookEdition.FULL]
+
+
 def _continue_from(contents: list[dict]) -> str | None:
     return next(
         (item["slug"] for item in contents if not item["read"]),
@@ -323,7 +361,7 @@ class EbookDetailView(APIView):
         ebook = services.live_ebooks().filter(slug=slug).first()
         if ebook is None:
             return _not_found()
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, ebook.feature):
             return plan_needed()
 
         read = services.sections_read_by(student)
@@ -355,12 +393,11 @@ class EbookSectionReadView(APIView):
     def post(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
 
-        if not entitlements.has_access(student):
-            return plan_needed() if services.ebook_section(slug) is not None else _not_found()
-
         section = services.ebook_section(slug)
         if section is None:
             return _not_found()
+        if not entitlements.has_feature(student, section.ebook.feature):
+            return plan_needed()
 
         services.mark_section_read(student, section)
         return Response({"read": True})
@@ -368,6 +405,115 @@ class EbookSectionReadView(APIView):
 
 def _not_found() -> Response:
     return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+def _sample_url_builder(request: Request):
+    def build(section: EbookSection) -> str:
+        return request.build_absolute_uri(reverse("learn-ebook-sample", args=[section.slug]))
+
+    return build
+
+
+class PublicEbookOutlineView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="listPublicEbooks",
+        summary="List the e-books and their chapter outline (public)",
+        responses={200: PublicEbookListResponseSerializer},
+    )
+    def get(self, request: Request) -> Response:
+        shelf = services.public_ebook_shelf(sample_url=_sample_url_builder(request))
+        return Response({"ebooks": shelf})
+
+
+class ServeWhateverIsAsked(BaseContentNegotiation):
+    def select_parser(self, request: Request, parsers: Iterable[BaseParser]) -> BaseParser | None:
+        return next(iter(parsers), None)
+
+    def select_renderer(
+        self, request: Request, renderers: Iterable[BaseRenderer], format_suffix: str | None = None
+    ) -> tuple[BaseRenderer, str]:
+        chosen = next(iter(renderers))
+        return chosen, chosen.media_type
+
+
+class PublicEbookSampleView(APIView):
+    permission_classes = [AllowAny]
+    content_negotiation_class = ServeWhateverIsAsked
+
+    @extend_schema(
+        operation_id="downloadPublicEbookSample",
+        summary="Download a free sample chapter (public)",
+        responses={
+            (200, "application/pdf"): OpenApiTypes.BINARY,
+            302: OpenApiResponse(description="Redirect to the sample's own short-lived bucket URL."),
+            404: DetailSerializer,
+        },
+    )
+    def get(self, request: Request, slug: str) -> HttpResponseBase:
+        section = services.free_sample_section(slug)
+        if section is None:
+            return _not_found()
+        return _pdf_response(section)
+
+
+def _pdf_response(section: EbookSection) -> HttpResponseBase:
+    sample = section.sample_pdf
+    try:
+        url = sample.url
+        if url.startswith(("http://", "https://")):
+            return HttpResponseRedirect(url)
+        stream = sample.open("rb")
+    except (OSError, ValueError):
+        return _not_found()
+
+    headers = delivery_headers("application/pdf", f"{section.slug}.pdf")
+    response = FileResponse(stream, content_type=headers["Content-Type"])
+    response["Content-Disposition"] = headers["Content-Disposition"]
+    response["X-Content-Type-Options"] = headers["X-Content-Type-Options"]
+    return response
+
+
+SAMPLE_SENT = "The free chapter is on its way to your inbox."
+NO_SAMPLE = "That book has no free chapter to send."
+
+
+class PublicEbookSampleRequestView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [EbookSampleRequestThrottle]
+
+    @extend_schema(
+        operation_id="requestPublicEbookSample",
+        summary="Email the free sample chapter's link (public)",
+        request=EbookSampleRequestSerializer,
+        responses={
+            201: EbookSampleRequestResponseSerializer,
+            404: DetailSerializer,
+            409: DetailSerializer,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        form = EbookSampleRequestSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        sample_url = _sample_url_builder(request)
+        try:
+            asked = services.record_sample_request(
+                ebook_slug=form.validated_data["ebookSlug"],
+                email_address=form.validated_data["email"],
+                study_tips_consent=form.validated_data["studyTipsConsent"],
+                sample_url=sample_url,
+            )
+        except services.UnknownEbookError:
+            return _not_found()
+        except services.NoFreeSampleError:
+            return Response({"detail": NO_SAMPLE}, status=status.HTTP_409_CONFLICT)
+
+        return Response(
+            {"message": SAMPLE_SENT, "samplePdfUrl": sample_url(asked.section)},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class SignListView(APIView):
@@ -382,7 +528,7 @@ class SignListView(APIView):
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.PRACTICE):
             return plan_needed()
 
         signs = Sign.objects.all().order_by("category", "order", "name")
@@ -408,7 +554,7 @@ class PracticeSetView(APIView):
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.PRACTICE):
             return plan_needed()
 
         mode = request.query_params.get("mode", "random")
@@ -419,7 +565,7 @@ class PracticeSetView(APIView):
                 "options__sign", "options__image"
             )
         )
-        questions = entitlements.visible_questions(student, questions)
+        questions = entitlements.visible_questions(student, questions, feature=Feature.PRACTICE)
 
         if mode == "topic":
             topic = request.query_params.get("topic")
@@ -481,7 +627,7 @@ class OfflinePracticePackView(APIView):
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.PRACTICE):
             return plan_needed()
 
         questions = offline.practice_questions(student)
@@ -537,7 +683,7 @@ class OfflineAnswerBatchView(APIView):
     )
     def post(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.PRACTICE):
             return plan_needed()
 
         sent = request.data.get("answers") if isinstance(request.data, dict) else request.data
@@ -605,7 +751,8 @@ class AnswerView(APIView):
     )
     def post(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        feature = _answering_feature(student)
+        if feature is None:
             return plan_needed()
 
         submitted = AnswerRequestSerializer(data=request.data)
@@ -616,13 +763,21 @@ class AnswerView(APIView):
             .filter(pk=submitted.validated_data["questionId"])
             .first()
         )
-        if question is None or not entitlements.can_view(student, question):
+        if question is None or not entitlements.can_view(student, question, feature=feature):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Marked on the server: the answer was never in the page for the student to read.
         marked = services.mark_answer(question, submitted.validated_data["selected"])
         services.record_answer(student, question, marked["correct"])
         return Response(marked)
+
+
+def _answering_feature(student) -> str | None:
+    """What lets this student check an answer: practice, or the question checks inside lessons."""
+    for feature in (Feature.PRACTICE, Feature.LESSONS):
+        if entitlements.has_feature(student, feature):
+            return feature
+    return None
 
 
 def _exam_summary(
@@ -652,10 +807,25 @@ def _wholly_included(student, exam: PracticeExam) -> tuple[bool, list]:
     An exam is all-or-nothing. Serving a shortened version would make its pass mark unreachable,
     and leaving the shortened version out of the response would leak which chapters a dearer
     package contains, so an exam a student is not entitled to in full is simply not offered.
+
+    Mock-test packages ignore chapter package gates: the papers are the product, and those gates
+    exist for course tiers. Practice exams stay closed to mock-only buyers elsewhere.
     """
     asked = list(services.questions_in_exam(exam))
-    included = entitlements.visible_questions(student, services.questions_in_exam(exam)).count()
+    if entitlements.exams_from_mock_tests_only(student):
+        return True, asked
+    included = entitlements.visible_questions(student, services.questions_in_exam(exam), feature=Feature.EXAMS).count()
     return len(asked) == included, asked
+
+
+def _may_use_exam(student, exam: PracticeExam) -> tuple[bool, list]:
+    """Whether this student may see or sit ``exam``, and the questions it asks when they may.
+
+    Mock-test packages open real mock papers only. Practice exams are a separate product.
+    """
+    if entitlements.exams_from_mock_tests_only(student) and exam.kind != ExamKind.MOCK:
+        return False, []
+    return _wholly_included(student, exam)
 
 
 class ExamListView(APIView):
@@ -675,12 +845,15 @@ class ExamListView(APIView):
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.EXAMS):
             return plan_needed()
 
         exams = services.live(PracticeExam.objects.all()).order_by("order", "title")
         kind = request.query_params.get("kind")
-        if kind:
+        if entitlements.exams_from_mock_tests_only(student):
+            # Practice exams can be sold separately; a mock package must not open them.
+            exams = exams.filter(kind=ExamKind.MOCK) if not kind or kind == ExamKind.MOCK else exams.none()
+        elif kind:
             exams = exams.filter(kind=kind)
 
         exams = list(exams)
@@ -693,7 +866,7 @@ class ExamListView(APIView):
             if included:
                 listed.append(_exam_summary(exam, len(asked), hazards.get(exam.pk), history.get(exam.pk)))
 
-        return Response({"exams": listed})
+        return Response({"exams": listed, "sittingsRemaining": entitlements.exam_sittings_left(student)})
 
 
 class ExamDetailView(APIView):
@@ -708,16 +881,21 @@ class ExamDetailView(APIView):
     )
     def get(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.EXAMS):
             return plan_needed()
 
         exam = services.live(PracticeExam.objects.all()).filter(slug=slug).first()
         if exam is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        included, asked = _wholly_included(student, exam)
+        included, asked = _may_use_exam(student, exam)
         if not included:
             return plan_needed()
+
+        # Refused before the exam starts rather than only at the end, so nobody sits a whole
+        # paper to be told it cannot be marked.
+        if entitlements.exam_sittings_left(student) == 0:
+            return no_sittings_left()
 
         clips = list(services.clips_in_exam(exam))
 
@@ -749,14 +927,14 @@ class ExamSubmitView(APIView):
     )
     def post(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.EXAMS):
             return plan_needed()
 
         exam = services.live(PracticeExam.objects.all()).filter(slug=slug).first()
         if exam is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        included, _ = _wholly_included(student, exam)
+        included, _ = _may_use_exam(student, exam)
         if not included:
             return plan_needed()
 
@@ -771,7 +949,20 @@ class ExamSubmitView(APIView):
             submission.validated_data["answers"],
             submission.validated_data.get("hazardClicks"),
         )
-        attempt = services.record_sitting(student, exam, result, submission.validated_data.get("timeTakenSeconds"))
+
+        # Claimed and recorded in one transaction: the claim locks the purchases it counts, so
+        # two sittings sent at once cannot both spend the last one.
+        with transaction.atomic():
+            charged_to = entitlements.claim_exam_sitting(student)
+            if charged_to is None:
+                return no_sittings_left()
+            attempt = services.record_sitting(
+                student,
+                exam,
+                result,
+                submission.validated_data.get("timeTakenSeconds"),
+                subscription=charged_to,
+            )
 
         return Response({**result, "attemptId": attempt.pk, "timeTakenSeconds": attempt.time_taken_seconds})
 
@@ -786,12 +977,16 @@ class ExamAttemptListView(APIView):
     )
     def get(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.EXAMS):
             return plan_needed()
 
         exam = services.live(PracticeExam.objects.all()).filter(slug=slug).first()
         if exam is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        included, _ = _may_use_exam(student, exam)
+        if not included:
+            return plan_needed()
 
         attempts = [services.attempt_in_the_history(attempt) for attempt in services.attempts_of(student, exam)]
 
@@ -857,7 +1052,7 @@ class LessonCompleteView(APIView):
         if subchapter is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not entitlements.can_view(student, subchapter):
+        if not entitlements.can_view(student, subchapter, feature=Feature.LESSONS):
             return plan_needed()
 
         services.mark_lesson_done(student, subchapter)
@@ -879,7 +1074,7 @@ class VideoProgressView(APIView):
         if video is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not entitlements.can_view(student, video):
+        if not entitlements.can_view(student, video, feature=Feature.LESSONS):
             return plan_needed()
 
         sent = VideoProgressRequestSerializer(data=request.data)
@@ -924,11 +1119,11 @@ class SavedQuestionView(APIView):
     def _find(self, request: Request, key: str) -> tuple:
         """The question, if this student is allowed it. Addressed by key, as content refers to it."""
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.PRACTICE):
             return student, None
 
         question = services.live(Question.objects.all()).filter(key=key).first()
-        if question is None or not entitlements.can_view(student, question):
+        if question is None or not entitlements.can_view(student, question, feature=Feature.PRACTICE):
             return student, None
         return student, question
 
@@ -959,7 +1154,7 @@ class HazardClipListView(APIView):
     )
     def get(self, request: Request) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.HAZARD):
             return plan_needed()
 
         listing = services.live(
@@ -985,7 +1180,7 @@ class HazardClipView(APIView):
         return Response(services.student_view_of_clip(clip, stats[clip.pk]))
 
     def _find(self, student, slug: str):
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.HAZARD):
             return None
         clips = HazardClip.objects.select_related("media").prefetch_related("windows", "media__subtitles")
         return services.live(clips).filter(slug=slug).first()
@@ -1004,7 +1199,7 @@ class HazardAttemptView(APIView):
     )
     def post(self, request: Request, slug: str) -> Response:
         student = cast(User, request.user)
-        if not entitlements.has_access(student):
+        if not entitlements.has_feature(student, Feature.HAZARD):
             return plan_needed()
 
         clip = services.live(HazardClip.objects.prefetch_related("windows")).filter(slug=slug).first()

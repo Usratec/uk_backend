@@ -1,6 +1,8 @@
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.utils import timezone
 
+from apps.catalog.models import Feature, all_features
 from apps.core.models import TimestampedModel
 
 
@@ -23,6 +25,9 @@ class Subscription(TimestampedModel):
 
     Subscriptions are kept as history: buying again adds a row rather than replacing one, so past
     purchases stay visible. "Current" is worked out by the service layer, never stored.
+
+    ``features`` and ``exam_sittings`` are copied from the package when access is granted, so
+    changing a package in the admin afterwards never changes what somebody already bought.
     """
 
     user = models.ForeignKey(
@@ -41,6 +46,17 @@ class Subscription(TimestampedModel):
     package_expires_at = models.DateTimeField(help_text="When learning access ends.")
     account_expires_at = models.DateTimeField(help_text="When the account is closed.")
 
+    features = ArrayField(
+        models.CharField(max_length=20, choices=Feature.choices),
+        default=all_features,
+        help_text="What this purchase unlocks, as the package stood when it was bought.",
+    )
+    exam_sittings = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="How many exams this purchase allows. Empty for no limit.",
+    )
+
     expiry_reminder_sent_at = models.DateTimeField(null=True, blank=True)
 
     revoked_at = models.DateTimeField(null=True, blank=True, help_text="When this access was withdrawn.")
@@ -57,6 +73,21 @@ class Subscription(TimestampedModel):
     @property
     def is_revoked(self) -> bool:
         return self.revoked_at is not None
+
+    def grants(self, feature: str) -> bool:
+        return feature in self.features
+
+    @property
+    def sittings_used(self) -> int:
+        """Exams charged to this purchase. Only counted against a limit, but recorded either way."""
+        return self.sittings.count()
+
+    @property
+    def sittings_left(self) -> int | None:
+        """Exams still to sit on this purchase, never negative. None when there is no limit."""
+        if self.exam_sittings is None:
+            return None
+        return max(0, self.exam_sittings - self.sittings_used)
 
     @property
     def is_active(self) -> bool:

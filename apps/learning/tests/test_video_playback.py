@@ -9,6 +9,7 @@ from django.urls import reverse
 
 from apps.core.models import PublishStatus
 from apps.integrations import cloudfront
+from apps.learning import key_auth
 from apps.learning.models import (
     ContentType,
     EbookSection,
@@ -147,10 +148,21 @@ class TestWhoMayPlay:
 
         assert learner.get(playback_url(orphan.upload_token)).status_code == 402
 
-    def test_a_video_still_processing_says_so_rather_than_handing_out_a_url(self, learner, lesson_video, distribution):
+    def test_a_video_still_processing_is_served_from_its_source_meanwhile(self, learner, lesson_video, distribution):
         _, asset = lesson_video
         MediaAsset.objects.filter(pk=asset.pk).update(
             processing_status=VideoProcessingStatus.PROCESSING, hls_master_key=""
+        )
+
+        response = learner.get(playback_url(asset.upload_token))
+
+        assert response.status_code == 200
+        assert response.json()["playbackType"] == "progressive"
+
+    def test_a_video_whose_upload_never_finished_says_it_is_not_ready(self, learner, lesson_video, distribution):
+        _, asset = lesson_video
+        MediaAsset.objects.filter(pk=asset.pk).update(
+            processing_status=VideoProcessingStatus.PENDING_UPLOAD, hls_master_key=""
         )
 
         response = learner.get(playback_url(asset.upload_token))
@@ -573,3 +585,137 @@ class TestDedicatedVideoBucket:
         assert response.status_code == 200
         assert response.json()["playbackType"] == "progressive"
         assert DISTRIBUTION not in response.json()["url"]
+
+
+KEY = b"0123456789abcdef"
+
+
+def key_url(media_id) -> str:
+    return reverse("learn-media-key", args=[media_id])
+
+
+@pytest.fixture
+def encrypted_lesson(lesson_video):
+    content, asset = lesson_video
+    MediaAsset.objects.filter(pk=asset.pk).update(hls_key=KEY)
+    asset.refresh_from_db()
+    return content, asset
+
+
+class TestTheSegmentKeyEndpoint:
+    def test_a_learner_who_may_watch_is_given_the_raw_key(self, learner, encrypted_lesson):
+        _, asset = encrypted_lesson
+
+        response = learner.get(key_url(asset.upload_token))
+
+        assert response.status_code == 200
+        assert response.content == KEY
+        assert len(response.content) == 16
+
+    def test_it_is_served_as_bytes_a_player_can_use(self, learner, encrypted_lesson):
+        _, asset = encrypted_lesson
+
+        response = learner.get(key_url(asset.upload_token))
+
+        assert response["Content-Type"] == "application/octet-stream"
+        assert response["Content-Length"] == "16"
+
+    def test_it_is_never_cached(self, learner, encrypted_lesson):
+        _, asset = encrypted_lesson
+
+        response = learner.get(key_url(asset.upload_token))
+
+        assert response["Cache-Control"] == "private, no-store"
+
+    def test_a_signed_out_visitor_is_refused(self, api, encrypted_lesson):
+        _, asset = encrypted_lesson
+
+        response = api.get(key_url(asset.upload_token))
+
+        assert response.status_code == 401
+        assert KEY not in response.content
+
+    def test_a_signed_in_user_without_a_subscription_is_refused(self, api, editor, encrypted_lesson):
+        _, asset = encrypted_lesson
+        no_plan = sign_in(api, editor)
+
+        response = no_plan.get(key_url(asset.upload_token))
+
+        assert response.status_code == 403
+        assert KEY not in response.content
+
+    def test_a_learner_cannot_fetch_the_key_of_a_video_they_have_not_bought(self, learner, encrypted_lesson):
+        other = ready_video("Something they never bought")
+        MediaAsset.objects.filter(pk=other.pk).update(hls_key=KEY)
+
+        response = learner.get(key_url(other.upload_token))
+
+        assert response.status_code == 403
+        assert KEY not in response.content
+
+    def test_an_unknown_video_is_not_found(self, learner):
+        assert learner.get(key_url(uuid4())).status_code == 404
+
+    def test_a_video_with_no_key_is_not_found(self, learner, lesson_video):
+        _, asset = lesson_video
+
+        assert learner.get(key_url(asset.upload_token)).status_code == 404
+
+
+class TestTheSafariCookie:
+    def test_playback_hands_out_a_pass_for_the_key(self, learner, encrypted_lesson, distribution):
+        _, asset = encrypted_lesson
+
+        response = learner.get(playback_url(asset.upload_token))
+
+        assert response.status_code == 200
+        cookie = response.cookies[key_auth.COOKIE_NAME]
+        assert cookie["httponly"]
+        assert cookie["secure"]
+        assert cookie["samesite"] == "None"
+        assert cookie["domain"] == ".1theory.test"
+
+    def test_the_pass_alone_fetches_the_key_without_a_token(self, api, learner, encrypted_lesson, distribution):
+        _, asset = encrypted_lesson
+        learner.get(playback_url(asset.upload_token))
+        pass_value = learner.cookies[key_auth.COOKIE_NAME].value
+
+        api.cookies[key_auth.COOKIE_NAME] = pass_value
+        response = api.get(key_url(asset.upload_token))
+
+        assert response.status_code == 200
+        assert response.content == KEY
+
+    def test_a_forged_pass_is_refused(self, api, encrypted_lesson):
+        _, asset = encrypted_lesson
+
+        api.cookies[key_auth.COOKIE_NAME] = "not-a-real-signature"
+        response = api.get(key_url(asset.upload_token))
+
+        assert response.status_code == 401
+
+    def test_an_expired_pass_is_refused(self, student):
+        token = key_auth.issue(user=student())
+
+        assert key_auth.holder_of(token, max_age_seconds=-1) is None
+
+    def test_the_pass_still_does_not_let_them_watch_something_else(self, api, learner, encrypted_lesson, distribution):
+        _, asset = encrypted_lesson
+        learner.get(playback_url(asset.upload_token))
+        pass_value = learner.cookies[key_auth.COOKIE_NAME].value
+        other = ready_video("Something they never bought")
+        MediaAsset.objects.filter(pk=other.pk).update(hls_key=KEY)
+
+        api.cookies[key_auth.COOKIE_NAME] = pass_value
+        response = api.get(key_url(other.upload_token))
+
+        assert response.status_code in (402, 403)
+        assert KEY not in response.content
+
+    def test_no_pass_is_set_when_there_is_no_distribution(self, learner, encrypted_lesson):
+        _, asset = encrypted_lesson
+
+        response = learner.get(playback_url(asset.upload_token))
+
+        assert response.status_code == 200
+        assert key_auth.COOKIE_NAME not in response.cookies

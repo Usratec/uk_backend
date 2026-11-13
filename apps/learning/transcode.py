@@ -1,10 +1,12 @@
 import json
 import logging
 import math
+import secrets
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from django.conf import settings
@@ -81,6 +83,29 @@ class HlsOutput:
 
 
 @dataclass(frozen=True)
+class HlsEncryption:
+    key: bytes
+    key_uri: str
+    iv: bytes = field(default_factory=lambda: secrets.token_bytes(HLS_IV_BYTES))
+
+    def __post_init__(self) -> None:
+        if len(self.key) != HLS_KEY_BYTES:
+            raise TranscodeError(f"An AES-128 key is {HLS_KEY_BYTES} bytes, not {len(self.key)}.")
+        if len(self.iv) != HLS_IV_BYTES:
+            raise TranscodeError(f"An AES-128 IV is {HLS_IV_BYTES} bytes, not {len(self.iv)}.")
+        if not self.key_uri:
+            raise TranscodeError("Encrypted output needs a key URL to put in the playlist.")
+
+
+def new_hls_key() -> bytes:
+    return secrets.token_bytes(HLS_KEY_BYTES)
+
+
+def new_hls_iv() -> bytes:
+    return secrets.token_bytes(HLS_IV_BYTES)
+
+
+@dataclass(frozen=True)
 class Mp4Output:
     name: str
     height: int
@@ -92,6 +117,12 @@ class Mp4Output:
 REQUIRED_ENCODERS = ("libx264", "aac")
 
 FRAME_RATE_TOLERANCE = 0.5
+
+HLS_KEY_BYTES = 16
+
+HLS_IV_BYTES = 16
+
+KEY_TAG = "#EXT-X-KEY:METHOD=AES-128"
 
 
 def tool_report() -> dict:
@@ -269,7 +300,14 @@ def probe(path: str) -> SourceVideo:
     )
 
 
-def to_hls(*, source_path: str, output_dir: str, source: SourceVideo, renditions: list[Rendition]) -> HlsOutput:
+def to_hls(
+    *,
+    source_path: str,
+    output_dir: str,
+    source: SourceVideo,
+    renditions: list[Rendition],
+    encryption: HlsEncryption | None = None,
+) -> HlsOutput:
     if not renditions:
         raise TranscodeError("There is no rendition to produce.")
 
@@ -277,6 +315,40 @@ def to_hls(*, source_path: str, output_dir: str, source: SourceVideo, renditions
     for rendition in renditions:
         (destination / rendition.name).mkdir(parents=True, exist_ok=True)
 
+    secret_dir = tempfile.mkdtemp(prefix="hls-key-")
+    try:
+        return _encode_hls(
+            source_path=source_path,
+            destination=destination,
+            source=source,
+            renditions=renditions,
+            encryption=encryption,
+            secret_dir=Path(secret_dir),
+        )
+    finally:
+        shutil.rmtree(secret_dir, ignore_errors=True)
+
+
+def _key_info_file(encryption: HlsEncryption, secret_dir: Path) -> Path:
+    key_file = secret_dir / "video.key"
+    key_file.write_bytes(encryption.key)
+    key_file.chmod(0o600)
+
+    info = secret_dir / "video.keyinfo"
+    info.write_text(f"{encryption.key_uri}\n{key_file}\n{encryption.iv.hex()}\n")
+    info.chmod(0o600)
+    return info
+
+
+def _encode_hls(
+    *,
+    source_path: str,
+    destination: Path,
+    source: SourceVideo,
+    renditions: list[Rendition],
+    encryption: HlsEncryption | None,
+    secret_dir: Path,
+) -> HlsOutput:
     segment_seconds = settings.VIDEO_HLS_SEGMENT_SECONDS
     command = [
         _tool(settings.FFMPEG_PATH),
@@ -341,6 +413,12 @@ def to_hls(*, source_path: str, output_dir: str, source: SourceVideo, renditions
         "mpegts",
         "-hls_list_size",
         "0",
+    ]
+
+    if encryption is not None:
+        command += ["-hls_key_info_file", str(_key_info_file(encryption, secret_dir))]
+
+    command += [
         "-hls_segment_filename",
         str(destination / "%v" / "segment_%05d.ts"),
         "-master_pl_name",
@@ -362,6 +440,8 @@ def to_hls(*, source_path: str, output_dir: str, source: SourceVideo, renditions
         segments = sorted((destination / rendition.name).glob("segment_*.ts"))
         if not playlist.exists() or not segments:
             raise TranscodeError(f"The {rendition.name} rendition is missing its playlist or segments.")
+        if encryption is not None and KEY_TAG not in playlist.read_text():
+            raise TranscodeError(f"The {rendition.name} playlist came out without its encryption key.")
         produced.append(
             {
                 "name": rendition.name,

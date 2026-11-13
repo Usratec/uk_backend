@@ -53,26 +53,38 @@ container start, so scaling out can't run them concurrently.
 | Health | `GET /api/healthcheck/` |
 | Authentication | `POST /api/auth/register/`, `login/`, `logout/`, `token/refresh/`, `password/reset/`, `password/reset/confirm/`; `GET /api/auth/email/verify/`, `POST /api/auth/email/verify/resend/` |
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
-| Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
-| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/` |
+| Catalogue | `GET /api/packages/?product_line=course\|mock_tests`, `GET /api/packages/<slug>/` |
+| Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
-| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
+| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/cover-image/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
 | Sitemap | `GET /api/sitemap.xml` |
 | Payments | `POST /api/payments/intent/`, `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
-| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
+| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
+| Public e-books | `GET /api/learn/ebook/public/`, `GET /api/learn/ebook/public/samples/<slug>/`, `POST /api/learn/ebook/public/sample-request/` |
 | Documentation | `/api/swagger/`, `/api/redoc/`, `/api/schema/` |
 | Admin | `/api/admin/` |
 
-The catalogue and site-content reads are public and unpaginated: the pages that show them show
-them all at once, and unpublished items are never returned. Everything else needs a token.
+The catalogue, site-content and public e-book reads are public and unpaginated: the pages that show
+them show them all at once, and unpublished items are never returned. Everything else needs a
+token.
 
 The blog is the one public list that *is* paginated, because it grows without limit: `GET /api/blog/`
-returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>`.
-`GET /api/blog/<slug>/` adds the post's rich text. Both return only posts that are published *and*
-whose publish date has passed, so a draft, an unpublished post and a post scheduled for next week
-are all 404 — the status and the date are checked in the query, not after it.
+returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>` and
+`?featured=true|false`. `GET /api/blog/<slug>/` adds the post's rich text. Both return only posts
+that are published *and* whose publish date has passed, so a draft, an unpublished post and a post
+scheduled for next week are all 404 — the status and the date are checked in the query, not after it.
+
+Each post carries what the blog design shows: `excerpt` (the summary on the cards, written
+separately from `meta_description`, which is for search engines), `cover_image`
+(`{url, alt, width, height}`, or null — the cover on the cards and at the top of the article, which
+is not the sharing image in `social_image_url`), `reading_time` in minutes, `featured` for the
+Featured read at the top of the blog, and `updated_at` for `<lastmod>`. The detail response adds
+`study_tip` (`{title, text, button_label, button_link}`, or null) for the Study tip box under the
+article. Reading time is worked out from the content on every save, so the listing carries it
+without the content; a cover needs a description, and a study tip needs both a title and its words,
+with a button label and link that stand or fall together.
 
 When a post's slug changes, the old address keeps working: it answers `301 Moved Permanently` with a
 `Location` header for the post's new API address and a body of
@@ -108,14 +120,20 @@ Stripe's signed webhook says so.
   page with Stripe's Payment Element, so card details never reach this server, and there is no
   redirect. Returns a `client_secret` the browser confirms, then the page polls
   `GET /api/payments/orders/<uuid>/`. The outcome arrives as `payment_intent.succeeded` or
-  `payment_intent.payment_failed`.
+  `payment_intent.payment_failed`. A declined card leaves the order `pending` with
+  `failure_code`/`failure_message` set, so the learner can try another card on the same payment;
+  `payment_intent.requires_action` and `payment_intent.processing` clear that reason when the next
+  attempt starts, so the Stripe webhook endpoint must be subscribed to all four events.
 * **Redirect** (`POST /api/payments/checkout/`, open to guests). Creates a pending order and sends
   the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
   as the fallback while the embedded flow is being rolled out.
 
-Both end in the same fulfilment, and `automatic_payment_methods` is what lets the Payment Element
-offer Apple Pay and Google Pay — Stripe decides which wallets the customer's browser can actually
-show. Each paying domain has to be registered with Stripe first, in the dashboard or with:
+Both end in the same fulfilment. The embedded intent is created with
+`allowed_payment_method_types: ["card"]`, which has to match the types the frontend builds its
+Payment Element with or Stripe refuses to confirm the payment. Apple Pay and Google Pay are not
+listed there because they are not payment method types of their own — both are cards, and `card`
+is what carries them. Each paying domain still has to be registered with Stripe before the wallet
+buttons appear, in the dashboard or with:
 
 ```bash
 uv run python manage.py register_stripe_apple_pay_domain stage.1theory.co.uk
@@ -126,6 +144,21 @@ To receive webhooks locally, forward them with the Stripe CLI:
 ```bash
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
 ```
+
+### Contact form
+
+`POST /api/content/contact/` takes the contact page's form and delivers it to the support inbox.
+It is public: a visitor who is not signed in may send a message, and no token is required.
+
+```json
+{ "name": "Ada Lovelace", "email": "ada@example.com", "topic": "billing", "message": "My card was charged twice." }
+```
+
+`name` is 2–60 characters, `email` must be a valid address, `message` is required and at most
+5000 characters, and `topic` is optional — one of `account`, `billing`, `course`, `other`.
+Leading and trailing whitespace is trimmed from all three text fields. A success is `201` with
+`{"message": "Your message has been sent successfully."}`; a bad form is `400` with DRF's
+field-level errors (`{"email": ["Enter a valid email address."]}`).
 
 ### Purchase consent
 
@@ -179,13 +212,66 @@ to repeat: Stripe redelivers events, and each step checks whether it has already
 
 Access is two dates. `package_expires_at` ends learning access; `account_expires_at` is later by
 `ACCOUNT_LIFETIME_COEFFICIENT` (1.5, editable in the admin), so a lapsed customer can still sign
-in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
-for is lost.
+in and buy again. Buying a course package while a course is live adds the new period onto the
+end, so nothing paid for is lost, even if what courses unlock has changed in between. Anything
+else — mock tests on top of a course, a course on top of mock tests, or a second mock test
+package — starts straight away and runs alongside. The account expiry only ever moves later.
+
+While purchases overlap, the cabinet headline and the CRM's current plan show the course that has
+not ended, falling back to the purchase reaching furthest ahead. Expiry reminders and "access
+ended" notices are skipped only when another purchase carries on and unlocks at least as much, so
+a course ending under live mock tests is still announced, and mock tests ending mid-course are not.
+Material limited to certain packages is open when any live package that unlocks that part of the
+product is listed.
+
+### Packages and features
+
+A package unlocks one or more **features**, ticked in **Django admin → Catalog → Packages**:
+
+| Feature | Unlocks |
+| --- | --- |
+| `lessons` | Topics, lessons, lesson videos and the question checks inside lessons |
+| `practice` | Practice questions, road signs, saved questions and the offline pack |
+| `hazard` | The hazard perception clip library |
+| `exams` | Practice exams and mock tests (`/api/learn/exams/…`) |
+| `ebook` | E-books whose **edition** is *Full e-book* |
+| `compact_ebook` | E-books whose **edition** is *Compact e-book* |
+
+Course packages unlock everything, which is what every package did before features existed;
+existing packages and purchases were migrated that way, so nobody's access changed. Selling another
+part on its own later means adding a value to `Feature` and gating the endpoints that serve it.
+
+**Product line** (`course` or `mock_tests`) decides which sales block lists a package. It does not
+affect access. `GET /api/packages/` lists course packages; `?product_line=mock_tests` lists the mock
+test block; any other value is a 400. Each package now also returns `product_line`, `features` and
+`exam_sittings`. `GET /api/packages/<slug>/` finds a package whichever block it is in, so checkout
+works the same, purchase consent included.
+
+**Exam sittings.** A package with `exams` may set `exam_sittings`; empty means no limit. Every
+submitted exam is charged to one live purchase: one without a limit first (so a course holder never
+spends the mock tests they bought), otherwise the mock test package expiring soonest. Once none are
+left, starting or submitting an exam answers 402 with `"No mock tests left. Buy more to sit
+another."`; past results stay readable. `GET /api/learn/exams/` returns `sittingsRemaining`
+(`null` for no limit).
+
+What a purchase unlocks and how many sittings it allows are copied onto the subscription when it is
+granted, so editing a package never changes what somebody already bought. The cabinet's
+`GET /api/cabinet/subscription/` adds `features` (everything live purchases unlock between them)
+and `exam_sittings_remaining`, and each period adds `product_line`, `features` and `exam_sittings`.
+The order admin shows the product line and the access period; the subscription admin and the CRM's
+access history show what each purchase unlocks and sittings used against the allowance.
+
+A migration seeds three mock test packages from the design — `mock-5` (Starter, £5.99, 5 sittings),
+`mock-10` (Saver, £9.99, 10, featured) and `mock-30` (Best value, £19.99, 30) — each 30 days with
+exams and the compact e-book, active on migrate. Prices, sittings and duration remain editable in
+admin. The compact e-book itself is an `Ebook` with edition *Compact e-book*, written and published
+by the content team.
 
 Scheduled jobs run from the `beat` service: publishing blog posts whose time has come every five
 minutes, expiry reminders at 09:00, telling learners their
 access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
-lost orders every ten minutes, and telling the CRM about access it was never told about, hourly.
+lost orders every ten minutes, telling the CRM about access it was never told about, hourly, and
+delivering contact messages that are still pending, hourly.
 There is deliberately no job to revoke learning access, because access is derived from the dates
 every time it is checked.
 
@@ -395,6 +481,70 @@ and mock tests together — newest first, in one request instead of one request 
 }
 ```
 
+### The public e-book landing page
+
+Three endpoints serve the e-book landing page to visitors with no account. They are the only part
+of the learning material anybody can reach without a token, so they are built from their own
+whitelist of fields rather than by filtering the student's responses.
+
+`GET /api/learn/ebook/public/` returns every published e-book with its chapter outline:
+
+```json
+{
+  "ebooks": [
+    {
+      "slug": "study-guide",
+      "title": "Study guide",
+      "description": "Every rule, with room to write.",
+      "sections": [
+        {
+          "slug": "chapter-one",
+          "number": 1,
+          "title": "Introduction",
+          "summary": "Learn the fundamentals.",
+          "isFreeSample": true,
+          "samplePdfUrl": "https://api.example.com/api/learn/ebook/public/samples/chapter-one/"
+        },
+        {
+          "slug": "chapter-two",
+          "number": 2,
+          "title": "Advanced concepts",
+          "summary": "Explore advanced concepts.",
+          "isFreeSample": false,
+          "samplePdfUrl": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+That is the whole response. No chapter text, no cover, no reading progress, no link to the book's
+own document and nothing about any account — the query does not even read the `body_html` column.
+`isFreeSample` is the designation staff made in the back office; `samplePdfUrl` is null until the
+sample PDF for that chapter has actually been uploaded, so the page can tell the two apart instead
+of showing a button that cannot work.
+
+`GET /api/learn/ebook/public/samples/<slug>/` hands over that chapter's PDF, with no token. The slug names a row, never
+a path, and it is looked up only among live chapters of live books that staff flagged *and* gave a
+sample PDF of their own — anything else, including the chapters of the same book, answers 404. With
+a bucket configured the endpoint redirects to a short-lived signed URL for that one object, so the
+bytes never pass through the single worker.
+
+The sample is a separate file from the book, uploaded on the chapter under **The free sample** and
+stored under its own `learning/ebook-sample/` prefix. The book's own document is untouched by all
+of this: it is still served only to buyers, through `GET /api/learn/ebook/<slug>/`, as a signed URL
+that expires. Nothing in the public path reads it, and there is no fallback to it when a sample is
+missing. One chapter per book may be given away, enforced by a database constraint.
+
+`POST /api/learn/ebook/public/sample-request/` takes the "read chapter one for free" form with
+`{"email": "...", "ebookSlug": "study-guide", "studyTipsConsent": true}` and emails the public link above — never the book's own URL. It answers 201 with
+`{"message": ..., "samplePdfUrl": ...}`, 404 for a book that is not published and 409 for one with
+no free chapter, and is throttled to 10 requests an hour per IP address. `studyTipsConsent` is
+recorded only when the visitor ticks it, dated as the record of consent; left out it is false, and
+it is never a condition of the download, which needs no email address at all. The requests are
+listed read-only in the back office under **Ebook sample requests**.
+
 ### Learner notifications
 
 `GET /api/notifications/` returns the signed-in learner's notifications, newest first, as
@@ -442,6 +592,32 @@ both.
 pipeline encodes every output at exactly the rate the source arrived at — `fps=30000/1001` stays
 `30000/1001`, not 30 — and a rate outside `VIDEO_MIN_FRAME_RATE`–`VIDEO_MAX_FRAME_RATE` is refused
 with a message saying what to re-export at, rather than being quietly halved or capped to fit.
+
+Staff upload a video on **Media assets → Add media asset** and it is queued for processing as the
+page saves — the job is dispatched on commit, so the worker can never read a row that is not there
+yet. The asset shows `queued`, then `processing`, then `ready` in the list, with the reason in the
+admin if a run fails. Replacing the file on an existing asset queues the new one; renaming it does
+not. While a first upload is being transcoded the learner is served its source file, as the site
+did before there was any transcoding, so uploading a lesson video does not take it off the site for
+the length of an encode.
+
+#### Encrypted segments
+
+Segments are AES-128 encrypted, so a `.ts` file lifted off the wire will not play in anything. Each
+video has its own key, held in the database and **never** written to the bucket or served through
+CloudFront — the encoder writes the key to a directory outside the one that gets uploaded. The
+playlist points at this API:
+
+```
+#EXT-X-KEY:METHOD=AES-128,URI="https://api.example.com/api/learn/media/<id>/key/"
+```
+
+`GET /api/learn/media/<id>/key/` answers with the raw 16 bytes as `application/octet-stream` and
+`Cache-Control: private, no-store`, for a signed-in learner who may watch *that* video — the same
+check playback uses — and 401/403 otherwise.
+
+Be clear about what this buys: it stops casual copying, not a determined ripper. Anyone allowed to
+watch can read the key out of their own browser. It is not DRM and should not be described as such.
 
 ### PWA Web Push
 
@@ -525,6 +701,15 @@ model permissions rather than a role, so a superuser can edit it without grantin
 Each list edits the sort order and the published flag in place, and carries publish and unpublish
 actions for a selection.
 
+Messages sent through the contact form sit in the same section, as *Contact messages*, but are
+read-only and gated like the CRM — the Support Agent role, or `content.view_contactsubmission`
+granted to an account — because they hold a visitor's name, address and whatever they wrote. Each
+row says whether the support inbox has received it, so a message the mail server rejected is
+visible rather than lost. A signed-in visitor's account is shown by id rather than by email
+address: reading contact messages should not also reveal the address a customer registered under,
+which is the CRM's to show. Nothing on these screens can be edited or deleted, whatever
+permissions an account is given.
+
 The landing page is managed under **Landing page**, on the same model permissions. Its wording is
 a flat key → value store, so marketing can reword the page without a frontend deploy; the note
 beside each key says where the text appears and is never sent to the site. Its pictures and videos
@@ -549,6 +734,16 @@ section and hazard clip that plays the file, and the API hands them out with the
 Only videos show the table, only `.vtt` files whose contents really are WebVTT are accepted, and a
 video with no tracks is served exactly as it was before.
 
+E-books carry a free sample chapter. On a section's page, **The free sample** holds a tick box and
+an upload: tick the box for the one chapter the business is happy to give away, and upload a PDF of
+that chapter alone. The upload is refused unless the bytes really are a PDF, the form refuses the
+tick box without a file, and a second free chapter in the same book is refused by the database. The
+sample is stored apart from the book's own document, which is never served in its place — see *The
+public e-book landing page* above. Visitors who asked for the chapter by email are listed, read
+only, under **Ebook sample requests**, with whether they agreed to study tips and when. Those rows
+are addresses and marketing consent rather than course material, so writing or releasing e-books
+does not come with them: they are granted by the **Marketing Support** role alone.
+
 Reaching the CRM is granted on purpose. `apps/staff` gates the areas holding customer data on
 permissions actually recorded against an account, so being a Django superuser is not by itself a
 way in — a superuser must grant themselves the permission first. That is least privilege by
@@ -559,6 +754,8 @@ Roles are declared in code, in each app's `roles.py`, and created by a migration
 | Role | May |
 |---|---|
 | CRM Manager | Look customers up and read their records |
+| Marketing Support | Read the visitors who asked for a free sample chapter |
+| Support Agent | Read the contact form's messages |
 
 `uv run python manage.py sync_roles` sets each role group's permissions to exactly what the code
 declares, so permissions added by hand in the admin are taken back. No role carries

@@ -362,3 +362,167 @@ class TestARealProgressiveMp4:
         for rendition in renditions:
             assert (output / rendition.name / "index.m3u8").is_file()
             assert list((output / rendition.name).glob("segment_*.ts"))
+
+
+KEY_URI = "https://api.1theory.test/api/learn/media/abc/key/"
+
+
+def encrypted(tmp_path, source: str, key: bytes = b"0123456789abcdef"):
+    probed = transcode.probe(source)
+    renditions = transcode.renditions_for(probed)
+    output = tmp_path / "enc"
+    output.mkdir(exist_ok=True)
+    result = transcode.to_hls(
+        source_path=source,
+        output_dir=str(output),
+        source=probed,
+        renditions=renditions,
+        encryption=transcode.HlsEncryption(key=key, key_uri=KEY_URI),
+    )
+    return probed, renditions, output, result
+
+
+def plays(path: str) -> bool:
+    try:
+        transcode.probe(path)
+    except transcode.ProbeError:
+        return False
+    return True
+
+
+class TestAesEncryptedOutput:
+    def test_every_variant_playlist_names_the_key(self, tmp_path):
+        _, renditions, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=2, height=720))
+
+        for rendition in renditions:
+            playlist = (output / rendition.name / "index.m3u8").read_text()
+            assert "#EXT-X-KEY:METHOD=AES-128" in playlist
+            assert f'URI="{KEY_URI}"' in playlist
+
+    def test_the_key_itself_is_never_written_beside_the_output(self, tmp_path):
+        key = b"0123456789abcdef"
+
+        _, _, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=1, height=360), key=key)
+
+        written = [path for path in output.rglob("*") if path.is_file()]
+        assert written
+        for path in written:
+            assert path.suffix not in (".key", ".keyinfo"), f"{path} would be uploaded to the bucket"
+            if path.suffix in (".m3u8",):
+                continue
+            assert key not in path.read_bytes(), f"the key leaked into {path}"
+
+    def test_a_downloaded_segment_does_not_play_on_its_own(self, tmp_path):
+        _, renditions, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=2, height=360))
+
+        segment = next((output / renditions[0].name).glob("segment_*.ts"))
+
+        assert segment.stat().st_size > 0
+        assert plays(str(segment)) is False
+
+    def test_the_same_segment_plays_once_it_is_decrypted_with_the_key(self, tmp_path):
+        key = b"0123456789abcdef"
+        _, renditions, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=2, height=360), key=key)
+        folder = output / renditions[0].name
+        segment = sorted(folder.glob("segment_*.ts"))[0]
+
+        plain = decrypt(segment, key, declared_iv(folder / "index.m3u8"))
+        clear = tmp_path / "decrypted.ts"
+        clear.write_bytes(plain)
+
+        assert plain[0] == 0x47, "a cleartext MPEG-TS packet starts with the sync byte"
+        assert plays(str(clear)) is True
+
+    def test_an_unencrypted_encode_is_still_plain(self, tmp_path):
+        _, renditions, output, _ = encode(tmp_path, clip(tmp_path, seconds=2, height=360))
+
+        playlist = (output / renditions[0].name / "index.m3u8").read_text()
+        segment = next((output / renditions[0].name).glob("segment_*.ts"))
+
+        assert "#EXT-X-KEY" not in playlist
+        assert plays(str(segment)) is True
+
+
+def declared_iv(playlist: Path) -> bytes:
+    line = next(entry for entry in playlist.read_text().splitlines() if entry.startswith("#EXT-X-KEY"))
+    return bytes.fromhex(line.split("IV=0x")[1].split(",")[0])
+
+
+def decrypt(path: Path, key: bytes, iv: bytes) -> bytes:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    raw = path.read_bytes()
+    plain = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+    out = plain.update(raw) + plain.finalize()
+    return out[: -out[-1]] if out and out[-1] <= 16 else out
+
+
+class TestTheInitialisationVector:
+    def test_the_playlist_declares_one_that_is_not_all_zeros(self, tmp_path):
+        _, renditions, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=2, height=360))
+
+        playlist = output / renditions[0].name / "index.m3u8"
+
+        assert "IV=0x" in playlist.read_text()
+        assert declared_iv(playlist) != bytes(16)
+
+    def test_it_is_the_one_the_encoder_was_given(self, tmp_path):
+        source = clip(tmp_path, seconds=2, height=360)
+        probed = transcode.probe(source)
+        chosen = transcode.HlsEncryption(key=b"0123456789abcdef", key_uri=KEY_URI)
+        output = tmp_path / "chosen"
+        output.mkdir()
+
+        transcode.to_hls(
+            source_path=source,
+            output_dir=str(output),
+            source=probed,
+            renditions=transcode.renditions_for(probed),
+            encryption=chosen,
+        )
+
+        assert declared_iv(output / "360p" / "index.m3u8") == chosen.iv
+
+    def test_two_videos_do_not_share_an_iv(self, tmp_path):
+        source = clip(tmp_path, seconds=2, height=360)
+        probed = transcode.probe(source)
+        seen = []
+        for run in range(2):
+            output = tmp_path / f"run{run}"
+            output.mkdir()
+            transcode.to_hls(
+                source_path=source,
+                output_dir=str(output),
+                source=probed,
+                renditions=transcode.renditions_for(probed),
+                encryption=transcode.HlsEncryption(key=transcode.new_hls_key(), key_uri=KEY_URI),
+            )
+            seen.append(declared_iv(output / "360p" / "index.m3u8"))
+
+        assert seen[0] != seen[1]
+
+    def test_every_segment_of_a_video_uses_the_declared_iv(self, tmp_path):
+        key = b"0123456789abcdef"
+        _, renditions, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=14, height=360), key=key)
+        folder = output / renditions[0].name
+        iv = declared_iv(folder / "index.m3u8")
+        segments = sorted(folder.glob("segment_*.ts"))
+
+        assert len(segments) > 1
+        for segment in segments:
+            # The IV only touches the first block, so a tampered one is caught on the first byte.
+            assert decrypt(segment, key, iv)[0] == 0x47, f"{segment.name} does not use the declared IV"
+            tampered = bytes([iv[0] ^ 0xFF]) + iv[1:]
+            assert decrypt(segment, key, tampered)[0] != 0x47
+
+    def test_a_segment_decrypted_with_the_declared_iv_plays(self, tmp_path):
+        key = b"0123456789abcdef"
+        _, renditions, output, _ = encrypted(tmp_path, clip(tmp_path, seconds=2, height=360), key=key)
+        folder = output / renditions[0].name
+        iv = declared_iv(folder / "index.m3u8")
+
+        clear = tmp_path / "clear.ts"
+        clear.write_bytes(decrypt(sorted(folder.glob("segment_*.ts"))[0], key, iv))
+
+        assert plays(str(clear)) is True
+        assert transcode.probe(str(clear)).has_audio is True
