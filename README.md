@@ -120,7 +120,10 @@ Stripe's signed webhook says so.
   page with Stripe's Payment Element, so card details never reach this server, and there is no
   redirect. Returns a `client_secret` the browser confirms, then the page polls
   `GET /api/payments/orders/<uuid>/`. The outcome arrives as `payment_intent.succeeded` or
-  `payment_intent.payment_failed`.
+  `payment_intent.payment_failed`. A declined card leaves the order `pending` with
+  `failure_code`/`failure_message` set, so the learner can try another card on the same payment;
+  `payment_intent.requires_action` and `payment_intent.processing` clear that reason when the next
+  attempt starts, so the Stripe webhook endpoint must be subscribed to all four events.
 * **Redirect** (`POST /api/payments/checkout/`, open to guests). Creates a pending order and sends
   the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
   as the fallback while the embedded flow is being rolled out.
