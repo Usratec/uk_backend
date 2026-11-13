@@ -173,11 +173,23 @@ class PublishableAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 
     @admin.action(description="Take the selected material off the site")
     def unpublish_selected(self, request: HttpRequest, queryset) -> None:
+        unpublished = 0
+        already_draft = 0
         for instance in queryset:
+            was_draft = instance.status == PublishStatus.DRAFT
             try:
                 services.unpublish(actor=request.user, instance=instance)
             except Exception:
                 self.message_user(request, f"You may not unpublish {instance}.", level=messages.ERROR)
+                continue
+            if was_draft:
+                already_draft += 1
+            else:
+                unpublished += 1
+        if unpublished:
+            self.message_user(request, f"Took {unpublished} item(s) off the site.", level=messages.SUCCESS)
+        if already_draft:
+            self.message_user(request, f"{already_draft} item(s) were already a draft.", level=messages.INFO)
 
     def get_actions(self, request: HttpRequest):
         """Hide the publish actions from staff who may not use them."""

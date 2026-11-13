@@ -418,6 +418,9 @@ def unpublish(*, actor, instance, reason: str = ""):
     require_permission(actor, publish_permission_for(instance))
 
     was = instance.status
+    if was == PublishStatus.DRAFT:
+        return instance
+
     instance.status = PublishStatus.DRAFT
     instance.save(update_fields=["status", "updated_at"])
 

@@ -316,6 +316,29 @@ class TestRecordKeeping:
         event = AuditEvent.objects.get(action="learning.learningcontent.unpublished")
         assert event.reason == "Wrong speed limit"
 
+    def test_unpublishing_a_published_subchapter_is_audited_once(self, published_tree, publisher):
+        _, subchapter, _ = published_tree
+
+        services.unpublish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+        event = AuditEvent.objects.get(action="learning.subchapter.unpublished")
+        assert event.actor == publisher
+        assert event.target_id == str(subchapter.pk)
+        assert event.changes == {"status": {"from": "published", "to": "draft"}}
+
+    def test_unpublishing_a_subchapter_that_is_already_a_draft_is_not_audited(self, publisher, subchapter):
+        services.unpublish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+        assert not AuditEvent.objects.filter(action="learning.subchapter.unpublished").exists()
+
+    def test_a_draft_subchapter_still_refuses_an_actor_who_may_not_publish(self, editor, subchapter):
+        with pytest.raises(PermissionDeniedError):
+            services.unpublish(actor=editor, instance=subchapter)
+
     def test_unpublishing_keeps_what_was_written(self, published_tree, publisher):
         _, _, content = published_tree
 
