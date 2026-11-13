@@ -7,6 +7,7 @@ from django.core import mail
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.catalog.models import Feature
 from apps.entitlements import services
 from apps.entitlements.models import Subscription
 from apps.entitlements.tasks import expire_accounts, send_expiry_reminders
@@ -75,6 +76,33 @@ class TestExpiryReminders:
         user.save(update_fields=["is_active"])
 
         assert send_expiry_reminders() == 0
+
+    def test_mock_tests_ending_during_a_course_are_not_reminded_about(self, expiring_in):
+        """Nothing the learner can study stops: the course still unlocks the exams."""
+        mocks = expiring_in(2)
+        mocks.features = [Feature.EXAMS, Feature.COMPACT_EBOOK]
+        mocks.exam_sittings = 5
+        mocks.save(update_fields=["features", "exam_sittings"])
+        expiring_in(20)
+
+        assert send_expiry_reminders() == 0
+
+    def test_a_course_ending_while_mock_tests_run_on_is_reminded_about(self, expiring_in):
+        expiring_in(2)
+        mocks = expiring_in(20)
+        mocks.features = [Feature.EXAMS, Feature.COMPACT_EBOOK]
+        mocks.save(update_fields=["features"])
+
+        assert send_expiry_reminders() == 1
+
+    def test_a_course_already_renewed_is_not_reminded_about(self, user, make_paid_order):
+        """The renewal carries straight on from it, so nothing is about to end."""
+        first, _ = services.activate(make_paid_order(paid_at=timezone.now() - timedelta(days=28)), user)
+        services.activate(make_paid_order(), user)
+
+        assert send_expiry_reminders() == 0
+        first.refresh_from_db()
+        assert first.expiry_reminder_sent_at is None
 
     def test_the_email_names_the_package_and_date(self, expiring_in):
         subscription = expiring_in(2)

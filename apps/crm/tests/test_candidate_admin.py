@@ -1,12 +1,14 @@
 """The CRM screens: who may open them, what they show, and what they let staff change."""
 
+from decimal import Decimal
+
 import pytest
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.models import Order, OrderStatus
-from apps.catalog.models import Package
+from apps.catalog.models import Feature, Package, ProductLine
 from apps.core.models import AuditEvent
 from apps.crm.models import Candidate
 from apps.entitlements import services as entitlements
@@ -183,6 +185,43 @@ class TestDetail:
 
         assert "Scheduled" in content
         assert "Expired" not in content
+
+    def test_a_mock_test_purchase_shows_what_it_unlocks_and_its_sittings(
+        self, client, crm_reader_with_history, paying_candidate
+    ):
+        from .conftest import grant
+
+        grant(crm_reader_with_history, "view_order")
+        mocks = Package.objects.create(
+            name="Five mocks",
+            duration_days=30,
+            price=Decimal("5.99"),
+            product_line=ProductLine.MOCK_TESTS,
+            features=[Feature.EXAMS, Feature.COMPACT_EBOOK],
+            exam_sittings=5,
+        )
+        order = Order.objects.create(
+            package=mocks,
+            email=paying_candidate.email,
+            user=paying_candidate,
+            status=OrderStatus.PAID,
+            paid_at=timezone.now(),
+            original_price=mocks.price,
+            final_price=mocks.price,
+        )
+        subscription, _ = entitlements.activate(order, paying_candidate)
+
+        content = client.get(detail_url(paying_candidate)).content.decode()
+
+        assert "Five mocks" in content
+        assert "Mock tests" in content
+        assert "Practice exams and mock tests, Compact e-book" in content
+        assert "0 of 5" in content
+        assert f"{subscription.starts_at:%d %b %Y}" in content
+        assert f"{subscription.package_expires_at:%d %b %Y}" in content
+        # The course is still the plan, though the mock tests bought after it end later.
+        current = Candidate.objects.with_current_plan().get(pk=paying_candidate.pk)
+        assert current.current_plan_name == "30 day access"
 
     def test_the_plan_cannot_be_edited_from_here(self, client, crm_manager, paying_candidate):
         """Access follows from purchases; changing a date by hand would make the record a lie."""

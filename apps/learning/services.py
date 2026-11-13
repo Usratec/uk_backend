@@ -1137,7 +1137,13 @@ def time_taken_for(exam: PracticeExam, seconds: int | None) -> int | None:
 
 
 @transaction.atomic
-def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds: int | None = None) -> MockAttempt:
+def record_sitting(
+    student,
+    exam: PracticeExam,
+    result: dict,
+    time_taken_seconds: int | None = None,
+    subscription=None,
+) -> MockAttempt:
     """Remember one exam sitting: the score, and every answer and clip that made it up.
 
     The answers are recorded too, so a question got wrong in a mock turns up under "mistakes"
@@ -1145,12 +1151,16 @@ def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds
     the same reason: a clip sat in a mock is a go at that clip, and leaving it out would make a
     student's hazard history disagree with the mocks they have sat.
 
+    ``subscription`` is the purchase the sitting is charged to, from
+    ``entitlements.claim_exam_sitting``; a limit on sittings counts the attempts charged to it.
+
     Atomic, so a sitting is never half recorded: the attempt, its answers and its clips are one
     record of one event.
     """
     attempt = MockAttempt.objects.create(
         student=student,
         exam=exam,
+        subscription=subscription,
         score=result["score"],
         total=result["total"],
         passed=result["passed"],

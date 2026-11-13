@@ -210,6 +210,8 @@ class SubscriptionStatusView(APIView):
                     "online_platform_activated": False,
                     "purchase_date": None,
                     "days_remaining": None,
+                    "features": [],
+                    "exam_sittings_remaining": 0,
                     "periods": [],
                 }
             )
@@ -226,6 +228,8 @@ class SubscriptionStatusView(APIView):
                 "online_platform_activated": live,
                 "purchase_date": subscription.order.paid_at,
                 "days_remaining": subscription.days_remaining,
+                "features": entitlements.features_of(user),
+                "exam_sittings_remaining": entitlements.exam_sittings_left(user),
                 "periods": SubscriptionPeriodSerializer(
                     entitlements.subscription_periods(user), many=True, context={"at": timezone.now()}
                 ).data,

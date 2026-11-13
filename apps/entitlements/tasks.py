@@ -10,6 +10,7 @@ from datetime import timedelta
 from functools import partial
 
 from celery import shared_task
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -31,15 +32,28 @@ def send_expiry_reminders() -> int:
     running once a day, so almost every reminder was missed.
     """
     now = timezone.now()
-    due = Subscription.objects.filter(
-        package_expires_at__gt=now,
-        package_expires_at__lte=now + timedelta(days=REMINDER_DAYS_BEFORE_EXPIRY),
-        expiry_reminder_sent_at__isnull=True,
-        user__isnull=False,
-        user__is_active=True,
-        # Nobody is warned that access is about to end when it ended already, with their refund.
+    # Nothing is ending for somebody who already holds a purchase that carries on from this one
+    # and unlocks at least as much: mock tests ending during a course, or a course already renewed.
+    carried_on = Subscription.objects.filter(
+        user_id=OuterRef("user_id"),
         revoked_at__isnull=True,
-    ).select_related("user", "package")
+        starts_at__lte=OuterRef("package_expires_at"),
+        package_expires_at__gt=OuterRef("package_expires_at"),
+        features__contains=OuterRef("features"),
+    ).exclude(pk=OuterRef("pk"))
+    due = (
+        Subscription.objects.filter(
+            package_expires_at__gt=now,
+            package_expires_at__lte=now + timedelta(days=REMINDER_DAYS_BEFORE_EXPIRY),
+            expiry_reminder_sent_at__isnull=True,
+            user__isnull=False,
+            user__is_active=True,
+            # Nobody is warned that access is about to end when it ended already, with their refund.
+            revoked_at__isnull=True,
+        )
+        .exclude(Exists(carried_on))
+        .select_related("user", "package")
+    )
 
     sent = 0
     for subscription in due:

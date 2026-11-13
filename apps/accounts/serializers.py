@@ -5,6 +5,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.models import User, normalise_postcode
+from apps.catalog.models import Feature, ProductLine
 from apps.entitlements.models import Subscription
 
 
@@ -158,6 +159,11 @@ class PasswordChangeSerializer(ConfirmedPasswordSerializer):
 
 class SubscriptionPeriodSerializer(serializers.Serializer):
     package_name = serializers.CharField(source="package.name")
+    product_line = serializers.ChoiceField(choices=ProductLine.choices, source="package.product_line")
+    features = serializers.ListField(child=serializers.ChoiceField(choices=Feature.choices))
+    exam_sittings = serializers.IntegerField(
+        allow_null=True, help_text="Sittings this purchase allows; null for no limit."
+    )
     starts_at = serializers.DateTimeField()
     ends_at = serializers.DateTimeField(source="package_expires_at")
     status = serializers.SerializerMethodField()
@@ -181,6 +187,14 @@ class SubscriptionStatusSerializer(serializers.Serializer):
     online_platform_activated = serializers.BooleanField()
     purchase_date = serializers.DateTimeField(allow_null=True)
     days_remaining = serializers.IntegerField(allow_null=True)
+    features = serializers.ListField(
+        child=serializers.ChoiceField(choices=Feature.choices),
+        help_text="Everything the live purchases unlock between them. Empty when nothing is live.",
+    )
+    exam_sittings_remaining = serializers.IntegerField(
+        allow_null=True,
+        help_text="How many more exams can be sat. Null when nothing limits them, as with a course plan.",
+    )
     periods = SubscriptionPeriodSerializer(many=True)
 
 

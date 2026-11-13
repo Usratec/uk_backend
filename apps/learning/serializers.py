@@ -782,6 +782,10 @@ class ExamSummarySerializer(serializers.Serializer):
 
 class ExamListResponseSerializer(serializers.Serializer):
     exams = ExamSummarySerializer(many=True)
+    sittingsRemaining = serializers.IntegerField(  # noqa: N815
+        allow_null=True,
+        help_text="How many more exams can be sat. Null when nothing limits them, as with a course plan.",
+    )
 
 
 class ExamDetailResponseSerializer(serializers.Serializer):
