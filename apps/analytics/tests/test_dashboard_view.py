@@ -1,8 +1,11 @@
+from datetime import timedelta
+
 import pytest
 from django.contrib.auth.models import Permission
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.analytics.tests.conftest import PASSWORD, answer, give_access, make_course, make_order, study, watch
@@ -137,3 +140,34 @@ def test_a_staff_account_has_no_student_page(client, superuser, staff_member):
     response = client.get(reverse("admin:analytics_student", args=[staff_member.pk]))
 
     assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_an_invalid_custom_range_falls_back_to_the_last_thirty_days(client, superuser, url):
+    today = timezone.localdate()
+    client.login(email=superuser.email, password=PASSWORD)
+
+    response = client.get(
+        url,
+        {
+            "range": "custom",
+            "start": (today + timedelta(days=20)).isoformat(),
+            "end": (today + timedelta(days=10)).isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Showing the last 30 days." in response.content
+    assert response.context["filters"].range_key == "30d"
+
+
+@pytest.mark.django_db
+def test_a_valid_custom_range_still_shows_its_own_dates(client, superuser, url):
+    client.login(email=superuser.email, password=PASSWORD)
+
+    response = client.get(url, {"range": "custom", "start": "2026-01-10", "end": "2026-01-20"})
+
+    assert response.status_code == 200
+    assert b"10 Jan 2026" in response.content
+    assert b"20 Jan 2026" in response.content
+    assert b"Showing the last 30 days." not in response.content
