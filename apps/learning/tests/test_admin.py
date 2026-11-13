@@ -6,7 +6,7 @@ Standard Django CRUD is not re-tested here; only behaviour this project added.
 import pytest
 from django.urls import reverse
 
-from apps.core.models import PublishStatus
+from apps.core.models import AuditEvent, PublishStatus
 from apps.learning.models import LearningContent, Subchapter
 
 from .conftest import CONTENT
@@ -153,6 +153,26 @@ class TestPublishAction:
 
         content.refresh_from_db()
         assert content.status == PublishStatus.DRAFT
+
+    def test_unpublishing_a_mixed_selection_only_audits_the_published_one(self, publisher_client, published_tree):
+        chapter, subchapter, _ = published_tree
+        drafted = Subchapter.objects.create(chapter=chapter, slug="nothing-here", title="Nothing here", order=2)
+
+        response = self.publish_all(publisher_client, [subchapter, drafted], "unpublish_selected")
+
+        subchapter.refresh_from_db()
+        drafted.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+        assert drafted.status == PublishStatus.DRAFT
+        events = AuditEvent.objects.filter(action="learning.subchapter.unpublished")
+        assert [event.target_id for event in events] == [str(subchapter.pk)]
+        assert "1 item(s) were already a draft." in response.content.decode()
+
+    def test_unpublishing_something_already_a_draft_says_so(self, publisher_client, subchapter):
+        response = self.publish(publisher_client, subchapter, "unpublish_selected")
+
+        assert "1 item(s) were already a draft." in response.content.decode()
+        assert not AuditEvent.objects.filter(action="learning.subchapter.unpublished").exists()
 
 
 class TestRichTextEditor:
