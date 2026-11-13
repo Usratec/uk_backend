@@ -34,6 +34,15 @@ def all_features() -> list[str]:
     return list(Feature.values)
 
 
+def in_feature_order(features: list[str]) -> list[str]:
+    """Deduplicated, in ``Feature`` order, so two packages with the same features compare equal.
+
+    Unknown values are kept, last, so the database refuses them instead of them being quietly dropped.
+    """
+    order = {feature: position for position, feature in enumerate(Feature.values)}
+    return sorted(set(features), key=lambda feature: (order.get(feature, len(order)), feature))
+
+
 class Package(TimestampedModel):
     """Access to part or all of the learning material, sold as a one-off purchase.
 
@@ -76,6 +85,28 @@ class Package(TimestampedModel):
 
     class Meta:
         ordering = ["display_order", "price"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(features__len__gt=0),
+                name="package_unlocks_something",
+                violation_error_message="A package has to unlock something.",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(features__contained_by=Feature.values),
+                name="package_features_are_known",
+                violation_error_message="A package can only unlock known features.",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(exam_sittings__isnull=True) | models.Q(features__contains=[Feature.EXAMS]),
+                name="package_sittings_need_exams",
+                violation_error_message="Only a package that includes exams can limit them.",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(exam_sittings__isnull=True) | models.Q(exam_sittings__gte=1),
+                name="package_sittings_at_least_one",
+                violation_error_message="A limit on exams has to allow at least one.",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -93,6 +124,5 @@ class Package(TimestampedModel):
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = slugify(self.name)
-        # Kept in a fixed order so two packages with the same features compare equal.
-        self.features = [feature for feature in Feature.values if feature in set(self.features)]
+        self.features = in_feature_order(self.features)
         super().save(*args, **kwargs)

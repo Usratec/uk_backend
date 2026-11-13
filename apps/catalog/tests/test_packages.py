@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
 from django.urls import reverse
 
@@ -115,6 +116,40 @@ class TestModel:
             package.full_clean()
 
         assert "exam_sittings" in raised.value.message_dict
+
+
+class TestTheDatabaseRefusesInvalidPackages:
+    """Writes that skip ``full_clean`` — ``create``, ``save``, scripts — are held to the same rules."""
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"features": []},
+            {"features": ["teleport"]},
+            {"features": [Feature.EXAMS, "teleport"]},
+            {"features": [Feature.EBOOK], "exam_sittings": 5},
+            {"features": [Feature.EXAMS], "exam_sittings": 0},
+        ],
+        ids=["no features", "unknown feature", "unknown among known", "sittings without exams", "zero sittings"],
+    )
+    def test_on_create(self, fields):
+        with pytest.raises(IntegrityError), transaction.atomic():
+            make_package(**fields)
+
+    def test_on_update(self):
+        package = make_package()
+        package.features = []
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            package.save()
+
+    def test_an_unknown_feature_is_not_quietly_dropped(self):
+        package = Package(name="Odd", duration_days=30, price=Decimal("1.00"), features=[Feature.EXAMS, "teleport"])
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            package.save()
+
+        assert package.features == [Feature.EXAMS, "teleport"]
 
 
 class TestSeededMockTestPackages:
