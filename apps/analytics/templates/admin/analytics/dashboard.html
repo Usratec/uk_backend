@@ -14,7 +14,7 @@
     {% include "admin/analytics/_filters.html" %}
 
     <p class="bi-note">
-        Showing <strong>{{ filters.start|date:"j M Y" }}</strong> to <strong>{{ filters.end|date:"j M Y" }}</strong>.
+        {% if filters.custom_range_reset %}Showing the last 30 days.{% else %}Showing <strong>{{ filters.start|date:"j M Y" }}</strong> to <strong>{{ filters.end|date:"j M Y" }}</strong>.{% endif %}
         All figures come from the live database; nothing is estimated. The package filter applies to
         payments, revenue, packages and access. Staff accounts are not counted as students.
     </p>
