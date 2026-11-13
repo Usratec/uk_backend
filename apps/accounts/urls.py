@@ -28,5 +28,4 @@ urlpatterns = [
     ),
     path("cabinet/password/change/", cabinet_views.PasswordChangeView.as_view(), name="cabinet-password-change"),
     path("cabinet/subscription/", cabinet_views.SubscriptionStatusView.as_view(), name="cabinet-subscription"),
-    path("cabinet/learning-url/", cabinet_views.LearningUrlView.as_view(), name="cabinet-learning-url"),
 ]
