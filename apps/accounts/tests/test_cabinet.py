@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import SecurityToken, TokenPurpose, User
 from apps.billing.models import Order, OrderStatus
-from apps.catalog.models import Package
+from apps.catalog.models import Feature, Package, ProductLine
 from apps.entitlements import services as entitlements
 from apps.entitlements.models import RevocationReason, Subscription
 
@@ -376,8 +376,59 @@ class TestSubscriptionStatus:
             "online_platform_activated": False,
             "purchase_date": None,
             "days_remaining": None,
+            "features": [],
+            "exam_sittings_remaining": 0,
             "periods": [],
         }
+
+    def test_a_course_plan_unlocks_everything_without_a_limit_on_exams(self, authenticated_api, with_access):
+        with_access()
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.data["features"] == list(Feature.values)
+        assert response.data["exam_sittings_remaining"] is None
+        period = response.json()["periods"][0]
+        assert (period["product_line"], period["exam_sittings"]) == ("course", None)
+
+    def test_a_mock_test_package_reports_its_features_and_sittings(self, authenticated_api, with_access):
+        mocks = Package.objects.create(
+            name="Five mocks",
+            duration_days=30,
+            price=Decimal("5.99"),
+            product_line=ProductLine.MOCK_TESTS,
+            features=[Feature.EXAMS, Feature.COMPACT_EBOOK],
+            exam_sittings=5,
+        )
+        with_access(bought_package=mocks)
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.data["features"] == ["exams", "compact_ebook"]
+        assert response.data["exam_sittings_remaining"] == 5
+        assert response.data["package_name"] == "Five mocks"
+        period = response.json()["periods"][0]
+        assert period["product_line"] == "mock_tests"
+        assert period["features"] == ["exams", "compact_ebook"]
+        assert period["exam_sittings"] == 5
+
+    def test_a_course_stays_the_headline_when_mock_tests_outlast_it(self, authenticated_api, with_access):
+        course = with_access(paid_at=timezone.now() - timedelta(days=20))
+        mocks = Package.objects.create(
+            name="Five mocks",
+            duration_days=30,
+            price=Decimal("5.99"),
+            product_line=ProductLine.MOCK_TESTS,
+            features=[Feature.EXAMS, Feature.COMPACT_EBOOK],
+            exam_sittings=5,
+        )
+        with_access(bought_package=mocks)
+
+        response = authenticated_api.get(SUBSCRIPTION_URL)
+
+        assert response.data["package_name"] == "30 day access"
+        assert response.data["package_expires_at"] == course.package_expires_at
+        assert response.data["features"] == list(Feature.values)
 
     def test_lists_current_and_next_package_periods(self, authenticated_api, with_access):
         current = with_access(paid_at=timezone.now() - timedelta(days=10))

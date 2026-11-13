@@ -53,7 +53,7 @@ container start, so scaling out can't run them concurrently.
 | Health | `GET /api/healthcheck/` |
 | Authentication | `POST /api/auth/register/`, `login/`, `logout/`, `token/refresh/`, `password/reset/`, `password/reset/confirm/`; `GET /api/auth/email/verify/`, `POST /api/auth/email/verify/resend/` |
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
-| Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
+| Catalogue | `GET /api/packages/?product_line=course\|mock_tests`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/cover-image/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
@@ -212,8 +212,60 @@ to repeat: Stripe redelivers events, and each step checks whether it has already
 
 Access is two dates. `package_expires_at` ends learning access; `account_expires_at` is later by
 `ACCOUNT_LIFETIME_COEFFICIENT` (1.5, editable in the admin), so a lapsed customer can still sign
-in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
-for is lost.
+in and buy again. Buying a course package while a course is live adds the new period onto the
+end, so nothing paid for is lost, even if what courses unlock has changed in between. Anything
+else — mock tests on top of a course, a course on top of mock tests, or a second mock test
+package — starts straight away and runs alongside. The account expiry only ever moves later.
+
+While purchases overlap, the cabinet headline and the CRM's current plan show the course that has
+not ended, falling back to the purchase reaching furthest ahead. Expiry reminders and "access
+ended" notices are skipped only when another purchase carries on and unlocks at least as much, so
+a course ending under live mock tests is still announced, and mock tests ending mid-course are not.
+Material limited to certain packages is open when any live package that unlocks that part of the
+product is listed.
+
+### Packages and features
+
+A package unlocks one or more **features**, ticked in **Django admin → Catalog → Packages**:
+
+| Feature | Unlocks |
+| --- | --- |
+| `lessons` | Topics, lessons, lesson videos and the question checks inside lessons |
+| `practice` | Practice questions, road signs, saved questions and the offline pack |
+| `hazard` | The hazard perception clip library |
+| `exams` | Practice exams and mock tests (`/api/learn/exams/…`) |
+| `ebook` | E-books whose **edition** is *Full e-book* |
+| `compact_ebook` | E-books whose **edition** is *Compact e-book* |
+
+Course packages unlock everything, which is what every package did before features existed;
+existing packages and purchases were migrated that way, so nobody's access changed. Selling another
+part on its own later means adding a value to `Feature` and gating the endpoints that serve it.
+
+**Product line** (`course` or `mock_tests`) decides which sales block lists a package. It does not
+affect access. `GET /api/packages/` lists course packages; `?product_line=mock_tests` lists the mock
+test block; any other value is a 400. Each package now also returns `product_line`, `features` and
+`exam_sittings`. `GET /api/packages/<slug>/` finds a package whichever block it is in, so checkout
+works the same, purchase consent included.
+
+**Exam sittings.** A package with `exams` may set `exam_sittings`; empty means no limit. Every
+submitted exam is charged to one live purchase: one without a limit first (so a course holder never
+spends the mock tests they bought), otherwise the mock test package expiring soonest. Once none are
+left, starting or submitting an exam answers 402 with `"No mock tests left. Buy more to sit
+another."`; past results stay readable. `GET /api/learn/exams/` returns `sittingsRemaining`
+(`null` for no limit).
+
+What a purchase unlocks and how many sittings it allows are copied onto the subscription when it is
+granted, so editing a package never changes what somebody already bought. The cabinet's
+`GET /api/cabinet/subscription/` adds `features` (everything live purchases unlock between them)
+and `exam_sittings_remaining`, and each period adds `product_line`, `features` and `exam_sittings`.
+The order admin shows the product line and the access period; the subscription admin and the CRM's
+access history show what each purchase unlocks and sittings used against the allowance.
+
+A migration seeds three mock test packages from the design — `mock-5` (Starter, £5.99, 5 sittings),
+`mock-10` (Saver, £9.99, 10, featured) and `mock-30` (Best value, £19.99, 30) — each 30 days with
+exams and the compact e-book, active on migrate. Prices, sittings and duration remain editable in
+admin. The compact e-book itself is an `Ebook` with edition *Compact e-book*, written and published
+by the content team.
 
 Scheduled jobs run from the `beat` service: publishing blog posts whose time has come every five
 minutes, expiry reminders at 09:00, telling learners their

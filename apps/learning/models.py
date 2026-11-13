@@ -32,6 +32,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
 
+from apps.catalog.models import Feature
 from apps.core import images
 from apps.core.fields import SanitizedFileField, SanitizedImageField
 from apps.core.models import PublishableModel, TimestampedModel
@@ -709,6 +710,14 @@ class QuestionAttempt(TimestampedModel):
 class MockAttempt(TimestampedModel):
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="mock_attempts")
     exam = models.ForeignKey(PracticeExam, on_delete=models.CASCADE, related_name="attempts")
+    subscription = models.ForeignKey(
+        "entitlements.Subscription",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sittings",
+        help_text="The purchase this sitting was charged to, which is what a limit on sittings counts.",
+    )
     score = models.PositiveSmallIntegerField(help_text="Questions answered correctly.")
     total = models.PositiveSmallIntegerField(help_text="Questions asked.")
     passed = models.BooleanField()
@@ -983,6 +992,17 @@ def ebook_sample_path(instance, filename: str) -> str:
     return f"learning/ebook-sample/{filename}"
 
 
+class EbookEdition(models.TextChoices):
+    """Which e-book product a book is. Each is unlocked by its own package feature."""
+
+    FULL = "full", "Full e-book"
+    COMPACT = "compact", "Compact e-book"
+
+
+#: The package feature that unlocks each edition.
+EDITION_FEATURES: dict[str, str] = {EbookEdition.FULL: Feature.EBOOK, EbookEdition.COMPACT: Feature.COMPACT_EBOOK}
+
+
 class Ebook(PublishableModel, TimestampedModel):
     slug = models.SlugField(
         unique=True,
@@ -991,6 +1011,12 @@ class Ebook(PublishableModel, TimestampedModel):
     )
     title = models.CharField(max_length=160)
     description = models.CharField(max_length=300, blank=True, help_text="A sentence or two, shown on the shelf.")
+    edition = models.CharField(
+        max_length=10,
+        choices=EbookEdition.choices,
+        default=EbookEdition.FULL,
+        help_text="The full e-book comes with the course; the compact one with mock test packages.",
+    )
     file = models.ForeignKey(
         "learning.MediaAsset",
         on_delete=models.PROTECT,
@@ -1014,6 +1040,11 @@ class Ebook(PublishableModel, TimestampedModel):
 
     def __str__(self) -> str:
         return self.title
+
+    @property
+    def feature(self) -> str:
+        """The package feature a reader needs to open this book."""
+        return EDITION_FEATURES[self.edition]
 
     @property
     def cover_url(self) -> str | None:

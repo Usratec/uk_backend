@@ -37,10 +37,13 @@ def check_study_streak(student_id: int) -> int | None:
 def notify_expired_packages() -> int:
     now = timezone.now()
 
+    # Only a purchase unlocking everything the ended one did covers it: a course ending while
+    # mock tests run on has still taken the lessons away, and the learner should hear so.
     still_covered = Subscription.objects.filter(
         user_id=OuterRef("user_id"),
         revoked_at__isnull=True,
         package_expires_at__gt=now,
+        features__contains=OuterRef("features"),
     )
 
     due = (

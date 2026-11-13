@@ -1291,11 +1291,11 @@ class EbookSectionInline(ChildInline):
 
 @admin.register(Ebook)
 class EbookAdmin(PreviewMixin, PublishableAdmin):
-    list_display = ["cover_thumbnail", "title", "slug", "file", "section_count", "order", "state"]
+    list_display = ["cover_thumbnail", "title", "slug", "edition", "file", "section_count", "order", "state"]
     # The title, not the picture, is what staff click to open one.
     list_display_links = ["title"]
     list_editable = ["order"]
-    list_filter = ["status", "created_at"]
+    list_filter = ["status", "edition", "created_at"]
     search_fields = ["title", "slug", "description"]
     # Filled in from the title as staff type, and editable afterwards: the slug is in links, so a
     # published e-book's slug is a decision rather than something to regenerate.
@@ -1308,7 +1308,7 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
         (
             None,
             {
-                "fields": ("title", "slug", "description", "order"),
+                "fields": ("title", "slug", "description", "edition", "order"),
                 "description": "The slug is how the API addresses this e-book. Changing it breaks saved links.",
             },
         ),
