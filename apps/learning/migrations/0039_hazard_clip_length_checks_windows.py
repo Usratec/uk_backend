@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('learning', '0037_video_segment_encryption'),
+        ('learning', '0038_exam_sitting_subscription_ebook_edition'),
     ]
 
     operations = [
