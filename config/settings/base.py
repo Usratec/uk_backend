@@ -282,6 +282,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.fulfil_unfulfilled_orders",
         "schedule": crontab(minute="*/10"),
     },
+    "send-pending-confirmation-emails": {
+        "task": "apps.billing.tasks.send_pending_confirmation_emails",
+        "schedule": crontab(minute="35"),
+    },
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),

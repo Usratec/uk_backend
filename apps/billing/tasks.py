@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 #: fulfilment that is merely in progress.
 FULFILMENT_GRACE = timedelta(minutes=5)
 
+CONFIRMATION_GRACE = timedelta(minutes=30)
+
 
 @shared_task(
     bind=True,
@@ -34,6 +36,64 @@ def fulfil_order(self, order_id: str) -> None:
         return
 
     fulfilment.fulfil(order)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60, retry_backoff=True)
+def send_confirmation_email(self, order_id: str) -> None:
+    from apps.billing import emails
+
+    order = Order.objects.select_related("package").filter(pk=order_id).first()
+    if order is None:
+        logger.error("Cannot send a confirmation for unknown order %s", order_id)
+        return
+
+    if order.confirmation_email_sent_at is not None:
+        logger.info("Order %s has already been confirmed by email", order_id)
+        return
+
+    try:
+        emails.send_order_confirmation(order)
+    except Exception as error:
+        if self.request.retries >= self.max_retries:
+            logger.exception(
+                "Giving up on the confirmation for order %s after %d attempts; it is owed again",
+                order_id,
+                self.request.retries + 1,
+            )
+            fulfilment.release_confirmation_email(order_id)
+            return
+        logger.warning(
+            "Could not send the confirmation for order %s (attempt %d); retrying",
+            order_id,
+            self.request.retries + 1,
+        )
+        raise self.retry(exc=error) from error
+
+    Order.objects.filter(pk=order_id).update(confirmation_email_sent_at=timezone.now())
+    logger.info("Sent the confirmation for order %s", order_id)
+
+
+@shared_task
+def send_pending_confirmation_emails() -> int:
+    owed = (
+        Order.objects.filter(
+            status=OrderStatus.PAID,
+            confirmation_email_queued_at__isnull=True,
+            confirmation_email_sent_at__isnull=True,
+            subscription__isnull=False,
+            paid_at__lt=timezone.now() - CONFIRMATION_GRACE,
+        )
+        .select_related("package")
+        .order_by("paid_at")
+    )
+
+    sent = 0
+    for order in owed:
+        logger.warning("Order %s was never confirmed by email; sending it now", order.id)
+        fulfilment.send_order_confirmation(order)
+        sent += 1
+
+    return sent
 
 
 @shared_task

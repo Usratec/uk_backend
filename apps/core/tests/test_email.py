@@ -14,6 +14,7 @@ from django.core import mail
 from django.urls import reverse
 
 from apps.core import email
+from apps.core.tasks import send_email
 
 pytestmark = pytest.mark.django_db
 
@@ -62,6 +63,72 @@ class TestSendingHappensInAWorker:
 
         assert len(mail.outbox) == 1
         assert mail.outbox[0].to == ["sam@example.com"]
+
+
+class TestTheWorkerCanRunWhatTheRequestQueues:
+    def test_a_reply_to_address_reaches_the_message(self):
+        send_email(
+            template="contact_message",
+            subject="A visitor wrote in",
+            to="support@example.com",
+            context={"name": "Ada", "email": "ada@example.com", "message": "Hello"},
+            reply_to="ada@example.com",
+        )
+
+        assert mail.outbox[0].reply_to == ["ada@example.com"]
+
+    def test_a_list_of_reply_to_addresses_reaches_the_message(self):
+        send_email(
+            template="password_changed",
+            subject="Hello",
+            to="sam@example.com",
+            context={"first_name": "Sam"},
+            reply_to=["ada@example.com", "bob@example.com"],
+        )
+
+        assert mail.outbox[0].reply_to == ["ada@example.com", "bob@example.com"]
+
+    def test_a_message_without_a_reply_to_still_sends(self):
+        send_email(
+            template="password_changed",
+            subject="Hello",
+            to="sam@example.com",
+            context={"first_name": "Sam"},
+        )
+
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].reply_to == []
+
+    def test_nothing_is_queued_that_the_previous_worker_could_not_run(self):
+        """The regression: a worker built before reply_to existed rejected every email task."""
+        with patch("apps.core.tasks.send_email.delay") as queued:
+            email.send(template="password_changed", subject="Hello", to="sam@example.com", context={})
+
+        assert set(queued.call_args.kwargs) == {"template", "subject", "to", "context"}
+
+    def test_a_reply_to_is_queued_when_there_is_one(self):
+        with patch("apps.core.tasks.send_email.delay") as queued:
+            email.send(
+                template="contact_message",
+                subject="A visitor wrote in",
+                to="support@example.com",
+                context={},
+                reply_to="ada@example.com",
+            )
+
+        assert queued.call_args.kwargs["reply_to"] == "ada@example.com"
+
+    def test_an_argument_the_worker_does_not_know_is_ignored_not_rejected(self):
+        """A newer producer must never be able to empty the queue onto the floor again."""
+        send_email(
+            template="password_changed",
+            subject="Hello",
+            to="sam@example.com",
+            context={"first_name": "Sam"},
+            cc=["nobody@example.com"],
+        )
+
+        assert len(mail.outbox) == 1
 
 
 class TestSmtpCannotHangForever:
