@@ -68,8 +68,11 @@ def late_click_cutoff(windows) -> float | None:
 
 
 def inspect(clicked_at, windows, *, max_clicks: int, duration_seconds=None) -> Verdict:
-    scorable = in_time(sorted(_real_seconds(clicked_at)), windows)
-    clicks = deduplicated(scorable)
+    # Late clicks (past the last hazard + grace) do not score, but they still feed the void
+    # checks — otherwise constant clicking after the windows never voids (UK-208).
+    moments = sorted(_real_seconds(clicked_at))
+    clicks = deduplicated(moments)
+    scorable = in_time(moments, windows)
     zones = zones_for(windows)
     return Verdict(
         clicks=tuple(clicks),
