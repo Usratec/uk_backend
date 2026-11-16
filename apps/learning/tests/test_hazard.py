@@ -226,14 +226,26 @@ class TestTidyingUpWhatWasSubmitted:
 
         assert services.score_clip(clip, [10.5, 17.0])["voidReason"] == "too_many"
 
-    def test_a_click_any_later_is_ignored(self, clip):
-        clip.max_clicks = 1
-        clip.save(update_fields=["max_clicks"])
-
+    def test_a_click_any_later_does_not_score(self, clip):
         result = services.score_clip(clip, [10.5, 17.01])
 
         assert result["voided"] is False
         assert result["score"] == 5
+
+    def test_seventeen_clicks_after_the_grace_period_void_the_attempt(self, clip):
+        """UK-208: the 2s cutoff ignores late clicks for scoring, not for voiding."""
+        HazardWindow.objects.filter(clip=clip).update(starts_at="18.00", ends_at="24.00")
+        clicks = [27.0]
+        for gap in (0.4, 2.9, 1.1, 5.0) * 4:
+            clicks.append(round(clicks[-1] + gap, 2))
+            if len(clicks) == 17:
+                break
+
+        result = services.score_clip(clip, clicks)
+
+        assert result["voided"] is True
+        assert result["voidReason"] == "too_many"
+        assert result["score"] == 0
 
     def test_a_clip_with_no_hazards_is_scored_without_crashing(self, clip_video):
         bare = HazardClip.objects.create(slug="bare", title="Bare", media=clip_video)
