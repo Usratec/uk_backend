@@ -156,6 +156,85 @@ class TestDelivery:
         assert "Bcc" not in dict(mail.outbox[0].message().items())
 
 
+class TestTheSupportInboxIsConfigurable:
+    @pytest.fixture
+    def configured(self):
+        from constance import config
+
+        original = config.SUPPORT_EMAIL
+
+        def set_to(address: str) -> None:
+            config.SUPPORT_EMAIL = address
+
+        yield set_to
+        config.SUPPORT_EMAIL = original
+
+    def test_a_message_goes_to_the_address_set_in_the_admin(self, api, configured):
+        configured("inbox@orangeuni.com")
+
+        submit(api)
+
+        assert mail.outbox[0].to == ["inbox@orangeuni.com"]
+
+    def test_changing_the_address_applies_to_the_next_message_without_a_restart(self, api, configured):
+        configured("first@orangeuni.com")
+        submit(api)
+
+        configured("second@orangeuni.com")
+        submit(api, email="bob@example.com")
+
+        assert [message.to for message in mail.outbox] == [["first@orangeuni.com"], ["second@orangeuni.com"]]
+
+    def test_the_sweep_uses_the_address_set_in_the_admin_too(self, api, configured):
+        from apps.content.tasks import deliver_pending_contact_messages
+
+        configured("inbox@orangeuni.com")
+        aged(ContactSubmission.objects.create(**VALID))
+
+        assert deliver_pending_contact_messages() == 1
+        assert mail.outbox[0].to == ["inbox@orangeuni.com"]
+
+    def test_whitespace_around_the_configured_address_is_ignored(self, api, configured):
+        configured("  inbox@orangeuni.com  ")
+
+        assert services.support_inbox() == "inbox@orangeuni.com"
+
+    def test_clearing_the_field_falls_back_to_the_environment_rather_than_nowhere(self, api, configured):
+        configured("")
+
+        submit(api)
+
+        assert services.support_inbox() == settings.SUPPORT_EMAIL
+        assert mail.outbox[0].to == [settings.SUPPORT_EMAIL]
+
+
+class TestDeliveryIsImmediate:
+    def test_the_message_is_on_its_way_before_the_response_is_returned(self, api):
+        response = submit(api)
+
+        assert response.status_code == 201
+        assert len(mail.outbox) == 1
+        assert ContactSubmission.objects.get().delivery_status == ContactDelivery.SENT
+
+    def test_nothing_is_left_for_the_sweep_to_do_after_a_normal_submission(self, api):
+        from apps.content.tasks import deliver_pending_contact_messages
+
+        submit(api)
+        mail.outbox.clear()
+
+        assert deliver_pending_contact_messages() == 0
+
+    def test_the_sweep_runs_often_enough_that_a_failure_costs_minutes_not_an_hour(self):
+        from celery.schedules import crontab
+
+        from apps.content.tasks import DELIVERY_GRACE
+
+        schedule = settings.CELERY_BEAT_SCHEDULE["deliver-pending-contact-messages"]["schedule"]
+
+        assert schedule == crontab(minute="*/5")
+        assert DELIVERY_GRACE <= timedelta(minutes=10)
+
+
 class TestDeliveryFailures:
     @pytest.fixture
     def mail_down(self, monkeypatch):

@@ -1,6 +1,7 @@
 import logging
 from datetime import timedelta
 
+from constance import config
 from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
@@ -86,7 +87,8 @@ def subject_for(submission: ContactSubmission) -> str:
 
 
 def support_inbox() -> str:
-    return settings.SUPPORT_EMAIL
+    configured = (config.SUPPORT_EMAIL or "").strip()
+    return configured or settings.SUPPORT_EMAIL
 
 
 def context_for(submission: ContactSubmission) -> dict:

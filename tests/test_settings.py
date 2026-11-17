@@ -203,6 +203,13 @@ def test_account_lifetime_coefficient_defaults_to_one_and_a_half():
     assert config.ACCOUNT_LIFETIME_COEFFICIENT == 1.5
 
 
+@pytest.mark.django_db
+def test_the_support_inbox_defaults_to_the_environment_variable():
+    from constance import config
+
+    assert config.SUPPORT_EMAIL == settings.SUPPORT_EMAIL
+
+
 def test_no_env_files_are_tracked():
     git = shutil.which("git")
     if git is None or not (BASE_DIR / ".git").exists():
