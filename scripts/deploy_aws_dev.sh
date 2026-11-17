@@ -20,6 +20,13 @@ docker build --file Dockerfile --tag "$image" .
 aws ecr get-login-password --region "$region" |
     docker login --username AWS --password-stdin "$registry"
 docker push "$image"
+digest=$(aws ecr describe-images --region "$region" --repository-name "$service" \
+    --image-ids "imageTag=$commit-dev" --query 'imageDetails[0].imageDigest' --output text)
+if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf 'ECR did not return a digest for the Dev release.\n' >&2
+    exit 1
+fi
+image="$repository@$digest"
 
 deploy_tmp_dir=$(mktemp -d -t uk-backend-dev.XXXXXX)
 trap 'rm -rf "$deploy_tmp_dir"' EXIT
@@ -30,12 +37,16 @@ aws ecs describe-task-definition --region "$region" --task-definition "$current_
     --include TAGS --output json > "$deploy_tmp_dir/current.json"
 
 # Keep the deployed environment and task roles in private files, never in shell traces or argv.
-jq --arg image "$image" --arg container "$service" '
+jq -e --arg image "$image" --arg container "$service" '
     .taskDefinition + (if ((.tags // []) | length) > 0 then {tags: .tags} else {} end)
+    | select(any(.containerDefinitions[]; .name == $container))
     | .containerDefinitions |= map(if .name == $container then .image = $image else . end)
     | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
           .registeredAt, .registeredBy, .deregisteredAt)
 ' "$deploy_tmp_dir/current.json" > "$deploy_tmp_dir/updated.json"
+
+source "$(dirname "${BASH_SOURCE[0]}")/prepare_ecs_dev_workers.sh"
+prepare_dev_workers
 
 new_revision=$(aws ecs register-task-definition --region "$region" \
     --cli-input-json "file://$deploy_tmp_dir/updated.json" \
@@ -72,8 +83,25 @@ if ! jq -e --arg container "$service" '
     exit 1
 fi
 printf 'Dev migrations completed successfully.\n'
-aws ecs update-service --region "$region" --cluster "$cluster" --service "$service" \
-    --task-definition "$new_revision" \
-    --query 'service.{name:serviceName,taskDefinition:taskDefinition}' --output json
+# Check every source revision before starting any rollout. Jenkins should serialize Dev releases.
+while IFS=$'\t' read -r target previous_revision target_revision; do
+    live_revision=$(aws ecs describe-services --region "$region" --cluster "$cluster" \
+        --services "$target" --query 'services[0].taskDefinition' --output text)
+    if [[ "$live_revision" != "$previous_revision" ]]; then
+        printf 'ECS service %s changed during release preparation. Retry from its current revision.\n' "$target" >&2
+        exit 1
+    fi
+done < <(printf '%s\t%s\t%s\n' "$service" "$current_revision" "$new_revision"; cat "$deploy_tmp_dir/workers.tsv")
+
+while IFS=$'\t' read -r target previous_revision target_revision; do
+    printf 'Deploying %s from %s to %s.\n' "$target" "$previous_revision" "$target_revision"
+    aws ecs update-service --region "$region" --cluster "$cluster" --service "$target" \
+        --task-definition "$target_revision" \
+        --query 'service.{name:serviceName,taskDefinition:taskDefinition}' --output json
+done < <(cat "$deploy_tmp_dir/workers.tsv"; printf '%s\t%s\t%s\n' "$service" "$current_revision" "$new_revision")
+
 bash scripts/wait_ecs_dev.sh "$new_revision"
-printf 'Dev backend deployed: %s\n' "$new_revision"
+while IFS=$'\t' read -r worker previous_revision worker_revision; do
+    bash scripts/wait_ecs_dev.sh "$worker_revision" "$worker"
+done < "$deploy_tmp_dir/workers.tsv"
+printf 'Dev backend and workers deployed from %s\n' "$image"
