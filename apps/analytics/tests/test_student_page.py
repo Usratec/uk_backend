@@ -514,6 +514,66 @@ class TestSearch:
         assert "student2@example.com" not in response.content.decode()
         assert response.context["search_results"] == list(student_service.search("Sam"))
 
+    def test_an_exact_id_opens_that_student_even_when_an_email_also_contains_it(self, looking, student):
+        namesake = User.objects.create_user(email=f"sam{student.pk}@example.com", first_name="Other")
+
+        response = looking.get(reverse(DASHBOARD), {"student": str(student.pk)})
+
+        assert response.status_code == 302
+        assert response["Location"].startswith(reverse("admin:analytics_student", args=[student.pk]))
+        assert str(namesake.pk) not in response["Location"]
+
+    def test_an_exact_id_keeps_the_dashboard_filters(self, looking, student):
+        response = looking.get(reverse(DASHBOARD), {"student": f" {student.pk} ", "range": "7d"})
+
+        assert response.status_code == 302
+        assert response["Location"].startswith(reverse("admin:analytics_student", args=[student.pk]))
+        assert "range=7d" in response["Location"]
+
+    def test_an_id_nobody_has_stays_on_the_dashboard(self, looking, student):
+        response = looking.get(reverse(DASHBOARD), {"student": str(student.pk + 10_000)})
+
+        assert response.status_code == 200
+        assert "No student matches" in response.content.decode()
+
+    def test_a_staff_id_never_opens_a_student_page(self, looking, staff_member):
+        response = looking.get(reverse(DASHBOARD), {"student": str(staff_member.pk)})
+
+        assert response.status_code == 200
+        assert "No student matches" in response.content.decode()
+
+    def test_a_name_search_still_lists_the_matches(self, looking, student):
+        User.objects.create_user(email="sam2@example.com", first_name="Sam")
+
+        response = looking.get(reverse(DASHBOARD), {"student": "Sam"})
+
+        assert response.status_code == 200
+        assert len(response.context["search_results"]) == 2
+
+    def test_an_email_search_with_several_matches_still_lists_them(self, looking, student):
+        User.objects.create_user(email="student2@example.com", first_name="Other")
+
+        response = looking.get(reverse(DASHBOARD), {"student": "student"})
+
+        assert response.status_code == 200
+        assert len(response.context["search_results"]) == 2
+
+    def test_a_numeric_search_nobody_owns_as_an_id_still_lists_email_matches(self, looking, student):
+        fragment = f"{student.pk}9999"
+        first = User.objects.create_user(email=f"a{fragment}@example.com", first_name="A")
+        second = User.objects.create_user(email=f"b{fragment}@example.com", first_name="B")
+
+        response = looking.get(reverse(DASHBOARD), {"student": fragment})
+
+        assert response.status_code == 200
+        assert {row.pk for row in response.context["search_results"]} == {first.pk, second.pk}
+
+    def test_an_empty_search_stays_on_the_dashboard(self, looking, student):
+        response = looking.get(reverse(DASHBOARD), {"student": "   "})
+
+        assert response.status_code == 200
+        assert response.context["search_results"] == []
+
     def test_a_search_matching_nobody_stays_on_the_dashboard(self, looking):
         response = looking.get(reverse(DASHBOARD), {"student": "nobody@example.com"})
 

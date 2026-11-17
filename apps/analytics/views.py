@@ -40,9 +40,11 @@ SECTIONS = (
 def dashboard(request: HttpRequest, context: dict) -> HttpResponse:
     filters = filter_utils.parse(request.GET)
     search_term = request.GET.get("student", "")
-    search_results = students.search(search_term)
-    if len(search_results) == 1:
-        target = reverse("admin:analytics_student", args=[search_results[0].pk])
+    exact = students.by_exact_id(search_term)
+    search_results = [] if exact is not None else students.search(search_term)
+    opening = exact if exact is not None else (search_results[0] if len(search_results) == 1 else None)
+    if opening is not None:
+        target = reverse("admin:analytics_student", args=[opening.pk])
         return redirect(f"{target}?{urlencode(filters.as_query())}")
 
     package_rows = packages.rows(filters)
