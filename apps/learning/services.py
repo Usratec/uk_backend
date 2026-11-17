@@ -183,6 +183,11 @@ def problems_with_clip(clip: HazardClip) -> list[str]:
         # Without one there is nothing to spot, and every attempt would score nothing.
         problems.append("This clip has no hazards marked yet.")
 
+    length = clip.duration_seconds
+    if length is not None:
+        for window in windows:
+            problems.extend(messages_for_window_past_length(window, length, named=True))
+
     # Overlapping windows would let one click score for two hazards at once.
     in_order = sorted(windows, key=lambda window: window.starts_at)
     for earlier, later in zip(in_order, in_order[1:], strict=False):
@@ -190,6 +195,22 @@ def problems_with_clip(clip: HazardClip) -> list[str]:
             problems.append(f"'{earlier.label}' and '{later.label}' overlap, so one click would score twice.")
 
     return problems
+
+
+def messages_for_window_past_length(window: HazardWindow, length, *, named: bool = False) -> list[str]:
+    """What to say when a hazard window sits after the clip's Length.
+
+    Saving is still allowed (managers draft timings before Length is settled); these messages
+    feed the readiness check that blocks publish, and the non-blocking note on each admin row.
+    """
+    length_text = f"{float(length):g}"
+    subject = f"'{window.label}'" if named else "This window"
+    messages = []
+    if float(window.starts_at) > float(length):
+        messages.append(f"{subject} starts after the video ({length_text} s)")
+    if float(window.ends_at) > float(length):
+        messages.append(f"{subject} ends after the video ({length_text} s)")
+    return messages
 
 
 def _problems_with_chapter(chapter: Chapter) -> list[str]:
@@ -254,7 +275,10 @@ def warnings_about(instance) -> list[str]:
             return ["No section of this book is published yet and it has no document, so students will see it empty."]
     if isinstance(instance, HazardClip):
         if instance.duration_seconds is None:
-            return ["This clip has no length, so clicking spread evenly across it will not be spotted."]
+            return [
+                "This clip has no length, so its hazard windows cannot be checked against the video.",
+                "This clip has no length, so clicking spread evenly across it will not be spotted.",
+            ]
     return []
 
 
@@ -418,6 +442,9 @@ def unpublish(*, actor, instance, reason: str = ""):
     require_permission(actor, publish_permission_for(instance))
 
     was = instance.status
+    if was == PublishStatus.DRAFT:
+        return instance
+
     instance.status = PublishStatus.DRAFT
     instance.save(update_fields=["status", "updated_at"])
 
@@ -1137,7 +1164,13 @@ def time_taken_for(exam: PracticeExam, seconds: int | None) -> int | None:
 
 
 @transaction.atomic
-def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds: int | None = None) -> MockAttempt:
+def record_sitting(
+    student,
+    exam: PracticeExam,
+    result: dict,
+    time_taken_seconds: int | None = None,
+    subscription=None,
+) -> MockAttempt:
     """Remember one exam sitting: the score, and every answer and clip that made it up.
 
     The answers are recorded too, so a question got wrong in a mock turns up under "mistakes"
@@ -1145,12 +1178,16 @@ def record_sitting(student, exam: PracticeExam, result: dict, time_taken_seconds
     the same reason: a clip sat in a mock is a go at that clip, and leaving it out would make a
     student's hazard history disagree with the mocks they have sat.
 
+    ``subscription`` is the purchase the sitting is charged to, from
+    ``entitlements.claim_exam_sitting``; a limit on sittings counts the attempts charged to it.
+
     Atomic, so a sitting is never half recorded: the attempt, its answers and its clips are one
     record of one event.
     """
     attempt = MockAttempt.objects.create(
         student=student,
         exam=exam,
+        subscription=subscription,
         score=result["score"],
         total=result["total"],
         passed=result["passed"],

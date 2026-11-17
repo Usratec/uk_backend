@@ -354,3 +354,119 @@ class TestTheSocialSharingImage:
 
         assert response.status_code == 200
         assert BlogPost.objects.count() == 0
+
+
+class TestTheCoverPicture:
+    def test_it_is_saved_with_the_post(self, manager_client):
+        manager_client.post(
+            ADD_URL,
+            form_data(cover_image=uploaded_image(), cover_image_alt="A learner at a junction"),
+        )
+
+        post = BlogPost.objects.get()
+        assert post.cover_image
+        assert post.cover_image_alt == "A learner at a junction"
+        assert (post.cover_image_width, post.cover_image_height) == (2, 2)
+
+    def test_a_cover_without_a_description_is_refused(self, manager_client):
+        response = manager_client.post(ADD_URL, form_data(cover_image=uploaded_image()))
+
+        assert response.status_code == 200
+        assert BlogPost.objects.count() == 0
+
+    def test_one_over_twenty_megabytes_is_refused(self, manager_client):
+        too_big = SimpleUploadedFile("big.png", b"0" * (20 * 1024 * 1024 + 1), content_type="image/png")
+
+        response = manager_client.post(ADD_URL, form_data(cover_image=too_big, cover_image_alt="Too big"))
+
+        assert response.status_code == 200
+        assert BlogPost.objects.count() == 0
+
+    def test_a_file_that_is_not_a_picture_is_refused(self, manager_client):
+        document = SimpleUploadedFile("notes.txt", b"just text", content_type="text/plain")
+
+        response = manager_client.post(ADD_URL, form_data(cover_image=document, cover_image_alt="Notes"))
+
+        assert response.status_code == 200
+        assert BlogPost.objects.count() == 0
+
+
+class TestTheArticleFieldsInTheAdmin:
+    def test_a_summary_is_saved(self, manager_client):
+        manager_client.post(ADD_URL, form_data(excerpt="A short summary for the cards."))
+
+        assert BlogPost.objects.get().excerpt == "A short summary for the cards."
+
+    def test_a_post_can_be_featured(self, manager_client):
+        manager_client.post(ADD_URL, form_data(featured="on"))
+
+        assert BlogPost.objects.get().featured is True
+
+    def test_a_post_is_not_featured_unless_chosen(self, manager_client):
+        manager_client.post(ADD_URL, form_data())
+
+        assert BlogPost.objects.get().featured is False
+
+    def test_the_featured_filter_is_on_the_list(self, manager_client):
+        make_post()
+
+        assert "featured" in manager_client.get(CHANGELIST_URL).content.decode()
+
+    def test_the_reading_time_is_worked_out_on_save(self, manager_client):
+        manager_client.post(ADD_URL, form_data(body_html="<p>" + " ".join(["word"] * 600) + "</p>"))
+
+        assert BlogPost.objects.get().reading_minutes == 3
+
+    def test_the_reading_time_is_shown_on_the_form(self, manager_client):
+        post = make_post(body_html="<p>" + " ".join(["word"] * 600) + "</p>")
+
+        page = manager_client.get(reverse("admin:blog_blogpost_change", args=[post.pk])).content.decode()
+
+        assert "3 min" in page
+
+    def test_a_study_tip_is_saved(self, manager_client):
+        manager_client.post(
+            ADD_URL,
+            form_data(
+                study_tip_title="Try a mock test",
+                study_tip_text="Sit a full mock before your real one.",
+                study_tip_button_label="Start a mock test",
+                study_tip_button_link="https://frontend.test/mock/",
+            ),
+        )
+
+        post = BlogPost.objects.get()
+        assert post.study_tip_title == "Try a mock test"
+        assert post.study_tip_button_link == "https://frontend.test/mock/"
+
+    def test_a_tip_without_its_words_is_refused(self, manager_client):
+        response = manager_client.post(ADD_URL, form_data(study_tip_title="Try a mock test"))
+
+        assert response.status_code == 200
+        assert BlogPost.objects.count() == 0
+
+    def test_a_button_without_a_link_is_refused(self, manager_client):
+        response = manager_client.post(
+            ADD_URL,
+            form_data(
+                study_tip_title="Try a mock test",
+                study_tip_text="Sit a full mock.",
+                study_tip_button_label="Start a mock test",
+            ),
+        )
+
+        assert response.status_code == 200
+        assert BlogPost.objects.count() == 0
+
+    def test_a_link_without_a_button_label_is_refused(self, manager_client):
+        response = manager_client.post(
+            ADD_URL,
+            form_data(
+                study_tip_title="Try a mock test",
+                study_tip_text="Sit a full mock.",
+                study_tip_button_link="https://frontend.test/mock/",
+            ),
+        )
+
+        assert response.status_code == 200
+        assert BlogPost.objects.count() == 0

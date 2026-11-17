@@ -10,6 +10,18 @@ from apps.billing.models import Order, PromoCode, PurchaseConsentVersion, Stripe
 from apps.staff.admin import ReadOnlyAdminMixin, placeholder
 
 
+def product_line_of(order: Order) -> str:
+    return order.package.get_product_line_display()
+
+
+def access_period_of(order: Order) -> str | SafeString:
+    """The period the order bought, once it has been turned into access."""
+    subscription = getattr(order, "subscription", None)
+    if subscription is None:
+        return placeholder()
+    return f"{subscription.starts_at:%d %b %Y} – {subscription.package_expires_at:%d %b %Y}"
+
+
 @admin.register(PromoCode)
 class PromoCodeAdmin(admin.ModelAdmin):
     list_display = ["code", "discount_type", "discount_value", "uses_count", "max_uses", "valid_until", "is_active"]
@@ -68,12 +80,12 @@ class OrderAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     those changes belong in service-backed actions instead.
     """
 
-    list_display = ["email", "package", "status", "final_price", "paid_at", "created_at"]
-    list_filter = ["status", "package"]
+    list_display = ["email", "package", "product_line", "status", "final_price", "paid_at", "access", "created_at"]
+    list_filter = ["status", "package__product_line", "package"]
     search_fields = ["email", "id", "stripe_session_id", "stripe_payment_intent_id", "transaction_id"]
     date_hierarchy = "created_at"
-    list_select_related = ["package", "user"]
-    readonly_fields = ["candidate"]
+    list_select_related = ["package", "user", "subscription"]
+    readonly_fields = ["candidate", "product_line", "access"]
 
     consent_fields = (
         "terms_accepted",
@@ -89,6 +101,14 @@ class OrderAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     def get_fieldsets(self, request, obj=None):
         fields = [field for field in self.get_fields(request, obj) if field not in self.consent_fields]
         return [(None, {"fields": fields}), ("Purchase consent", {"fields": self.consent_fields})]
+
+    @admin.display(description="Sold as", ordering="package__product_line")
+    def product_line(self, order: Order) -> str:
+        return product_line_of(order)
+
+    @admin.display(description="Access period")
+    def access(self, order: Order) -> str | SafeString:
+        return access_period_of(order)
 
     @admin.display(description="Candidate")
     def candidate(self, order: Order) -> SafeString:

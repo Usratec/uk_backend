@@ -282,6 +282,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.fulfil_unfulfilled_orders",
         "schedule": crontab(minute="*/10"),
     },
+    "send-pending-confirmation-emails": {
+        "task": "apps.billing.tasks.send_pending_confirmation_emails",
+        "schedule": crontab(minute="35"),
+    },
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),
@@ -313,12 +317,6 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/15"),
     },
 }
-
-# --- Learning ------------------------------------------------------------------------------------
-# Where the cabinet sends a student with active access. Today that is the external platform the
-# product still uses; it becomes an internal URL when learning moves in-house.
-
-LEARNING_URL = env.str("LEARNING_URL", default="https://1theory.co.uk/")
 
 # --- Payments ------------------------------------------------------------------------------------
 # The webhook secret is what proves a webhook came from Stripe; without it no payment is accepted.

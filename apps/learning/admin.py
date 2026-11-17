@@ -173,11 +173,23 @@ class PublishableAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 
     @admin.action(description="Take the selected material off the site")
     def unpublish_selected(self, request: HttpRequest, queryset) -> None:
+        unpublished = 0
+        already_draft = 0
         for instance in queryset:
+            was_draft = instance.status == PublishStatus.DRAFT
             try:
                 services.unpublish(actor=request.user, instance=instance)
             except Exception:
                 self.message_user(request, f"You may not unpublish {instance}.", level=messages.ERROR)
+                continue
+            if was_draft:
+                already_draft += 1
+            else:
+                unpublished += 1
+        if unpublished:
+            self.message_user(request, f"Took {unpublished} item(s) off the site.", level=messages.SUCCESS)
+        if already_draft:
+            self.message_user(request, f"{already_draft} item(s) were already a draft.", level=messages.INFO)
 
     def get_actions(self, request: HttpRequest):
         """Hide the publish actions from staff who may not use them."""
@@ -1177,9 +1189,22 @@ class HazardWindowInline(admin.TabularInline):
 
     model = HazardWindow
     extra = 1
-    fields = ["order", "label", "starts_at", "ends_at", "bands"]
-    readonly_fields = ["bands"]
+    fields = ["order", "label", "starts_at", "ends_at", "bands", "timing_check"]
+    readonly_fields = ["bands", "timing_check"]
     ordering = ["starts_at"]
+
+    @admin.display(description="")
+    def timing_check(self, window: HazardWindow) -> SafeString:
+        """Flags a window past Length without refusing the save — publish readiness blocks instead."""
+        if window.pk is None or window.clip_id is None:
+            return placeholder()
+        length = window.clip.duration_seconds
+        if length is None:
+            return placeholder()
+        messages = services.messages_for_window_past_length(window, length)
+        if not messages:
+            return placeholder()
+        return format_html_join(mark_safe("<br>"), "{}", ((message,) for message in messages))
 
     @admin.display(description="Scores 5 → 1 across")
     def bands(self, window: HazardWindow) -> SafeString:
@@ -1239,7 +1264,8 @@ class HazardClipAdmin(PreviewMixin, PublishableAdmin):
                     "Each hazard below is worth 5 down to 1, depending on how early in its window "
                     "the student clicks. Clicking more often than the limit scores nothing at all, "
                     "as does clicking in a regular pattern, in rapid bursts, or evenly across the "
-                    "whole clip. The length is only needed for that last check."
+                    "whole clip. Length is also used to check that hazard windows sit inside the "
+                    "video — without it, that check is skipped and publishing is still allowed."
                 ),
             },
         ),
@@ -1291,11 +1317,11 @@ class EbookSectionInline(ChildInline):
 
 @admin.register(Ebook)
 class EbookAdmin(PreviewMixin, PublishableAdmin):
-    list_display = ["cover_thumbnail", "title", "slug", "file", "section_count", "order", "state"]
+    list_display = ["cover_thumbnail", "title", "slug", "edition", "file", "section_count", "order", "state"]
     # The title, not the picture, is what staff click to open one.
     list_display_links = ["title"]
     list_editable = ["order"]
-    list_filter = ["status", "created_at"]
+    list_filter = ["status", "edition", "created_at"]
     search_fields = ["title", "slug", "description"]
     # Filled in from the title as staff type, and editable afterwards: the slug is in links, so a
     # published e-book's slug is a decision rather than something to regenerate.
@@ -1308,7 +1334,7 @@ class EbookAdmin(PreviewMixin, PublishableAdmin):
         (
             None,
             {
-                "fields": ("title", "slug", "description", "order"),
+                "fields": ("title", "slug", "description", "edition", "order"),
                 "description": "The slug is how the API addresses this e-book. Changing it breaks saved links.",
             },
         ),

@@ -113,15 +113,30 @@ def send_welcome(order: Order, user: User) -> None:
 
 def send_order_confirmation(order: Order) -> None:
     """Send the receipt, once per order even if fulfilment runs again."""
-    if order.confirmation_email_sent_at is not None:
+    from apps.billing.tasks import send_confirmation_email
+
+    if not claim_confirmation_email(order):
         return
 
     try:
-        emails.send_order_confirmation(order)
+        send_confirmation_email.delay(order_id=str(order.pk))
     except Exception:
         # A missing receipt is worth far less than the access the customer already has, so this
         # never fails the purchase.
         logger.exception("Could not send the confirmation for order %s", order.id)
-        return
+        release_confirmation_email(order.pk)
 
-    Order.objects.filter(pk=order.pk).update(confirmation_email_sent_at=timezone.now())
+
+def claim_confirmation_email(order: Order) -> bool:
+    claimed = Order.objects.filter(
+        pk=order.pk,
+        confirmation_email_queued_at__isnull=True,
+        confirmation_email_sent_at__isnull=True,
+    ).update(confirmation_email_queued_at=timezone.now())
+    return bool(claimed)
+
+
+def release_confirmation_email(order_id) -> None:
+    Order.objects.filter(pk=order_id, confirmation_email_sent_at__isnull=True).update(
+        confirmation_email_queued_at=None
+    )

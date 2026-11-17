@@ -23,6 +23,26 @@ CATEGORY_PARAMETER = OpenApiParameter(
     description="A category slug. Only posts in that category are returned.",
 )
 
+FEATURED_PARAMETER = OpenApiParameter(
+    "featured",
+    bool,
+    OpenApiParameter.QUERY,
+    required=False,
+    description="true returns only the featured posts, false only the rest. Omit it for every post.",
+)
+
+TRUTHY = {"true", "1", "yes"}
+FALSY = {"false", "0", "no"}
+
+
+def _asked_for_featured(value: str) -> bool | None:
+    cleaned = value.strip().lower()
+    if cleaned in TRUTHY:
+        return True
+    if cleaned in FALSY:
+        return False
+    return None
+
 
 @extend_schema(
     summary="List the published blog posts",
@@ -30,7 +50,7 @@ CATEGORY_PARAMETER = OpenApiParameter(
         "Newest first, paginated. Drafts, posts that have been unpublished and posts scheduled for "
         "a time that has not arrived are never returned."
     ),
-    parameters=[CATEGORY_PARAMETER],
+    parameters=[CATEGORY_PARAMETER, FEATURED_PARAMETER],
 )
 class BlogPostListView(ListAPIView):
     permission_classes = [AllowAny]
@@ -38,7 +58,10 @@ class BlogPostListView(ListAPIView):
     pagination_class = BlogPagination
 
     def get_queryset(self):
-        return services.live_posts(category=self.request.query_params.get("category", ""))
+        return services.live_posts(
+            category=self.request.query_params.get("category", ""),
+            featured=_asked_for_featured(self.request.query_params.get("featured", "")),
+        )
 
 
 class BlogPostDetailView(APIView):

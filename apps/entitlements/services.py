@@ -1,7 +1,13 @@
-"""Who may study, and until when.
+"""Who may study what, and until when.
 
 One place answers "does this person have access right now?", used by the cabinet and by every
 learning endpoint, so the answer cannot differ between them.
+
+Access is per feature: a package unlocks some of lessons, practice, hazard clips, exams and the
+e-books, and the purchase keeps a copy of that list. ``has_access`` asks whether anything at all
+is live, which is what the cabinet and the account care about; the learning endpoints ask
+``has_feature`` for the part they serve. Functions that take ``feature`` treat None as "any
+access", which is how they behaved before packages could differ.
 """
 
 import logging
@@ -14,6 +20,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.models import Order, PromoCode
+from apps.catalog.models import Feature, ProductLine
 from apps.core import audit
 from apps.entitlements.models import RevocationReason, Subscription
 
@@ -32,13 +39,17 @@ def granting() -> models.QuerySet[Subscription]:
 
 
 def current_subscription(user: User) -> Subscription | None:
-    """The subscription that decides the customer's access: the one reaching furthest ahead.
+    """The subscription that represents the customer's access in the cabinet.
 
-    Returns the most recently expiring subscription even when it has already lapsed, because the
-    cabinet shows "expired" rather than "never bought anything". Revoked ones are left out: a
-    purchase that was refunded should not be what the cabinet calls the customer's package.
+    A course that has not ended yet, reaching furthest ahead: mock tests bought alongside a course
+    run beside it, and must not become what the customer is told their plan is. Without one, the
+    subscription reaching furthest ahead, even when it has already lapsed, because the cabinet
+    shows "expired" rather than "never bought anything". Revoked ones are left out: a purchase
+    that was refunded should not be what the cabinet calls the customer's package.
     """
-    return granting().filter(user=user).select_related("package", "order").order_by("-package_expires_at").first()
+    purchases = granting().filter(user=user).select_related("package", "order").order_by("-package_expires_at")
+    course = purchases.filter(package__product_line=ProductLine.COURSE, package_expires_at__gt=timezone.now())
+    return course.first() or purchases.first()
 
 
 def subscription_periods(user: User) -> models.QuerySet[Subscription]:
@@ -46,23 +57,62 @@ def subscription_periods(user: User) -> models.QuerySet[Subscription]:
     return granting().filter(user=user).select_related("package").order_by("starts_at", "pk")
 
 
-def has_access(user: User, at=None) -> bool:
-    """Whether this person may use the learning material."""
+def active_subscriptions(user: User, at=None, feature: str | None = None) -> models.QuerySet[Subscription]:
+    """The subscriptions live at ``at``, narrowed to those unlocking ``feature`` when one is given."""
     if not user.is_authenticated or not user.is_active:
-        return False
+        return Subscription.objects.none()
 
     at = at or timezone.now()
-    return granting().filter(user=user, starts_at__lte=at, package_expires_at__gt=at).exists()
+    live = granting().filter(user=user, starts_at__lte=at, package_expires_at__gt=at)
+    return live.filter(features__contains=[feature]) if feature else live
 
 
-def package_of(user: User) -> int | None:
-    """Which package this person is currently on, or None if they have bought nothing."""
-    subscription = current_subscription(user)
+def has_access(user: User, at=None) -> bool:
+    """Whether this person has any live access at all, whatever it unlocks."""
+    return active_subscriptions(user, at).exists()
+
+
+def has_feature(user: User, feature: str, at=None) -> bool:
+    """Whether this person may use one part of the product right now."""
+    return active_subscriptions(user, at, feature).exists()
+
+
+def features_of(user: User, at=None) -> list[str]:
+    """Everything this person's live subscriptions unlock between them, in a fixed order."""
+    granted = active_subscriptions(user, at).values_list("features", flat=True)
+    unlocked = {feature for features in granted for feature in features}
+    return [feature for feature in Feature.values if feature in unlocked]
+
+
+def package_of(user: User, feature: str | None = None, at=None) -> int | None:
+    """Which package decides this person's access, or None if they have bought nothing.
+
+    With a ``feature``, the live subscription unlocking it that reaches furthest ahead. Without
+    one asking for a feature, a short mock test package bought on top of a course would become
+    the package that course chapters are checked against.
+    """
+    if feature is None:
+        subscription = current_subscription(user)
+        return subscription.package_id if subscription else None
+
+    subscription = active_subscriptions(user, at, feature).order_by("-package_expires_at").first()
     return subscription.package_id if subscription else None
 
 
-def access_periods(user: User) -> list[tuple]:
-    return list(granting().filter(user=user).values_list("starts_at", "package_expires_at", "package_id"))
+def packages_of(user: User, feature: str | None = None, at=None) -> list[int]:
+    """Every package live right now that unlocks ``feature`` (or anything, without one).
+
+    Purchases can overlap — mock tests run beside a course — so material limited to some packages
+    is open when any one of them is live, not only the one reaching furthest ahead.
+    """
+    return sorted(set(active_subscriptions(user, at, feature).values_list("package_id", flat=True)))
+
+
+def access_periods(user: User, feature: str | None = None) -> list[tuple]:
+    periods = granting().filter(user=user)
+    if feature:
+        periods = periods.filter(features__contains=[feature])
+    return list(periods.values_list("starts_at", "package_expires_at", "package_id"))
 
 
 def package_covering(periods: list[tuple], at) -> int | None:
@@ -70,49 +120,55 @@ def package_covering(periods: list[tuple], at) -> int | None:
     return max(covering, key=lambda period: period[1])[2] if covering else None
 
 
-def package_at(user: User, at) -> int | None:
-    return package_covering(access_periods(user), at)
+def package_at(user: User, at, feature: str | None = None) -> int | None:
+    return package_covering(access_periods(user, feature), at)
 
 
-def could_practise(user: User, question, at, periods: list[tuple] | None = None) -> bool:
+def could_practise(
+    user: User, question, at, periods: list[tuple] | None = None, feature: str | None = Feature.PRACTICE
+) -> bool:
     if not user.is_authenticated or not user.is_active:
         return False
 
-    periods = access_periods(user) if periods is None else periods
-    covering = [period for period in periods if period[0] <= at < period[1]]
+    periods = access_periods(user, feature) if periods is None else periods
+    covering = {period[2] for period in periods if period[0] <= at < period[1]}
     if not covering:
         return False
 
     required = {package.pk for package in question.chapter.only_for_packages.all()}
-    return not required or package_covering(periods, at) in required
+    return not required or bool(required & covering)
 
 
-#: Tells "no package was passed" apart from "the student is on no package", which is a real value.
+#: Tells "no packages were passed" apart from "the student is on no package", which is a real value.
 _UNSET = object()
 
 
-def _allows(package_id: int | None, prefix: str = "") -> Q:
-    """Material is allowed when it lists no packages, or lists the one the student is on.
+def _allows(package_ids: list[int], prefix: str = "") -> Q:
+    """Material is allowed when it lists no packages, or lists one the student is on.
 
     ``prefix`` walks up the hierarchy, so the same rule covers an item, its subchapter and its
     chapter: a restriction higher up covers everything beneath it.
     """
     unrestricted = Q(**{f"{prefix}only_for_packages__isnull": True})
-    if package_id is None:
+    if not package_ids:
         return unrestricted
-    return unrestricted | Q(**{f"{prefix}only_for_packages": package_id})
+    return unrestricted | Q(**{f"{prefix}only_for_packages__in": package_ids})
 
 
-def can_view(user: User, content, at=None) -> bool:
+def _granted(user: User, at, feature: str | None) -> bool:
+    return has_feature(user, feature, at) if feature else has_access(user, at)
+
+
+def can_view(user: User, content, at=None, feature: str | None = None) -> bool:
     """Whether this person may see a particular piece of learning material.
 
-    Two questions, in order: do they have learning access at all, and is this material — or the
-    subchapter or chapter holding it — limited to packages they did not buy.
+    Two questions, in order: do they have access to this part of the product at all, and is this
+    material — or the subchapter or chapter holding it — limited to packages they did not buy.
     """
-    if not has_access(user, at):
+    if not _granted(user, at, feature):
         return False
 
-    package_id = package_of(user)
+    package_ids = set(packages_of(user, feature, at))
     owners = [content]
     subchapter = getattr(content, "subchapter", None)
     if subchapter is not None:
@@ -127,61 +183,106 @@ def can_view(user: User, content, at=None) -> bool:
 
     for owner in owners:
         required = {package.pk for package in owner.only_for_packages.all()}
-        if required and package_id not in required:
+        if required and not required & package_ids:
             return False
 
     return True
 
 
-def visible_content(user: User, queryset, at=None):
+def visible_content(user: User, queryset, at=None, feature: str | None = None):
     """Narrow a queryset of learning content to what this person may see.
 
     Used for lists, where asking per item would mean a query per row. Checks the item, its
     subchapter and its chapter, because a package that excludes a chapter excludes its contents.
     """
-    if not has_access(user, at):
+    if not _granted(user, at, feature):
         return queryset.none()
 
-    package_id = package_of(user)
+    package_ids = packages_of(user, feature, at)
     return queryset.filter(
-        _allows(package_id),
-        _allows(package_id, "subchapter__"),
-        _allows(package_id, "subchapter__chapter__"),
+        _allows(package_ids),
+        _allows(package_ids, "subchapter__"),
+        _allows(package_ids, "subchapter__chapter__"),
     ).distinct()
 
 
-def visible_subchapters(user: User, queryset, at=None, package_id=_UNSET):
+def visible_subchapters(user: User, queryset, at=None, package_ids=_UNSET, feature: str | None = None):
     """Narrow subchapters to what this person may see.
 
-    ``package_id`` can be passed by a caller that already knows it — listing a whole course
-    otherwise asked which package the student is on once per chapter, and the answer cannot
+    ``package_ids`` can be passed by a caller that already knows them — listing a whole course
+    otherwise asked which packages the student is on once per chapter, and the answer cannot
     change within one request.
     """
-    if package_id is _UNSET:
-        if not has_access(user, at):
+    if package_ids is _UNSET:
+        if not _granted(user, at, feature):
             return queryset.none()
-        package_id = package_of(user)
+        package_ids = packages_of(user, feature, at)
 
-    return queryset.filter(_allows(package_id), _allows(package_id, "chapter__")).distinct()
+    return queryset.filter(_allows(package_ids), _allows(package_ids, "chapter__")).distinct()
 
 
-def visible_questions(user: User, queryset, at=None):
-    """Narrow a queryset of questions to what this person may practise.
+def visible_questions(user: User, queryset, at=None, feature: str | None = None):
+    """Narrow a queryset of questions to what this person may practise, or sit in an exam.
 
     A question belongs to a chapter, and a package that excludes the chapter excludes its
     questions too, so a student is never asked about material they cannot read.
     """
-    if not has_access(user, at):
+    if not _granted(user, at, feature):
         return queryset.none()
 
-    return queryset.filter(_allows(package_of(user), "chapter__")).distinct()
+    return queryset.filter(_allows(packages_of(user, feature, at), "chapter__")).distinct()
 
 
-def visible_chapters(user: User, queryset, at=None):
-    if not has_access(user, at):
+def visible_chapters(user: User, queryset, at=None, feature: str | None = None):
+    if not _granted(user, at, feature):
         return queryset.none()
 
-    return queryset.filter(_allows(package_of(user))).distinct()
+    return queryset.filter(_allows(packages_of(user, feature, at))).distinct()
+
+
+def exams_from_mock_tests_only(user: User, at=None) -> bool:
+    """Whether exam access comes only from mock-test packages.
+
+    Those buyers sit real mock papers without course chapter gates, and do not get practice
+    exams — those can be sold separately. A course holder, alone or alongside mock tests, keeps
+    the usual course rules.
+    """
+    unlocking = list(active_subscriptions(user, at, Feature.EXAMS).select_related("package"))
+    if not unlocking:
+        return False
+    return all(subscription.package.product_line == ProductLine.MOCK_TESTS for subscription in unlocking)
+
+
+def exam_sittings_left(user: User, at=None) -> int | None:
+    """How many more exams this person may sit. None when nothing limits them.
+
+    A course without a limit wins over any mock test package bought alongside it; otherwise the
+    sittings left on every live mock test package are added together.
+    """
+    unlocking = list(active_subscriptions(user, at, Feature.EXAMS))
+    if any(subscription.exam_sittings is None for subscription in unlocking):
+        return None
+    return sum(subscription.sittings_left or 0 for subscription in unlocking)
+
+
+def claim_exam_sitting(user: User, at=None) -> Subscription | None:
+    """The subscription a sitting about to be recorded is charged to, or None when none are left.
+
+    Must run in the same transaction that records the sitting. The live subscriptions are locked
+    first, so two exams submitted at once are counted one after the other and cannot both take
+    the last sitting. A subscription without a limit is used before one with a limit, so a
+    course holder never spends the mock tests they bought; among limited ones, the one running
+    out soonest is spent first, so nothing bought is left to expire unused.
+    """
+    unlocking = list(
+        active_subscriptions(user, at, Feature.EXAMS).select_for_update().order_by("package_expires_at", "pk")
+    )
+
+    unlimited = [subscription for subscription in unlocking if subscription.exam_sittings is None]
+    if unlimited:
+        return unlimited[-1]
+
+    return next((subscription for subscription in unlocking if subscription.sittings_left), None)
 
 
 def account_lifetime_days(duration_days: int) -> float:
@@ -204,27 +305,41 @@ def activate(order: Order, user: User) -> tuple[Subscription, bool]:
     if existing is not None:
         return existing, False
 
-    # Access continues from whatever the customer already has, so buying early never costs them
-    # the days they have left.
+    package = order.package
+    features = list(package.features)
     starts_at = order.paid_at or timezone.now()
-    active = (
-        granting()
-        .select_for_update()
-        .filter(user=user, package_expires_at__gt=starts_at)
-        .order_by("-package_expires_at")
-        .first()
-    )
-    if active is not None:
-        starts_at = active.package_expires_at
 
-    duration = order.package.duration_days
+    # Renewing a course continues from the course the customer already has, so buying early never
+    # costs them the days they have left — even if what courses unlock has changed in between.
+    # Anything else starts straight away: mock tests bought on top of a course run alongside it
+    # rather than after it, and a top-up of mock tests has to be usable now, not once the
+    # sittings already bought have expired.
+    if package.exam_sittings is None:
+        active = (
+            granting()
+            .select_for_update()
+            .filter(
+                user=user,
+                package_expires_at__gt=starts_at,
+                package__product_line=package.product_line,
+                exam_sittings__isnull=True,
+            )
+            .order_by("-package_expires_at")
+            .first()
+        )
+        if active is not None:
+            starts_at = active.package_expires_at
+
+    duration = package.duration_days
     subscription = Subscription.objects.create(
         user=user,
         order=order,
-        package=order.package,
+        package=package,
         starts_at=starts_at,
         package_expires_at=starts_at + timedelta(days=duration),
         account_expires_at=starts_at + timedelta(days=account_lifetime_days(duration)),
+        features=features,
+        exam_sittings=package.exam_sittings,
     )
 
     _sync_account(user, subscription)
@@ -337,7 +452,10 @@ def restore(order: Order, reason: RevocationReason) -> Subscription | None:
 
 
 def _sync_account(user: User, subscription: Subscription) -> None:
-    """Copy the account expiry onto the user and let a lapsed customer back in.
+    """Move the account expiry out to this purchase's, and let a lapsed customer back in.
+
+    Only ever later: a short mock test package bought during a long course must not close the
+    account before the course ends.
 
     Without the reactivation a returning customer whose account had been closed would pay and
     still be unable to sign in. Staff accounts are left alone; their access is not bought.
@@ -349,7 +467,8 @@ def _sync_account(user: User, subscription: Subscription) -> None:
     account = User.objects.select_for_update().get(pk=user.pk)
 
     fields = ["account_expires_at", "updated_at"]
-    account.account_expires_at = subscription.account_expires_at
+    if account.account_expires_at is None or account.account_expires_at < subscription.account_expires_at:
+        account.account_expires_at = subscription.account_expires_at
 
     if not account.is_active and not account.is_staff:
         account.is_active = True

@@ -34,10 +34,12 @@ class ScheduleInThePastError(Exception):
     """A post can only be scheduled for a time that has not passed."""
 
 
-def live_posts(*, category: str = "", at: datetime | None = None):
+def live_posts(*, category: str = "", featured: bool | None = None, at: datetime | None = None):
     posts = BlogPost.objects.live(at).select_related("category", "author")
     if category:
         posts = posts.filter(category__slug=category)
+    if featured is not None:
+        posts = posts.filter(featured=featured)
     return posts
 
 
@@ -75,6 +77,10 @@ def problems_with(post: BlogPost) -> list[str]:
 
 def warnings_about(post: BlogPost) -> list[str]:
     warnings = []
+    if not post.excerpt:
+        warnings.append("No summary, so the blog cards show nothing under the title.")
+    if not post.cover_image:
+        warnings.append("No cover picture, so the blog cards show an empty frame.")
     if not post.meta_description:
         warnings.append("No meta description, so search engines will write their own.")
     if not post.social_image:

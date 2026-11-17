@@ -55,8 +55,11 @@ def send(
     from apps.core.tasks import send_email
 
     _refuse_queued_secrets(context)
+    job: dict = {"template": template, "subject": subject, "to": to, "context": context}
+    if reply_to is not None:
+        job["reply_to"] = reply_to
     try:
-        send_email.delay(template=template, subject=subject, to=to, context=context, reply_to=reply_to)
+        send_email.delay(**job)
     except Exception:
         logger.exception("Could not queue the %s email, sending it here instead", template)
         send_now(template=template, subject=subject, to=to, context=context, reply_to=reply_to)

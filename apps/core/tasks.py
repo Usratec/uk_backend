@@ -29,6 +29,13 @@ def send_email(
     to: str | list[str],
     context: dict,
     reply_to: str | list[str] | None = None,
+    **unsupported,
 ) -> None:
     """Send one message. Retried a few times, because mail servers have bad minutes."""
+    if unsupported:
+        logger.warning(
+            "Ignoring unsupported argument(s) on a queued %s email: %s",
+            template,
+            ", ".join(sorted(unsupported)),
+        )
     email.send_now(template=template, subject=subject, to=to, context=context, reply_to=reply_to)

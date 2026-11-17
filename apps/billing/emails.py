@@ -23,23 +23,31 @@ def send_welcome(user: User) -> None:
     queue_security_link(token, "welcome")
 
 
+ORDER_CONFIRMATION_TEMPLATE = "order_confirmation"
+ORDER_CONFIRMATION_SUBJECT = "Your order has been confirmed"
+
+
+def order_confirmation_context(order) -> dict:
+    return {
+        "first_name": order.first_name,
+        "package_name": order.package.name,
+        "duration_days": order.package.duration_days,
+        "amount": f"{order.final_price:.2f}",
+        "order_id": str(order.id),
+        "immediate_access_wording": (
+            order.immediate_access_wording
+            if order.terms_accepted is True
+            and order.immediate_access_accepted is True
+            and order.consent_recorded_at is not None
+            else ""
+        ),
+    }
+
+
 def send_order_confirmation(order) -> None:
-    email.send(
-        template="order_confirmation",
-        subject="Your order has been confirmed",
+    email.send_now(
+        template=ORDER_CONFIRMATION_TEMPLATE,
+        subject=ORDER_CONFIRMATION_SUBJECT,
         to=order.email,
-        context={
-            "first_name": order.first_name,
-            "package_name": order.package.name,
-            "duration_days": order.package.duration_days,
-            "amount": f"{order.final_price:.2f}",
-            "order_id": str(order.id),
-            "immediate_access_wording": (
-                order.immediate_access_wording
-                if order.terms_accepted is True
-                and order.immediate_access_accepted is True
-                and order.consent_recorded_at is not None
-                else ""
-            ),
-        },
+        context=order_confirmation_context(order),
     )

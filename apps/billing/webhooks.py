@@ -10,11 +10,12 @@ the order row is locked while it is read and written.
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.billing.models import Order, OrderStatus, StripeEvent
+from apps.billing.models import UNSETTLED_STATUSES, Order, OrderStatus, StripeEvent
 from apps.entitlements.models import RevocationReason
 from apps.integrations.stripe_client import CHECKOUT_CURRENCY, to_pence
 
@@ -33,6 +34,10 @@ FAILED_EVENTS = {
 
 INTENT_PAID_EVENT = "payment_intent.succeeded"
 INTENT_FAILED_EVENT = "payment_intent.payment_failed"
+INTENT_ATTEMPT_EVENTS = {
+    "payment_intent.requires_action",
+    "payment_intent.processing",
+}
 
 REFUNDED_EVENT = "charge.refunded"
 DISPUTE_OPENED_EVENT = "charge.dispute.created"
@@ -67,6 +72,8 @@ def handle_event(event: dict) -> None:
             _mark_intent_paid(session)
         elif event_type == INTENT_FAILED_EVENT:
             _mark_intent_failed(session)
+        elif event_type in INTENT_ATTEMPT_EVENTS:
+            _mark_intent_attempt_started(session, event.get("created"))
         elif event_type == REFUNDED_EVENT:
             _handle_refund(session)
         elif event_type == DISPUTE_OPENED_EVENT:
@@ -345,16 +352,43 @@ def _mark_intent_failed(intent: dict) -> None:
     code = str(error.get("decline_code") or error.get("code") or "")[:100]
     message = str(error.get("message") or "")[:255]
 
-    updated = Order.objects.filter(pk=order.pk, status=OrderStatus.PENDING).update(
-        status=OrderStatus.FAILED,
+    updated = Order.objects.filter(
+        pk=order.pk,
+        status__in=UNSETTLED_STATUSES,
+        payment_intent_cancelled_at__isnull=True,
+    ).update(
         failure_code=code,
         failure_message=message,
         updated_at=timezone.now(),
     )
     if updated:
-        logger.info("Order %s failed (%s)", order.pk, code or "no code given")
+        logger.info("A payment attempt on order %s was declined (%s); it can be retried", order.pk, code or "no code")
     else:
         logger.info("Leaving order %s as it is; a failed payment does not change a settled order", order.pk)
+
+
+def _mark_intent_attempt_started(intent: dict, created: object) -> None:
+    if type(created) is not int:
+        logger.info("Ignoring a payment attempt event with no creation time")
+        return
+
+    order = _order_for_intent(intent)
+    if order is None:
+        return
+
+    started_at = datetime.fromtimestamp(created, tz=UTC)
+    cleared = (
+        Order.objects.filter(
+            pk=order.pk,
+            status__in=UNSETTLED_STATUSES,
+            payment_intent_cancelled_at__isnull=True,
+            updated_at__lte=started_at,
+        )
+        .exclude(failure_code="", failure_message="")
+        .update(failure_code="", failure_message="", updated_at=timezone.now())
+    )
+    if cleared:
+        logger.info("A new payment attempt started on order %s; cleared the last decline", order.pk)
 
 
 def _order_for_payment(obj: dict) -> Order | None:

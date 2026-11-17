@@ -246,7 +246,9 @@ class TestTidyingUpWhatWasSubmitted:
 class TestTheClipsLength:
     def test_a_clip_without_a_length_is_published_with_a_warning(self, clip):
         assert services.problems_with_clip(clip) == []
-        assert "spread evenly" in services.warnings_about(clip)[0]
+        warnings = services.warnings_about(clip)
+        assert any("spread evenly" in warning for warning in warnings)
+        assert any("cannot be checked against the video" in warning for warning in warnings)
 
     def test_a_clip_with_a_length_has_nothing_to_warn_about(self, clip):
         clip.duration_seconds = 40
@@ -297,12 +299,41 @@ class TestWhatMakesAClipUsable:
 
         assert "not a video" in services.problems_with_clip(clip)[0]
 
-    def test_a_hazard_past_the_end_of_the_video_is_no_longer_caught_here(self, clip):
-        HazardWindow.objects.create(clip=clip, label="Too late", starts_at="29.00", ends_at="40.00", order=2)
+    def test_a_hazard_past_the_end_of_the_video_is_refused_when_length_is_set(self, clip):
+        """It could never be spotted, so publishing would only lose students marks."""
+        clip.duration_seconds = Decimal("41.67")
+        clip.save(update_fields=["duration_seconds"])
+        HazardWindow.objects.create(clip=clip, label="Too late", starts_at="29.00", ends_at="50.00", order=2)
 
         problems = services.problems_with_clip(clip)
 
-        assert not any("long" in problem for problem in problems)
+        assert any("ends after the video (41.67 s)" in problem for problem in problems)
+        assert any("Too late" in problem for problem in problems)
+
+    def test_a_hazard_that_starts_after_the_video_is_refused_when_length_is_set(self, clip):
+        clip.duration_seconds = Decimal("41.67")
+        clip.save(update_fields=["duration_seconds"])
+        HazardWindow.objects.create(clip=clip, label="Way late", starts_at="600.00", ends_at="900.00", order=2)
+
+        problems = services.problems_with_clip(clip)
+
+        assert any("starts after the video (41.67 s)" in problem for problem in problems)
+
+    def test_a_hazard_past_the_end_is_still_saved_when_there_is_no_length(self, clip):
+        """Option A: drafts may be mistimed until Length is filled; publish is not blocked yet."""
+        HazardWindow.objects.create(clip=clip, label="Too late", starts_at="29.00", ends_at="40.00", order=2)
+
+        assert services.problems_with_clip(clip) == []
+
+    def test_a_clip_with_a_window_past_its_length_cannot_be_published(self, publisher, clip):
+        clip.duration_seconds = Decimal("33.41")
+        clip.save(update_fields=["duration_seconds"])
+        window = clip.windows.get()
+        window.ends_at = Decimal("36.00")
+        window.save(update_fields=["ends_at"])
+
+        with pytest.raises(services.NotReadyToPublishError, match="ends after the video"):
+            services.publish(actor=publisher, instance=clip)
 
     def test_overlapping_hazards_are_refused(self, clip):
         """One click would otherwise score for two hazards at once."""
@@ -683,6 +714,33 @@ class TestTheAdmin:
 
         assert "no hazards marked" in page
 
+    def test_a_window_past_the_length_is_flagged_on_its_row(self, editor_client, clip):
+        """Managers enter timings; the form should say so on the row without refusing the save."""
+        clip.duration_seconds = Decimal("41.67")
+        clip.save(update_fields=["duration_seconds"])
+        window = clip.windows.get()
+        window.ends_at = Decimal("50.00")
+        window.save(update_fields=["ends_at"])
+
+        page = editor_client.get(reverse("admin:learning_hazardclip_change", args=[clip.pk])).content.decode()
+
+        assert "This window ends after the video (41.67 s)" in page
+
+    def test_a_window_past_the_length_can_still_be_saved(self, editor_client, clip):
+        clip.duration_seconds = Decimal("41.67")
+        clip.save(update_fields=["duration_seconds"])
+        window = clip.windows.get()
+
+        response = editor_client.post(
+            reverse("admin:learning_hazardclip_change", args=[clip.pk]),
+            clip_form(clip, **{"windows-0-ends_at": "50.00"}),
+            follow=True,
+        )
+
+        assert response.status_code == 200
+        window.refresh_from_db()
+        assert window.ends_at == Decimal("50.00")
+
     def test_attempts_are_shown_and_cannot_be_edited(self, publisher_client, student, live_clip):
         services.record_hazard_attempt(student(), live_clip, {"score": 4, "topScore": 5, "voided": False})
 
@@ -774,6 +832,7 @@ def clip_form(clip, **overrides) -> dict:
         "description": clip.description,
         "media": clip.media_id,
         "max_clicks": clip.max_clicks,
+        "duration_seconds": "" if clip.duration_seconds is None else str(clip.duration_seconds),
         "order": clip.order,
         "publish_from": "",
         "windows-TOTAL_FORMS": str(len(windows)),

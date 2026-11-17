@@ -195,7 +195,16 @@ class Order(TimestampedModel):
     # even though the account exists by then.
     welcome_email_required = models.BooleanField(default=False)
     welcome_email_sent_at = models.DateTimeField(null=True, blank=True)
-    confirmation_email_sent_at = models.DateTimeField(null=True, blank=True)
+    confirmation_email_queued_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the receipt was handed to a worker. Not proof that it was sent.",
+    )
+    confirmation_email_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the mail provider accepted the receipt. Acceptance is not proof of delivery.",
+    )
     manager_notified_at = models.DateTimeField(null=True, blank=True)
 
     objects = OrderQuerySet.as_manager()

@@ -7,6 +7,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
+from apps.catalog.models import Feature
 from apps.entitlements import services as entitlements
 from apps.learning import services
 from apps.learning.models import (
@@ -67,7 +68,7 @@ def practice_questions(student, at=None):
         ),
         at=at,
     )
-    return entitlements.visible_questions(student, questions, at=at).order_by("pk")
+    return entitlements.visible_questions(student, questions, at=at, feature=Feature.PRACTICE).order_by("pk")
 
 
 def question_with_its_answer(question: Question) -> dict:
@@ -120,7 +121,8 @@ def pack_stamp(student, questions) -> dict:
 
     newest = max((changed for _, changed in parts if changed is not None), default=None)
     counted = "|".join(count for count, _ in parts)
-    digest = hashlib.sha256(f"{counted}|package:{entitlements.package_of(student)}".encode()).hexdigest()
+    packages = ",".join(str(package) for package in entitlements.packages_of(student, Feature.PRACTICE))
+    digest = hashlib.sha256(f"{counted}|package:{packages}".encode()).hexdigest()
 
     return {"version": digest[:16], "updatedAt": newest}
 
@@ -175,7 +177,7 @@ def sync(student, answers: list[Answer | dict], at=None) -> list[dict]:
         .prefetch_related("question__options")
     }
     questions = _practisable(student, {answer.question_id for answer in wanted}, at)
-    periods = entitlements.access_periods(student)
+    periods = entitlements.access_periods(student, Feature.PRACTICE)
 
     results = []
     recorded = False

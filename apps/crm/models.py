@@ -7,7 +7,8 @@ granted without handing over the Users admin, which carries the staff privilege 
 """
 
 from django.db import models
-from django.db.models import OuterRef, Subquery
+from django.db.models import Case, OuterRef, Q, Subquery, When
+from django.db.models.functions import Now
 
 from apps.accounts.models import User
 
@@ -16,15 +17,20 @@ class CandidateQuerySet(models.QuerySet):
     def with_current_plan(self):
         """Attach the current plan's name and end date, in one query, for the list and detail views.
 
-        A customer can have several subscriptions once they buy again, so "current" means the one
-        reaching furthest ahead, matching how access itself is decided — which means leaving out
-        the ones that were refunded or charged back, so support is not told a customer is on a
-        plan they no longer hold.
+        A customer can have several subscriptions once they buy again, so "current" is the one the
+        cabinet shows them (``entitlements.current_subscription``): a course that has not ended,
+        ahead of mock tests bought alongside it, and otherwise the one reaching furthest ahead —
+        leaving out the ones that were refunded or charged back, so support is not told a customer
+        is on a plan they no longer hold.
         """
+        from apps.catalog.models import ProductLine
         from apps.entitlements.models import Subscription
 
-        current = Subscription.objects.filter(user=OuterRef("pk"), revoked_at__isnull=True).order_by(
-            "-package_expires_at"
+        ongoing_course = Q(package__product_line=ProductLine.COURSE, package_expires_at__gt=Now())
+        current = (
+            Subscription.objects.filter(user=OuterRef("pk"), revoked_at__isnull=True)
+            .annotate(ongoing_course=Case(When(ongoing_course, then=0), default=1))
+            .order_by("ongoing_course", "-package_expires_at")
         )
         return self.annotate(
             current_plan_name=Subquery(current.values("package__name")[:1]),

@@ -53,13 +53,13 @@ container start, so scaling out can't run them concurrently.
 | Health | `GET /api/healthcheck/` |
 | Authentication | `POST /api/auth/register/`, `login/`, `logout/`, `token/refresh/`, `password/reset/`, `password/reset/confirm/`; `GET /api/auth/email/verify/`, `POST /api/auth/email/verify/resend/` |
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
-| Catalogue | `GET /api/packages/`, `GET /api/packages/<slug>/` |
+| Catalogue | `GET /api/packages/?product_line=course\|mock_tests`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
-| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
+| Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/cover-image/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
 | Sitemap | `GET /api/sitemap.xml` |
 | Payments | `POST /api/payments/intent/`, `POST /api/payments/checkout/`, `POST /api/payments/promo-codes/validate/`, `GET /api/payments/orders/<uuid>/`, `POST /api/payments/webhook/stripe/` |
-| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/learning-url/`, `GET /api/cabinet/orders/` |
+| Cabinet | `GET/PATCH /api/cabinet/profile/`, `POST/DELETE /api/cabinet/profile/photo/`, `POST /api/cabinet/email/change/`, `GET /api/cabinet/email/change/confirm/`, `POST /api/cabinet/password/change/`, `GET /api/cabinet/subscription/`, `GET /api/cabinet/orders/` |
 | Notifications | `GET /api/notifications/`, `POST /api/notifications/read-all/`, `POST /api/notifications/<id>/read/` |
 | Learning | `GET /api/learn/topics/`, `GET /api/learn/lessons/<slug>/`, `POST /api/learn/videos/<slug>/progress/`, `GET /api/learn/offline/practice/`, `POST /api/learn/answers/batch/` (and the rest of `/api/learn/`) |
 | Public e-books | `GET /api/learn/ebook/public/`, `GET /api/learn/ebook/public/samples/<slug>/`, `POST /api/learn/ebook/public/sample-request/` |
@@ -71,10 +71,20 @@ them show them all at once, and unpublished items are never returned. Everything
 token.
 
 The blog is the one public list that *is* paginated, because it grows without limit: `GET /api/blog/`
-returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>`.
-`GET /api/blog/<slug>/` adds the post's rich text. Both return only posts that are published *and*
-whose publish date has passed, so a draft, an unpublished post and a post scheduled for next week
-are all 404 — the status and the date are checked in the query, not after it.
+returns ten posts a page (`?page=`, `?page_size=` up to 50) and filters on `?category=<slug>` and
+`?featured=true|false`. `GET /api/blog/<slug>/` adds the post's rich text. Both return only posts
+that are published *and* whose publish date has passed, so a draft, an unpublished post and a post
+scheduled for next week are all 404 — the status and the date are checked in the query, not after it.
+
+Each post carries what the blog design shows: `excerpt` (the summary on the cards, written
+separately from `meta_description`, which is for search engines), `cover_image`
+(`{url, alt, width, height}`, or null — the cover on the cards and at the top of the article, which
+is not the sharing image in `social_image_url`), `reading_time` in minutes, `featured` for the
+Featured read at the top of the blog, and `updated_at` for `<lastmod>`. The detail response adds
+`study_tip` (`{title, text, button_label, button_link}`, or null) for the Study tip box under the
+article. Reading time is worked out from the content on every save, so the listing carries it
+without the content; a cover needs a description, and a study tip needs both a title and its words,
+with a button label and link that stand or fall together.
 
 When a post's slug changes, the old address keeps working: it answers `301 Moved Permanently` with a
 `Location` header for the post's new API address and a body of
@@ -110,7 +120,10 @@ Stripe's signed webhook says so.
   page with Stripe's Payment Element, so card details never reach this server, and there is no
   redirect. Returns a `client_secret` the browser confirms, then the page polls
   `GET /api/payments/orders/<uuid>/`. The outcome arrives as `payment_intent.succeeded` or
-  `payment_intent.payment_failed`.
+  `payment_intent.payment_failed`. A declined card leaves the order `pending` with
+  `failure_code`/`failure_message` set, so the learner can try another card on the same payment;
+  `payment_intent.requires_action` and `payment_intent.processing` clear that reason when the next
+  attempt starts, so the Stripe webhook endpoint must be subscribed to all four events.
 * **Redirect** (`POST /api/payments/checkout/`, open to guests). Creates a pending order and sends
   the customer to Stripe's hosted page. The outcome arrives as `checkout.session.completed`. Kept
   as the fallback while the embedded flow is being rolled out.
@@ -208,8 +221,60 @@ to repeat: Stripe redelivers events, and each step checks whether it has already
 
 Access is two dates. `package_expires_at` ends learning access; `account_expires_at` is later by
 `ACCOUNT_LIFETIME_COEFFICIENT` (1.5, editable in the admin), so a lapsed customer can still sign
-in and buy again. Buying while access is live adds the new period onto the end, so nothing paid
-for is lost.
+in and buy again. Buying a course package while a course is live adds the new period onto the
+end, so nothing paid for is lost, even if what courses unlock has changed in between. Anything
+else — mock tests on top of a course, a course on top of mock tests, or a second mock test
+package — starts straight away and runs alongside. The account expiry only ever moves later.
+
+While purchases overlap, the cabinet headline and the CRM's current plan show the course that has
+not ended, falling back to the purchase reaching furthest ahead. Expiry reminders and "access
+ended" notices are skipped only when another purchase carries on and unlocks at least as much, so
+a course ending under live mock tests is still announced, and mock tests ending mid-course are not.
+Material limited to certain packages is open when any live package that unlocks that part of the
+product is listed.
+
+### Packages and features
+
+A package unlocks one or more **features**, ticked in **Django admin → Catalog → Packages**:
+
+| Feature | Unlocks |
+| --- | --- |
+| `lessons` | Topics, lessons, lesson videos and the question checks inside lessons |
+| `practice` | Practice questions, road signs, saved questions and the offline pack |
+| `hazard` | The hazard perception clip library |
+| `exams` | Practice exams and mock tests (`/api/learn/exams/…`) |
+| `ebook` | E-books whose **edition** is *Full e-book* |
+| `compact_ebook` | E-books whose **edition** is *Compact e-book* |
+
+Course packages unlock everything, which is what every package did before features existed;
+existing packages and purchases were migrated that way, so nobody's access changed. Selling another
+part on its own later means adding a value to `Feature` and gating the endpoints that serve it.
+
+**Product line** (`course` or `mock_tests`) decides which sales block lists a package. It does not
+affect access. `GET /api/packages/` lists course packages; `?product_line=mock_tests` lists the mock
+test block; any other value is a 400. Each package now also returns `product_line`, `features` and
+`exam_sittings`. `GET /api/packages/<slug>/` finds a package whichever block it is in, so checkout
+works the same, purchase consent included.
+
+**Exam sittings.** A package with `exams` may set `exam_sittings`; empty means no limit. Every
+submitted exam is charged to one live purchase: one without a limit first (so a course holder never
+spends the mock tests they bought), otherwise the mock test package expiring soonest. Once none are
+left, starting or submitting an exam answers 402 with `"No mock tests left. Buy more to sit
+another."`; past results stay readable. `GET /api/learn/exams/` returns `sittingsRemaining`
+(`null` for no limit).
+
+What a purchase unlocks and how many sittings it allows are copied onto the subscription when it is
+granted, so editing a package never changes what somebody already bought. The cabinet's
+`GET /api/cabinet/subscription/` adds `features` (everything live purchases unlock between them)
+and `exam_sittings_remaining`, and each period adds `product_line`, `features` and `exam_sittings`.
+The order admin shows the product line and the access period; the subscription admin and the CRM's
+access history show what each purchase unlocks and sittings used against the allowance.
+
+A migration seeds three mock test packages from the design — `mock-5` (Starter, £5.99, 5 sittings),
+`mock-10` (Saver, £9.99, 10, featured) and `mock-30` (Best value, £19.99, 30) — each 30 days with
+exams and the compact e-book, active on migrate. Prices, sittings and duration remain editable in
+admin. The compact e-book itself is an `Ebook` with edition *Compact e-book*, written and published
+by the content team.
 
 Scheduled jobs run from the `beat` service: publishing blog posts whose time has come every five
 minutes, expiry reminders at 09:00, telling learners their

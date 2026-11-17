@@ -290,7 +290,8 @@ def cancel_payment(order_id: str) -> bool:
 
     if intent.status in SETTLING_INTENT_STATUSES:
         logger.info("Not cancelling order %s: its payment is %s", order_id, intent.status)
-        _stop_sweeping(order_id)
+        if intent.status == "succeeded":
+            _stop_sweeping(order_id)
         return False
 
     if intent.status in OPEN_INTENT_STATUSES:

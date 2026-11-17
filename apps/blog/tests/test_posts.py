@@ -29,9 +29,14 @@ class TestList:
             "id",
             "title",
             "slug",
+            "excerpt",
             "category",
             "author",
             "publish_date",
+            "updated_at",
+            "reading_time",
+            "featured",
+            "cover_image",
             "social_image_url",
             "meta_title",
             "meta_description",
@@ -186,6 +191,13 @@ class TestDetail:
 
         assert api.get(detail_url(post.slug)).status_code == 200
 
+    def test_carries_the_fields_the_article_page_reads(self, api):
+        make_post(slug="design")
+
+        data = api.get(detail_url("design")).data
+
+        assert set(data) >= {"excerpt", "cover_image", "reading_time", "featured", "study_tip", "updated_at"}
+
     def test_a_draft_is_not_found(self, api):
         post = make_post(status=BlogStatus.DRAFT)
 
@@ -248,3 +260,175 @@ class TestSocialImage:
         post.save(update_fields=["status", "updated_at"])
 
         assert api.get(reverse("blog-post-social-image", args=["old-address"])).status_code == 404
+
+
+class TestTheArticleFields:
+    def test_the_summary_is_separate_from_the_meta_description(self, api):
+        make_post(
+            slug="summaries",
+            excerpt="A short summary for the cards.",
+            meta_description="A longer line written for search engines.",
+        )
+
+        data = api.get(detail_url("summaries")).data
+
+        assert data["excerpt"] == "A short summary for the cards."
+        assert data["meta_description"] == "A longer line written for search engines."
+
+    def test_a_post_without_a_summary_returns_an_empty_string(self, api):
+        make_post(slug="bare")
+
+        assert api.get(detail_url("bare")).data["excerpt"] == ""
+
+    def test_the_reading_time_is_worked_out_from_the_content(self, api):
+        make_post(slug="long-read", body_html="<p>" + " ".join(["word"] * 600) + "</p>")
+
+        assert api.get(detail_url("long-read")).data["reading_time"] == 3
+
+    def test_a_short_post_still_takes_a_minute(self, api):
+        make_post(slug="short", body_html="<p>Keep both hands on the wheel.</p>")
+
+        assert api.get(detail_url("short")).data["reading_time"] == 1
+
+    def test_a_post_with_no_content_takes_no_time(self, api):
+        make_post(slug="empty", body_html="")
+
+        assert api.get(detail_url("empty")).data["reading_time"] == 0
+
+    def test_the_reading_time_is_rewritten_when_the_content_changes(self, api):
+        post = make_post(slug="growing", body_html="<p>Short.</p>")
+        post.body_html = "<p>" + " ".join(["word"] * 1000) + "</p>"
+        post.save()
+
+        assert api.get(detail_url("growing")).data["reading_time"] == 5
+
+    def test_the_reading_time_is_in_the_listing_too(self, api):
+        make_post(body_html="<p>" + " ".join(["word"] * 400) + "</p>")
+
+        assert api.get(LIST_URL).data["results"][0]["reading_time"] == 2
+
+    def test_a_featured_post_says_so(self, api):
+        make_post(slug="featured-post", featured=True)
+
+        assert api.get(detail_url("featured-post")).data["featured"] is True
+        assert api.get(LIST_URL).data["results"][0]["featured"] is True
+
+    def test_posts_are_not_featured_unless_chosen(self, api):
+        make_post(slug="ordinary")
+
+        assert api.get(detail_url("ordinary")).data["featured"] is False
+
+    def test_the_featured_read_can_be_asked_for_on_its_own(self, api):
+        make_post(title="Ordinary", slug="ordinary")
+        make_post(title="Featured read", slug="featured-read", featured=True)
+
+        response = api.get(LIST_URL, {"featured": "true"})
+
+        assert response.data["count"] == 1
+        assert response.data["results"][0]["slug"] == "featured-read"
+
+    def test_an_unreadable_featured_value_is_ignored(self, api):
+        make_post(title="Ordinary", slug="ordinary")
+        make_post(title="Featured read", slug="featured-read", featured=True)
+
+        assert api.get(LIST_URL, {"featured": "maybe"}).data["count"] == 2
+
+    def test_the_listing_carries_the_last_change_for_lastmod(self, api):
+        post = make_post()
+
+        listed = api.get(LIST_URL).data["results"][0]["updated_at"]
+
+        assert listed == post.updated_at.isoformat().replace("+00:00", "Z")
+
+
+class TestTheStudyTip:
+    def test_is_null_where_the_post_has_none(self, api):
+        make_post(slug="no-tip")
+
+        assert api.get(detail_url("no-tip")).data["study_tip"] is None
+
+    def test_carries_its_words_and_its_button(self, api):
+        make_post(
+            slug="with-tip",
+            study_tip_title="Try a mock test",
+            study_tip_text="Sit a full mock before your real one.",
+            study_tip_button_label="Start a mock test",
+            study_tip_button_link="https://frontend.test/mock/",
+        )
+
+        tip = api.get(detail_url("with-tip")).data["study_tip"]
+
+        assert tip == {
+            "title": "Try a mock test",
+            "text": "Sit a full mock before your real one.",
+            "button_label": "Start a mock test",
+            "button_link": "https://frontend.test/mock/",
+        }
+
+    def test_a_tip_without_a_button_still_shows(self, api):
+        make_post(
+            slug="button-less",
+            study_tip_title="Read the signs",
+            study_tip_text="Learn the shapes before the words.",
+        )
+
+        tip = api.get(detail_url("button-less")).data["study_tip"]
+
+        assert tip["button_label"] == ""
+        assert tip["button_link"] == ""
+
+    def test_is_not_in_the_listing(self, api):
+        make_post(study_tip_title="Try a mock test", study_tip_text="Sit a full mock.")
+
+        assert "study_tip" not in api.get(LIST_URL).data["results"][0]
+
+
+class TestTheCoverImage:
+    def test_is_null_where_none_was_uploaded(self, api):
+        make_post(slug="coverless")
+
+        assert api.get(detail_url("coverless")).data["cover_image"] is None
+
+    def test_carries_its_address_description_and_size(self, api):
+        make_post(slug="covered", cover_image=uploaded_image(), cover_image_alt="A learner at a junction")
+
+        cover = api.get(detail_url("covered")).data["cover_image"]
+
+        assert cover["url"].endswith(reverse("blog-post-cover-image", args=["covered"]))
+        assert cover["alt"] == "A learner at a junction"
+        assert cover["width"] == 2
+        assert cover["height"] == 2
+
+    def test_is_served_for_a_published_post(self, api):
+        post = make_post(cover_image=uploaded_image(), cover_image_alt="A learner at a junction")
+
+        response = api.get(reverse("blog-post-cover-image", args=[post.slug]))
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "image/png"
+        assert response["X-Content-Type-Options"] == "nosniff"
+
+    def test_a_draft_does_not_hand_its_cover_out(self, api):
+        post = make_post(status=BlogStatus.DRAFT, cover_image=uploaded_image(), cover_image_alt="A learner")
+
+        assert api.get(reverse("blog-post-cover-image", args=[post.slug])).status_code == 404
+
+    def test_a_post_without_one_answers_404(self, api):
+        post = make_post()
+
+        assert api.get(reverse("blog-post-cover-image", args=[post.slug])).status_code == 404
+
+    def test_an_old_address_still_serves_the_cover(self, api):
+        post = make_post(slug="old-cover", cover_image=uploaded_image(), cover_image_alt="A learner")
+        post.slug = "new-cover"
+        post.save()
+        services.record_slug_change(post=post, previous_slug="old-cover")
+
+        assert api.get(reverse("blog-post-cover-image", args=["old-cover"])).status_code == 200
+
+    def test_the_listing_carries_the_cover_too(self, api):
+        make_post(cover_image=uploaded_image(), cover_image_alt="A learner at a junction")
+
+        cover = api.get(LIST_URL).data["results"][0]["cover_image"]
+
+        assert cover["alt"] == "A learner at a junction"

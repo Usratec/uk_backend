@@ -259,10 +259,15 @@ def test_a_leap_day_is_a_day_like_any_other(db):
     assert filter_utils.buckets(parsed) == [date(2024, 2, 29)]
 
 
-def test_a_range_that_starts_after_it_ends_is_turned_round(db):
+def test_a_range_that_starts_after_it_ends_is_discarded(db):
+    today = timezone.localdate()
+
     parsed = filter_utils.parse({"range": "custom", "start": "2026-10-22", "end": "2026-01-01"})
-    assert parsed.start == date(2026, 1, 1)
-    assert parsed.end == date(2026, 10, 22)
+
+    assert parsed.range_key == "30d"
+    assert parsed.start == today - timedelta(days=29)
+    assert parsed.end == today
+    assert parsed.custom_range_reset is True
 
 
 def test_a_range_of_one_day_is_one_bucket(db):
@@ -482,6 +487,26 @@ def test_searching_for_a_student(db, student, staff_member):
     assert student_service.search(str(staff_member.pk)) == []
     assert student_service.search("\x00") == []
     assert student_service.search("x" * 10_000) == []
+
+
+def test_looking_a_student_up_by_their_exact_id(db, student, staff_member):
+    from apps.analytics.services import students as student_service
+
+    assert student_service.by_exact_id(str(student.pk)) == student
+    assert student_service.by_exact_id(f"  {student.pk}  ") == student, "whitespace is trimmed as elsewhere"
+    assert student_service.by_exact_id(str(staff_member.pk)) is None, "staff accounts stay out of reach"
+    assert student_service.by_exact_id(str(student.pk + 10_000)) is None, "no such student"
+    assert student_service.by_exact_id(f"0{student.pk}") is None, "a padded id is not an exact id"
+    assert student_service.by_exact_id(f"+{student.pk}") is None
+    assert student_service.by_exact_id(f"{student.pk}.0") is None
+    assert student_service.by_exact_id(student.email) is None
+    assert student_service.by_exact_id("Sam") is None
+    assert student_service.by_exact_id("") is None
+    assert student_service.by_exact_id("   ") is None
+    assert student_service.by_exact_id(None) is None  # type: ignore[arg-type]
+    assert student_service.by_exact_id("\x00") is None
+    assert student_service.by_exact_id("9" * 40) is None, "an id past the column's range never hits the database"
+    assert student_service.by_exact_id("9" * 10_000) is None
 
 
 def test_a_search_with_many_matches_is_capped(db):
