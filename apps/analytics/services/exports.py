@@ -7,6 +7,7 @@ from django.http import StreamingHttpResponse
 from django.utils import timezone
 
 from apps.analytics.services import common, packages, revenue, students
+from apps.analytics.services import filters as filter_utils
 from apps.core.models import PublishStatus
 from apps.learning.models import Chapter, QuestionAttempt
 
@@ -18,7 +19,7 @@ REPORTS = (
     (
         "revenue",
         "Revenue report",
-        "per day: payments, gross, refunds, net, average order value, pending and failed",
+        "per chart period: payments, gross, refunds, net, average order value, pending and failed",
     ),
     ("payments", "Payment report", "every order in range, with its discount and payment method"),
     ("students", "Student report", "registration, payment, current access, last activity and lessons"),
@@ -60,6 +61,13 @@ def long_day(value: date) -> str:
     return f"{value.day:02d} {MONTHS[value.month - 1]} {value.year}"
 
 
+def period_label(bucket: date, group: str) -> str:
+    if group == "day":
+        return bucket.isoformat()
+    label = filter_utils.labels([bucket], group)[0]
+    return f"w/c {label}" if group == "week" else label
+
+
 def _with_bom(stream):
     yield "﻿"
     yield from stream
@@ -82,9 +90,10 @@ def revenue_rows(filters):
         "Pending checkouts",
         "Failed payments",
     ]
-    for row in revenue.daily_rows(filters):
+    group = filter_utils.grouping(filters)
+    for row in revenue.period_rows(filters):
         yield [
-            row["day"].isoformat(),
+            period_label(row["period"], group),
             row["payments"],
             row["gross"],
             row["refunds"],

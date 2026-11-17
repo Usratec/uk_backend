@@ -1,7 +1,7 @@
 import csv
 import io
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import cast
 
@@ -9,7 +9,7 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.analytics.services import exports
+from apps.analytics.services import exports, revenue
 from apps.analytics.services import filters as filter_utils
 from apps.analytics.tests.conftest import (
     PASSWORD,
@@ -180,6 +180,217 @@ class TestRevenue:
         assert sum(int(cell(header, row, "Pending checkouts")) for row in body) == 0
         assert sum(int(cell(header, row, "Failed payments")) for row in body) == 0
         assert sum(int(cell(header, row, "Successful payments")) for row in body) == 1
+
+
+@pytest.mark.django_db
+class TestRevenueGrouping:
+    def test_daily_grouping_keeps_one_row_per_day(self, student, package):
+        filters = filter_utils.parse({"group": "day"})
+        make_order(student, package, amount=Decimal("39.95"))
+
+        _, body = table_of("revenue", filters)
+
+        assert len(body) == filters.days
+        assert body[0][0] == filters.start.isoformat()
+
+    def test_weekly_grouping_gives_one_row_per_week(self, student, package):
+        filters = filter_utils.parse({"group": "week"})
+        make_order(student, package)
+
+        _, body = table_of("revenue", filters)
+
+        assert len(body) == len(filter_utils.buckets(filters))
+        assert len(body) < filters.days
+
+    def test_monthly_grouping_gives_one_row_per_month(self):
+        filters = filter_utils.parse({"range": "custom", "start": "2026-01-15", "end": "2026-04-10", "group": "month"})
+
+        _, body = table_of("revenue", filters)
+
+        assert [row[0] for row in body] == ["Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026"]
+
+    def test_a_missing_grouping_keeps_the_dashboards_automatic_choice(self):
+        daily = filter_utils.parse({"range": "30d"})
+        weekly = filter_utils.parse({"range": "90d"})
+
+        _, daily_body = table_of("revenue", daily)
+        _, weekly_body = table_of("revenue", weekly)
+
+        assert len(daily_body) == daily.days
+        assert len(weekly_body) == len(filter_utils.buckets(weekly))
+        assert weekly_body[0][0].startswith("w/c ")
+
+    def test_an_unknown_grouping_falls_back_to_the_default(self):
+        filters = filter_utils.parse({"range": "30d", "group": "fortnight"})
+
+        _, body = table_of("revenue", filters)
+
+        assert filters.group == filter_utils.DEFAULT_GROUP
+        assert len(body) == filters.days
+
+    def test_the_rows_match_the_chart_the_dashboard_draws(self, student, package):
+        filters = filter_utils.parse({"range": "90d", "group": "week"})
+        make_order(student, package, amount=Decimal("39.95"), days_ago=3)
+
+        _, body = table_of("revenue", filters)
+        chart = revenue.charts(filters)["revenue_over_time"]
+        gross = next(line for line in chart["datasets"] if line["label"] == "Gross revenue")
+
+        assert [row[0] for row in body] == [f"w/c {label}" for label in chart["labels"]]
+        assert [float(cell(HEADERS["revenue"], row, "Gross revenue (£)")) for row in body] == gross["data"]
+
+
+@pytest.mark.django_db
+class TestRevenueWeeklyRegression:
+    PARAMS = {"range": "custom", "start": "2026-08-02", "end": "2026-10-30", "group": "week"}
+
+    def filters(self, **overrides):
+        return filter_utils.parse({**self.PARAMS, **overrides})
+
+    def test_ninety_days_of_weekly_grouping_give_fourteen_weekly_rows(self):
+        filters = self.filters()
+
+        _, body = table_of("revenue", filters)
+
+        assert filters.days == 90
+        assert len(body) == 14
+
+    def test_the_weeks_are_labelled_the_way_the_dashboard_labels_them(self):
+        _, body = table_of("revenue", self.filters())
+
+        periods = [row[0] for row in body]
+        assert periods[0] == "w/c 27 Jul"
+        assert periods[-1] == "w/c 26 Oct"
+        assert all(period.startswith("w/c ") for period in periods)
+
+    def test_the_weeks_run_in_order_and_none_is_repeated(self):
+        _, body = table_of("revenue", self.filters())
+
+        buckets = filter_utils.buckets(self.filters())
+        assert len(set(buckets)) == len(buckets)
+        assert buckets == sorted(buckets)
+        assert [row[0] for row in body] == [f"w/c {bucket.strftime('%d %b')}" for bucket in buckets]
+
+    def test_every_days_revenue_lands_in_its_own_week(self, student, package):
+        header = HEADERS["revenue"]
+        for day in (date(2026, 8, 3), date(2026, 8, 9), date(2026, 8, 10)):
+            make_order(student, package, amount=Decimal("10.00"), days_ago=_days_ago(day))
+
+        _, body = table_of("revenue", self.filters())
+        by_period = {row[0]: row for row in body}
+
+        assert cell(header, by_period["w/c 03 Aug"], "Gross revenue (£)") == "20.00"
+        assert cell(header, by_period["w/c 03 Aug"], "Successful payments") == "2"
+        assert cell(header, by_period["w/c 10 Aug"], "Gross revenue (£)") == "10.00"
+        assert cell(header, by_period["w/c 10 Aug"], "Successful payments") == "1"
+
+    def test_a_week_the_range_only_partly_covers_counts_only_the_days_in_range(self, student, package):
+        make_order(student, package, amount=Decimal("15.00"), days_ago=_days_ago(date(2026, 7, 28)))
+        make_order(student, package, amount=Decimal("25.00"), days_ago=_days_ago(date(2026, 8, 2)))
+
+        _, body = table_of("revenue", self.filters())
+
+        assert cell(HEADERS["revenue"], body[0], "Gross revenue (£)") == "25.00"
+
+    def test_the_weekly_totals_add_up_to_the_daily_totals(self, student, package, other_package):
+        for day, amount in ((date(2026, 8, 3), "10.00"), (date(2026, 9, 15), "20.00"), (date(2026, 10, 1), "30.00")):
+            make_order(student, package, amount=Decimal(amount), days_ago=_days_ago(day))
+        make_order(student, other_package, amount=Decimal("5.00"), days_ago=_days_ago(date(2026, 8, 4)))
+
+        assert _totals(self.filters(group="week")) == _totals(self.filters(group="day"))
+        assert _totals(self.filters(group="month")) == _totals(self.filters(group="day"))
+        assert _totals(self.filters(group="week"))["Gross revenue (£)"] == Decimal("65.00")
+
+    def test_a_week_without_payments_is_still_exported_as_a_nought_row(self, student, package):
+        make_order(student, package, amount=Decimal("10.00"), days_ago=_days_ago(date(2026, 8, 3)))
+
+        header, body = table_of("revenue", self.filters())
+        quiet = [row for row in body if cell(header, row, "Successful payments") == "0"]
+
+        assert len(body) == 14
+        assert len(quiet) == 13
+        assert cell(header, quiet[0], "Gross revenue (£)") == "0"
+        assert cell(header, quiet[0], "Average order value (£)") == "0.00"
+
+    def test_refunds_pending_and_failed_are_aggregated_into_their_week(self, student, package):
+        make_order(student, package, amount=Decimal("40.00"), days_ago=_days_ago(date(2026, 8, 3)))
+        make_order(
+            student,
+            package,
+            status=OrderStatus.REFUNDED,
+            amount=Decimal("10.00"),
+            days_ago=_days_ago(date(2026, 8, 4)),
+            refunded_days_ago=_days_ago(date(2026, 8, 5)),
+        )
+        make_order(student, package, status=OrderStatus.PENDING, days_ago=_days_ago(date(2026, 8, 6)))
+        make_order(student, package, status=OrderStatus.FAILED, days_ago=_days_ago(date(2026, 8, 7)))
+
+        header, body = table_of("revenue", self.filters())
+        row = next(row for row in body if row[0] == "w/c 03 Aug")
+
+        assert cell(header, row, "Gross revenue (£)") == "50.00"
+        assert cell(header, row, "Refunds (£)") == "10.00"
+        assert cell(header, row, "Net revenue (£)") == "40.00"
+        assert cell(header, row, "Average order value (£)") == "25.00"
+        assert cell(header, row, "Pending checkouts") == "1"
+        assert cell(header, row, "Failed payments") == "1"
+
+    def test_the_package_filter_still_narrows_a_weekly_export(self, student, package, other_package):
+        make_order(student, package, amount=Decimal("40.00"), days_ago=_days_ago(date(2026, 8, 3)))
+        make_order(student, other_package, amount=Decimal("60.00"), days_ago=_days_ago(date(2026, 8, 4)))
+
+        filtered = self.filters(package=str(package.pk))
+        header, body = table_of("revenue", filtered)
+        row = next(row for row in body if row[0] == "w/c 03 Aug")
+
+        assert len(body) == 14
+        assert cell(header, row, "Gross revenue (£)") == "40.00"
+        assert _totals(filtered)["Gross revenue (£)"] == Decimal("40.00")
+
+    def test_the_status_filter_leaves_the_weekly_export_as_it_was(self, student, package):
+        make_order(student, package, amount=Decimal("40.00"), days_ago=_days_ago(date(2026, 8, 3)))
+        make_order(student, package, status=OrderStatus.FAILED, days_ago=_days_ago(date(2026, 8, 4)))
+
+        assert rows_of("revenue", self.filters(status=OrderStatus.FAILED)) == rows_of("revenue", self.filters())
+
+    def test_package_and_status_together_keep_the_weekly_aggregation(self, student, package, other_package):
+        make_order(student, package, amount=Decimal("40.00"), days_ago=_days_ago(date(2026, 8, 3)))
+        make_order(student, other_package, amount=Decimal("60.00"), days_ago=_days_ago(date(2026, 8, 4)))
+
+        both = self.filters(package=str(package.pk), status=OrderStatus.PAID)
+
+        assert rows_of("revenue", both) == rows_of("revenue", self.filters(package=str(package.pk)))
+        assert _totals(both)["Gross revenue (£)"] == Decimal("40.00")
+
+    def test_daily_and_monthly_exports_keep_the_same_filters(self, student, package, other_package):
+        make_order(student, package, amount=Decimal("40.00"), days_ago=_days_ago(date(2026, 8, 3)))
+        make_order(student, other_package, amount=Decimal("60.00"), days_ago=_days_ago(date(2026, 9, 3)))
+
+        daily = self.filters(group="day", package=str(package.pk))
+        monthly = self.filters(group="month", package=str(package.pk))
+        _, monthly_body = table_of("revenue", monthly)
+
+        assert [row[0] for row in monthly_body] == ["Aug 2026", "Sep 2026", "Oct 2026"]
+        assert _totals(daily)["Gross revenue (£)"] == Decimal("40.00")
+        assert _totals(monthly) == _totals(daily)
+
+    def test_the_filename_and_columns_are_unchanged_by_grouping(self):
+        filters = self.filters()
+
+        response = exports.response("revenue", filters)
+
+        assert 'filename="1theory-revenue-2026-08-02-to-2026-10-30.csv"' in response["Content-Disposition"]
+        assert rows_of("revenue", filters)[1] == HEADERS["revenue"]
+
+
+def _days_ago(day: date) -> int:
+    return (timezone.localdate() - day).days
+
+
+def _totals(filters) -> dict[str, Decimal]:
+    header, body = table_of("revenue", filters)
+    columns = ("Successful payments", "Gross revenue (£)", "Refunds (£)", "Net revenue (£)")
+    return {column: sum((Decimal(cell(header, row, column)) for row in body), Decimal("0")) for column in columns}
 
 
 @pytest.mark.django_db
