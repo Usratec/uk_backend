@@ -108,7 +108,7 @@ class ContactSubmission(TimestampedModel):
             "How far the message has got. Handed to the mail provider means the provider accepted "
             "it for delivery — not that it reached the inbox, which only the inbox can tell you: a "
             "message the provider bounces afterwards still reads as handed over. Pending and "
-            "failed are both tried again, hourly."
+            "failed are both tried again, every five minutes."
         ),
     )
     delivered_at = models.DateTimeField(

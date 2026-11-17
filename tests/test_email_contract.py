@@ -25,6 +25,19 @@ def previous_worker(template, subject, to, context):
 
 
 @pytest.fixture
+def support_inbox():
+    from constance import config
+
+    original = config.SUPPORT_EMAIL
+
+    def set_to(address):
+        config.SUPPORT_EMAIL = address
+
+    yield set_to
+    config.SUPPORT_EMAIL = original
+
+
+@pytest.fixture
 def runnable_by_the_previous_worker():
     signature = inspect.signature(previous_worker)
     queued = []
@@ -86,8 +99,8 @@ class TestNothingUnrunnableIsQueued:
         previous_worker(**runnable_by_the_previous_worker[0])
         assert mail.outbox[0].to == ["learner@example.com"]
 
-    def test_the_contact_form_still_carries_its_reply_to(self, settings):
-        settings.SUPPORT_EMAIL = "support@example.com"
+    def test_the_contact_form_still_carries_its_reply_to(self, support_inbox):
+        support_inbox("support@example.com")
         content_services.submit_contact_message(
             user=None,
             name="Ada",
