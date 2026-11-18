@@ -371,8 +371,20 @@ class HazardClipSerializer(serializers.Serializer):
         allow_null=True,
         help_text="A short-lived signed URL for the still, or null when the clip has none.",
     )
-    hazards = serializers.IntegerField(help_text="How many hazards are in the clip, but not when.")
-    topScore = serializers.IntegerField(help_text="The most this clip can score: five per hazard.")  # noqa: N815
+    hazards = serializers.IntegerField(
+        required=False,
+        help_text=(
+            "How many hazards are in the clip, but not when. Omitted until you have attempted "
+            "the clip at least once, so the count cannot be read before a try (UK-227)."
+        ),
+    )
+    topScore = serializers.IntegerField(  # noqa: N815
+        required=False,
+        help_text=(
+            "The most this clip can score: five per hazard. Omitted until you have attempted "
+            "the clip at least once, for the same reason as `hazards`."
+        ),
+    )
     maxClicks = serializers.IntegerField(  # noqa: N815
         help_text="Clicking more often than this scores nothing, as in the real test."
     )

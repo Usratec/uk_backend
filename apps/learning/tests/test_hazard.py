@@ -371,12 +371,26 @@ class TestWhatTheStudentIsGiven:
         assert "10.0" not in str(view)
         assert "Cyclist" not in str(view)
 
-    def test_it_says_how_many_hazards_without_saying_when(self, clip):
-        view = services.student_view_of_clip(clip)
+    def test_an_untried_clip_does_not_say_how_many_hazards(self, clip):
+        """UK-227: topScore is five per hazard, so either field would give the count away."""
+        view = services.student_view_of_clip(clip, {"attempts": 0, "bestScore": None})
+
+        assert "hazards" not in view
+        assert "topScore" not in view
+        assert view["maxClicks"] == 15
+
+    def test_after_an_attempt_the_hazard_count_is_shown(self, clip):
+        view = services.student_view_of_clip(clip, {"attempts": 1, "bestScore": 3})
 
         assert view["hazards"] == 1
         assert view["topScore"] == 5
-        assert view["maxClicks"] == 15
+
+    def test_a_clip_inside_a_paper_or_lesson_does_not_say_how_many_either(self, clip):
+        """Exams and lessons call without stats; the count must not leak there either."""
+        view = services.student_view_of_clip(clip)
+
+        assert "hazards" not in view
+        assert "topScore" not in view
 
     def test_it_carries_the_video_and_its_length(self, clip):
         view = services.student_view_of_clip(clip)
@@ -559,6 +573,16 @@ class TestHowTheStudentHasDoneOnAClip:
         clip = response.data["clips"][0]
         assert clip["attempts"] == 0
         assert clip["bestScore"] is None
+        assert "hazards" not in clip
+        assert "topScore" not in clip
+
+    def test_opening_an_untried_clip_does_not_reveal_the_hazard_count(self, api, student, live_clip):
+        response = sign_in(api, student()).get(clip_url("country-lane"))
+
+        assert response.status_code == 200
+        assert response.data["attempts"] == 0
+        assert "hazards" not in response.data
+        assert "topScore" not in response.data
 
     def test_the_attempts_are_counted_and_the_best_score_kept(self, api, student, live_clip):
         learner = sign_in(api, student())
@@ -599,6 +623,8 @@ class TestHowTheStudentHasDoneOnAClip:
 
         assert response.data["attempts"] == 1
         assert response.data["bestScore"] == 4
+        assert response.data["hazards"] == 1
+        assert response.data["topScore"] == 5
 
     def test_the_statistics_do_not_give_the_timings_away(self, api, student, live_clip):
         learner = sign_in(api, student())
