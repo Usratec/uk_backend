@@ -1556,6 +1556,9 @@ def student_view_of_clip(clip: HazardClip, stats: dict | None = None) -> dict:
     Deliberately without the hazard timings: sending them would tell the student exactly when to
     click, which is the entire thing being tested. Only the clip's own scoring happens here, and
     only after they have committed to their clicks.
+
+    The hazard count and top score are also held back until the student has attempted the clip at
+    least once (UK-227): topScore is five per hazard, so either field would give the count away.
     """
     view = {
         "slug": clip.slug,
@@ -1565,12 +1568,13 @@ def student_view_of_clip(clip: HazardClip, stats: dict | None = None) -> dict:
         "playback": playback_of(clip.media),
         "subtitles": subtitles_of(clip.media),
         "thumbnailUrl": clip.thumbnail_url,
-        "hazards": clip.windows.count(),
-        "topScore": clip.top_score,
         "maxClicks": clip.max_clicks,
     }
     if stats is not None:
         view |= {"attempts": stats["attempts"], "bestScore": stats["bestScore"]}
+        if stats["attempts"] > 0:
+            view["hazards"] = clip.windows.count()
+            view["topScore"] = clip.top_score
     return view
 
 

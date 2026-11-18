@@ -6,6 +6,7 @@ from django.db.models.functions import TruncDate
 from django.urls import NoReverseMatch, reverse
 from django.utils import dateformat, timezone
 
+from apps.accounts.models import User
 from apps.analytics.services import common
 from apps.analytics.services.overview import Box, money
 from apps.billing.models import Order, OrderStatus
@@ -41,8 +42,19 @@ WEAK_MIN_ANSWERS = 4
 WEAK_ACCURACY = 70.0
 
 
+def _term(term: str) -> str:
+    return (term or "").replace("\x00", "").strip()[:MAX_TERM]
+
+
+def by_exact_id(term: str) -> User | None:
+    term = _term(term)
+    if not term.isdigit() or int(term) > MAX_ID or str(int(term)) != term:
+        return None
+    return common.students().filter(pk=int(term)).first()
+
+
 def search(term: str):
-    term = (term or "").replace("\x00", "").strip()[:MAX_TERM]
+    term = _term(term)
     if not term:
         return []
     lookup = Q(email__icontains=term) | Q(first_name__icontains=term) | Q(last_name__icontains=term)

@@ -160,6 +160,15 @@ Leading and trailing whitespace is trimmed from all three text fields. A success
 `{"message": "Your message has been sent successfully."}`; a bad form is `400` with DRF's
 field-level errors (`{"email": ["Enter a valid email address."]}`).
 
+Delivery is queued the moment the form is accepted, so the message is on its way within seconds;
+the visitor's own address is the reply-to, so replying in the inbox reaches them. The support
+inbox is `SUPPORT_EMAIL` under **Constance > Config** in the admin, which a superuser can change
+without a deploy; it falls back to the `SUPPORT_EMAIL` environment variable while it is empty, and
+it is read fresh on every send, so a change applies to the next message. On `dev` and `stage` it
+must be an address the recipient allowlist in `apps/core/email.py` accepts, or the message is
+dropped rather than delivered. Anything that does not reach the mail provider first time is retried by
+the task itself and then swept every five minutes, so a failure costs minutes rather than an hour.
+
 ### Purchase consent
 
 `POST /api/payments/checkout/` requires `terms_accepted: true`,
@@ -271,7 +280,7 @@ Scheduled jobs run from the `beat` service: publishing blog posts whose time has
 minutes, expiry reminders at 09:00, telling learners their
 access has ended at 09:30, closing expired accounts at 00:30 (never staff accounts), fulfilling
 lost orders every ten minutes, telling the CRM about access it was never told about, hourly, and
-delivering contact messages that are still pending, hourly.
+delivering contact messages that are still pending every five minutes.
 There is deliberately no job to revoke learning access, because access is derived from the dates
 every time it is checked.
 
@@ -709,6 +718,11 @@ visible rather than lost. A signed-in visitor's account is shown by id rather th
 address: reading contact messages should not also reveal the address a customer registered under,
 which is the CRM's to show. Nothing on these screens can be edited or deleted, whatever
 permissions an account is given.
+
+Where those messages are delivered is set under **Constance > Config**, as `SUPPORT_EMAIL`. It is
+on Django's own model permissions (`constance.change_config`), so it is a superuser's to change
+and no role carries it — the address decides who reads everything the public writes in, and a
+Support Agent who can read the messages should not also be able to redirect them.
 
 The landing page is managed under **Landing page**, on the same model permissions. Its wording is
 a flat key → value store, so marketing can reword the page without a frontend deploy; the note

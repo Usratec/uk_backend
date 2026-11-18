@@ -1,4 +1,3 @@
-from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import Count, Sum
@@ -109,31 +108,30 @@ def all_orders(filters):
     return queryset.select_related("package", "user").order_by("-created_at")
 
 
-def daily_rows(filters):
-    gross = _by_day(common.payments_taken(filters), "paid_at", Sum("final_price"))
-    counts = _by_day(common.payments_taken(filters), "paid_at", Count("id"))
-    refunded = _by_day(common.refunds(filters), "refunded_at", Sum("final_price"))
-    pending = _by_day(common.orders_created(filters, OrderStatus.PENDING), "created_at", Count("id"))
-    failed = _by_day(common.orders_created(filters, OrderStatus.FAILED), "created_at", Count("id"))
+def period_rows(filters):
+    gross = _by_bucket(common.payments_taken(filters), "paid_at", Sum("final_price"), filters)
+    counts = _by_bucket(common.payments_taken(filters), "paid_at", Count("id"), filters)
+    refunded = _by_bucket(common.refunds(filters), "refunded_at", Sum("final_price"), filters)
+    pending = _by_bucket(common.orders_created(filters, OrderStatus.PENDING), "created_at", Count("id"), filters)
+    failed = _by_bucket(common.orders_created(filters, OrderStatus.FAILED), "created_at", Count("id"), filters)
 
-    day, rows = filters.start, []
-    while day <= filters.end:
-        taken = Decimal(gross.get(day) or 0)
-        given_back = Decimal(refunded.get(day) or 0)
-        count = counts.get(day) or 0
+    rows = []
+    for bucket in filter_utils.buckets(filters):
+        taken = Decimal(gross.get(bucket) or 0)
+        given_back = Decimal(refunded.get(bucket) or 0)
+        count = counts.get(bucket) or 0
         rows.append(
             {
-                "day": day,
+                "period": bucket,
                 "payments": count,
                 "gross": taken,
                 "refunds": given_back,
                 "net": taken - given_back,
                 "average_order_value": (taken / count) if count else Decimal("0.00"),
-                "pending": pending.get(day) or 0,
-                "failed": failed.get(day) or 0,
+                "pending": pending.get(bucket) or 0,
+                "failed": failed.get(bucket) or 0,
             }
         )
-        day += timedelta(days=1)
     return rows
 
 
@@ -156,9 +154,15 @@ def _aggregate(queryset, column: str, filters, expression):
     return list(queryset.annotate(day=trunc(column)).values("day").annotate(total=expression).order_by("day"))
 
 
-def _by_day(queryset, column: str, expression) -> dict:
+def _by_bucket(queryset, column: str, expression, filters) -> dict:
     rows = queryset.annotate(day=TruncDay(column)).values("day").annotate(total=expression)
-    return {_as_date(row["day"]): row["total"] for row in rows if row["day"]}
+    totals: dict = {}
+    for row in rows:
+        if not row["day"]:
+            continue
+        bucket = filter_utils.bucket_of(_as_date(row["day"]), filters)
+        totals[bucket] = (totals.get(bucket) or 0) + row["total"]
+    return totals
 
 
 def _as_date(value):
