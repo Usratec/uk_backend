@@ -9,7 +9,7 @@ from apps.content.models import RETRYABLE_DELIVERY, ContactDelivery, ContactSubm
 
 logger = logging.getLogger(__name__)
 
-DELIVERY_GRACE = timedelta(minutes=30)
+DELIVERY_GRACE = timedelta(minutes=10)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60, retry_backoff=True)

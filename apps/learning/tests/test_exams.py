@@ -274,7 +274,8 @@ class TestSittingAMockTestWithClips:
         assert clip["slug"] == "country-lane"
         assert clip["url"]
         assert clip["thumbnailUrl"]
-        assert clip["topScore"] == 5
+        assert "hazards" not in clip
+        assert "topScore" not in clip
         assert clip["maxClicks"] == 15
         assert "durationSeconds" not in clip
 

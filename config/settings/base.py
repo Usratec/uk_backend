@@ -310,7 +310,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "deliver-pending-contact-messages": {
         "task": "apps.content.tasks.deliver_pending_contact_messages",
-        "schedule": crontab(minute="25"),
+        "schedule": crontab(minute="*/5"),
     },
     "sweep-abandoned-video-uploads": {
         "task": "apps.learning.tasks.sweep_abandoned_uploads",
@@ -613,6 +613,7 @@ JAZZMIN_SETTINGS = {
         "entitlements",
         "accounts",
         "auth",
+        "constance",
     ],
     "icons": {
         "analytics": "fas fa-chart-column",
@@ -666,6 +667,8 @@ JAZZMIN_SETTINGS = {
         "landing.LandingText": "fas fa-font",
         "landing.LandingMedia": "fas fa-images",
         "core.AuditEvent": "fas fa-clipboard-list",
+        "constance": "fas fa-sliders",
+        "constance.Config": "fas fa-sliders",
         "auth": "fas fa-users-cog",
         "auth.Group": "fas fa-users-cog",
     },
@@ -707,6 +710,12 @@ CONSTANCE_CONFIG = {
         "Account lifetime as a multiple of the package duration (1.5 = account stays open 50% longer "
         "than learning access). Applies to purchases made after the change.",
         float,
+    ),
+    "SUPPORT_EMAIL": (
+        SUPPORT_EMAIL,
+        "Where contact form messages are delivered. Leave empty to fall back to the SUPPORT_EMAIL "
+        "environment variable. Applies to messages sent after the change; one address only.",
+        str,
     ),
 }
 

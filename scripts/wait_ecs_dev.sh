@@ -4,7 +4,14 @@ set -euo pipefail
 set +x
 
 expected_revision=${1:?Pass the newly registered Dev task-definition ARN}
-if [[ ! "$expected_revision" =~ ^arn:aws:ecs:eu-west-2:501588779980:task-definition/1theorycouk-shared-dev-back:[0-9]+$ ]]; then
+service=${2:-1theorycouk-shared-dev-back}
+require_running=true
+revision_pattern='^arn:aws:ecs:eu-west-2:501588779980:task-definition/1theorycouk-shared-dev-back:[0-9]+$'
+if [[ "$service" != "1theorycouk-shared-dev-back" ]]; then
+    require_running=false
+    revision_pattern='^arn:aws:ecs:eu-west-2:501588779980:task-definition/[a-zA-Z0-9_-]+:[0-9]+$'
+fi
+if [[ ! "$expected_revision" =~ $revision_pattern ]]; then
     printf 'Refusing to wait for a task definition outside UK Dev.\n' >&2
     exit 1
 fi
@@ -30,7 +37,7 @@ printf 'Waiting up to %ss for Dev revision %s.\n' "$timeout" "$expected_revision
 while true; do
     # Only request deployment metadata: never print task environments or secrets.
     if state=$(AWS_MAX_ATTEMPTS=3 aws ecs describe-services --region eu-west-2 \
-        --cluster shared-spot-dev --services 1theorycouk-shared-dev-back \
+        --cluster shared-spot-dev --services "$service" \
         --cli-connect-timeout 10 --cli-read-timeout 30 --output json \
         --query 'services[0].{taskDefinition:taskDefinition,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,deployments:deployments[].{taskDefinition:taskDefinition,status:status,rolloutState:rolloutState,rolloutStateReason:rolloutStateReason},events:events[:3].message}'); then
         read_failures=0
@@ -52,8 +59,8 @@ while true; do
             jq -r '.events[]? | "ECS event: \(.)"' <<< "$state" >&2
             exit 1
         fi
-        if jq -e --arg expected "$expected_revision" '
-            .desiredCount > 0 and .runningCount == .desiredCount and .pendingCount == 0
+        if jq -e --arg expected "$expected_revision" --argjson require_running "$require_running" '
+            (if $require_running then .desiredCount > 0 else .desiredCount >= 0 end) and .runningCount == .desiredCount and .pendingCount == 0
             and (.deployments | length) == 1
             and .deployments[0].taskDefinition == $expected
             and .deployments[0].status == "PRIMARY"
