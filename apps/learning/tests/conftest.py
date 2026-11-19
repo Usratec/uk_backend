@@ -220,14 +220,15 @@ def read_online(make_ebook, make_section, publisher):
 def published_tree(chapter, subchapter, content, publisher):
     """A whole branch live, from the chapter down, which is the usual starting point.
 
-    Published the way staff do it — top down, through the service — so every test that starts
-    from a live branch is also exercising that the order works.
+    Published the way staff do it — the chapter, then the block, then the lesson that now has
+    something to show — so every test that starts from a live branch is also exercising that the
+    order works.
     """
     from apps.learning import services
 
     services.publish(actor=publisher, instance=chapter)
-    services.publish(actor=publisher, instance=subchapter)
     services.publish(actor=publisher, instance=content)
+    services.publish(actor=publisher, instance=subchapter)
 
     for item in (chapter, subchapter, content):
         item.refresh_from_db()

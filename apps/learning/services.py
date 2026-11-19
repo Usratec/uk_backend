@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
 from django.db import transaction
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Exists, Max, OuterRef, Q
 from django.utils import timezone
 
 from apps.core import audit, email, images
@@ -93,7 +93,14 @@ def live_subchapters_of(chapter: Chapter, at=None):
 
 def live_lesson(slug: str, at=None):
     """The one lesson a student may open at this address, or None."""
-    return live_subchapters(Subchapter.objects.select_related("chapter"), at).filter(slug=slug).first()
+    at = at or timezone.now()
+    has_content = live(LearningContent.objects.filter(subchapter=OuterRef("pk")), at)
+    return (
+        live_subchapters(Subchapter.objects.select_related("chapter"), at)
+        .filter(slug=slug)
+        .filter(Exists(has_content))
+        .first()
+    )
 
 
 def live_content_of(subchapter: Subchapter, at=None):
@@ -229,15 +236,17 @@ def _problems_with_subchapter(subchapter: Subchapter) -> list[str]:
     if not _anything_to_serve_in(subchapter):
         problems.append(
             "There is nothing in this lesson for a student to read yet. "
-            "Add a block with something in it — text, a video, a question or a clip — and publish the lesson after."
+            "Publish a block with something in it — text, a video, a question or a clip — then the lesson."
         )
 
     return problems
 
 
 def _anything_to_serve_in(subchapter: Subchapter) -> bool:
-    """Whether at least one block in this lesson would actually show a student something."""
-    blocks = subchapter.content.select_related("media", "question", "hazard_clip")
+    """Whether at least one published block in this lesson would actually show a student something."""
+    blocks = subchapter.content.filter(status=PublishStatus.PUBLISHED).select_related(
+        "media", "question", "hazard_clip"
+    )
     return any(not _problems_with_content_body(block) for block in blocks)
 
 
@@ -359,12 +368,7 @@ def problems_with_exam(exam: PracticeExam) -> list[str]:
 
 
 def _problems_with_content(content: LearningContent) -> list[str]:
-    problems = _problems_with_content_body(content)
-
-    if not content.subchapter.is_published:
-        problems.append(f"Its subchapter '{content.subchapter.title}' is not published, so students cannot reach it.")
-
-    return problems
+    return _problems_with_content_body(content)
 
 
 def _problems_with_content_body(content: LearningContent) -> list[str]:
