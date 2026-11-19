@@ -31,46 +31,61 @@ video_domain=$(jq -er --arg container "$service" '.taskDefinition.containerDefin
 video_key_id=$(jq -er --arg container "$service" '.taskDefinition.containerDefinitions[] | select(.name == $container) | .environment[] | select(.name == "CLOUDFRONT_KEY_PAIR_ID") | .value | select(length > 0)' "$deploy_tmp_dir/current.json")
 video_key_secret=$(jq -er --arg container "$service" '.taskDefinition.containerDefinitions[] | select(.name == $container) | .secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY") | .valueFrom | select(length > 0)' "$deploy_tmp_dir/current.json")
 
+# Terraform owns Google/email/Stripe publishable/Sentry/CloudFront domain env. Keep whatever is
+# already on the live task definition so this Jenkins release cannot blank or fight Terraform.
 jq --arg image "$image" --arg container "$service" --arg secret_arn "$runtime_secret_arn" \
     --arg bucket "$video_bucket" --arg domain "$video_domain" \
     --arg key_id "$video_key_id" --arg key_secret "$video_key_secret" '
     .taskDefinition + (if ((.tags // []) | length) > 0 then {tags: .tags} else {} end)
     | .containerDefinitions |= map(
         if .name == $container then
-            .image = $image
+            . as $c
+            | .image = $image
             | .command = ["bash", "./scripts/render-start.sh"]
-            | .environment = [
-                {name: "DJANGO_SETTINGS_MODULE", value: "config.settings.production"},
-                {name: "ENVIRONMENT", value: "staging"},
-                {name: "DEBUG", value: "False"},
-                {name: "ALLOWED_HOSTS", value: "stage.1theorytest.co.uk"},
-                {name: "FRONTEND_BASE_URL", value: "https://stage.1theorytest.co.uk"},
-                {name: "BACKEND_BASE_URL", value: "https://stage.1theorytest.co.uk"},
-                {name: "CORS_ALLOWED_ORIGINS", value: "https://stage.1theorytest.co.uk"},
-                {name: "CSRF_TRUSTED_ORIGINS", value: "https://stage.1theorytest.co.uk"},
-                {name: "TRUSTED_PROXY_COUNT", value: "1"},
-                {name: "SECURE_SSL_REDIRECT", value: "True"},
-                {name: "RUN_WORKER_IN_WEB", value: "true"},
-                {name: "CELERY_QUEUES", value: "celery"},
-                {name: "VIDEO_S3_BUCKET_NAME", value: $bucket},
-                {name: "VIDEO_S3_REGION", value: "eu-west-2"},
-                {name: "CLOUDFRONT_DOMAIN", value: $domain},
-                {name: "CLOUDFRONT_KEY_PAIR_ID", value: $key_id},
-                {name: "CLOUDFRONT_COOKIE_DOMAIN", value: ".1theorytest.co.uk"},
-                {name: "VIDEO_ALLOW_UNSIGNED_PLAYBACK", value: "False"},
-                {name: "WEB_CONCURRENCY", value: "1"},
-                {name: "WEB_THREADS", value: "8"},
-                {name: "PORT", value: "8000"},
-                {name: "AWS_REGION", value: "eu-west-2"},
-                {name: "AWS_ENDPOINT_URL_S3", value: "https://s3.eu-west-2.amazonaws.com"},
-                {name: "S3_BUCKET_NAME", value: "1theorycouk-shared-stage"},
-                {name: "S3_ENDPOINT_URL", value: "https://s3.eu-west-2.amazonaws.com"},
-                {name: "S3_REGION", value: "eu-west-2"},
-                {name: "LEARNING_URL", value: "https://stage.1theorytest.co.uk/learn/"},
-                {name: "EMAIL_ENABLED", value: "false"},
-                {name: "GOOGLE_CLIENT_IDS", value: ""},
-                {name: "ADMIN_URL", value: "api/admin/"}
-            ]
+            | .environment = (
+                [
+                    {name: "DJANGO_SETTINGS_MODULE", value: "config.settings.production"},
+                    {name: "ENVIRONMENT", value: "staging"},
+                    {name: "DEBUG", value: "False"},
+                    {name: "ALLOWED_HOSTS", value: "stage.1theorytest.co.uk"},
+                    {name: "FRONTEND_BASE_URL", value: "https://stage.1theorytest.co.uk"},
+                    {name: "BACKEND_BASE_URL", value: "https://stage.1theorytest.co.uk"},
+                    {name: "CORS_ALLOWED_ORIGINS", value: "https://stage.1theorytest.co.uk"},
+                    {name: "CSRF_TRUSTED_ORIGINS", value: "https://stage.1theorytest.co.uk"},
+                    {name: "TRUSTED_PROXY_COUNT", value: "1"},
+                    {name: "SECURE_SSL_REDIRECT", value: "True"},
+                    {name: "RUN_WORKER_IN_WEB", value: "true"},
+                    {name: "CELERY_QUEUES", value: "celery"},
+                    {name: "VIDEO_S3_BUCKET_NAME", value: $bucket},
+                    {name: "VIDEO_S3_REGION", value: "eu-west-2"},
+                    {name: "CLOUDFRONT_DOMAIN", value: $domain},
+                    {name: "CLOUDFRONT_KEY_PAIR_ID", value: $key_id},
+                    {name: "CLOUDFRONT_COOKIE_DOMAIN", value: ".1theorytest.co.uk"},
+                    {name: "VIDEO_ALLOW_UNSIGNED_PLAYBACK", value: "False"},
+                    {name: "WEB_CONCURRENCY", value: "1"},
+                    {name: "WEB_THREADS", value: "8"},
+                    {name: "PORT", value: "8000"},
+                    {name: "AWS_REGION", value: "eu-west-2"},
+                    {name: "AWS_ENDPOINT_URL_S3", value: "https://s3.eu-west-2.amazonaws.com"},
+                    {name: "S3_BUCKET_NAME", value: "1theorycouk-shared-stage"},
+                    {name: "S3_ENDPOINT_URL", value: "https://s3.eu-west-2.amazonaws.com"},
+                    {name: "S3_REGION", value: "eu-west-2"},
+                    {name: "LEARNING_URL", value: "https://stage.1theorytest.co.uk/learn/"},
+                    {name: "ADMIN_URL", value: "api/admin/"}
+                ]
+                + (
+                    ($c.environment // [])
+                    | map(select(.name | IN(
+                        "GOOGLE_CLIENT_IDS",
+                        "EMAIL_ENABLED",
+                        "DEFAULT_FROM_EMAIL",
+                        "POSTMARK_SENDER",
+                        "STRIPE_PUBLISHABLE_KEY",
+                        "SENTRY_DSN",
+                        "AWS_CLOUDFRONT_DOMAIN"
+                    )))
+                )
+            )
             | .secrets = ([
                 "SECRET_KEY", "DATABASE_URL", "REDIS_URL", "CELERY_BROKER_URL",
                 "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "POSTMARK_SERVER_TOKEN",

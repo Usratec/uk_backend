@@ -21,7 +21,10 @@ AWS account: `501588779980`, region `eu-west-2`. The Stage site is `https://stag
 
 Each job builds an image tagged with the source revision, pushes it to the matching Stage ECR repository, updates only its Stage ECS service, and waits for the new ECS revision to become healthy. Stage-only deployment scripts reject any environment other than `stage`.
 
-Stage email delivery is disabled until a Stage Postmark test token is available. Stripe keys are also empty, so payment flows need Stage test keys before they can be verified.
+Google client IDs, email enablement/from-address, Stripe publishable key, Sentry DSN and
+`AWS_CLOUDFRONT_DOMAIN` are owned by Terraform on the live task definition; the Stage Jenkins
+deploy preserves those env vars and must not hardcode them. Stripe secret/webhook and Postmark
+server token come from Secrets Manager (`uk-backend-stage-runtime`).
 
 ## Stage video
 

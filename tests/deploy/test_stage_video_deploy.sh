@@ -14,7 +14,7 @@ aws() {
     'cloudformation describe-stacks') echo '{"Stacks":[{"Outputs":[{"OutputKey":"VideoBucketName","OutputValue":"stage-bucket"},{"OutputKey":"CloudFrontDomain","OutputValue":"media-stage.1theorytest.co.uk"},{"OutputKey":"CloudFrontKeyPairId","OutputValue":"key-id"},{"OutputKey":"SigningSecretArn","OutputValue":"signing-arn"}]}]}' ;;
     'ecs describe-task-definition')
       if [[ "$*" == *worker:1* ]]; then echo '{"taskDefinition":{"family":"worker","containerDefinitions":[{"name":"VideoWorker","image":"old","environment":[{"name":"VIDEO_S3_BUCKET_NAME","value":"stage-bucket"}]}]}}';
-      else echo '{"taskDefinition":{"family":"web","containerDefinitions":[{"name":"1theorycouk-shared-stage-back","image":"old","environment":[{"name":"VIDEO_S3_BUCKET_NAME","value":"stage-bucket"},{"name":"CLOUDFRONT_DOMAIN","value":"media-stage.1theorytest.co.uk"},{"name":"CLOUDFRONT_KEY_PAIR_ID","value":"key-id"}],"secrets":[{"name":"CLOUDFRONT_PRIVATE_KEY","valueFrom":"signing-arn"}]}]}}'; fi ;;
+      else echo '{"taskDefinition":{"family":"web","containerDefinitions":[{"name":"1theorycouk-shared-stage-back","image":"old","environment":[{"name":"VIDEO_S3_BUCKET_NAME","value":"stage-bucket"},{"name":"CLOUDFRONT_DOMAIN","value":"media-stage.1theorytest.co.uk"},{"name":"CLOUDFRONT_KEY_PAIR_ID","value":"key-id"},{"name":"GOOGLE_CLIENT_IDS","value":"stage-google-client"},{"name":"EMAIL_ENABLED","value":"true"},{"name":"DEFAULT_FROM_EMAIL","value":"support@1theorytest.co.uk"}],"secrets":[{"name":"CLOUDFRONT_PRIVATE_KEY","valueFrom":"signing-arn"}]}]}}'; fi ;;
     'ecs register-task-definition')
       for arg in "$@"; do if [[ $arg == file://* ]]; then file=${arg#file://}; fi; done
       if jq -e '.family == "worker"' "$file" >/dev/null; then
@@ -22,7 +22,7 @@ aws() {
         jq -e '.containerDefinitions[0].environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")' "$file" >/dev/null
         echo worker:2
       else
-        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "CELERY_QUEUES" and .value == "celery")] | length == 1) and ([.environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")] | length == 1) and ([.environment[] | select(.name == "AWS_ENDPOINT_URL_S3" and .value == "https://s3.eu-west-2.amazonaws.com")] | length == 1) and ([.secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY" and .valueFrom == "signing-arn")] | length == 1)' "$file" >/dev/null
+        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "CELERY_QUEUES" and .value == "celery")] | length == 1) and ([.environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")] | length == 1) and ([.environment[] | select(.name == "AWS_ENDPOINT_URL_S3" and .value == "https://s3.eu-west-2.amazonaws.com")] | length == 1) and ([.environment[] | select(.name == "GOOGLE_CLIENT_IDS" and .value == "stage-google-client")] | length == 1) and ([.environment[] | select(.name == "EMAIL_ENABLED" and .value == "true")] | length == 1) and ([.environment[] | select(.name == "DEFAULT_FROM_EMAIL" and .value == "support@1theorytest.co.uk")] | length == 1) and ([.secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY" and .valueFrom == "signing-arn")] | length == 1)' "$file" >/dev/null
         echo web:2
       fi ;;
     'ecs update-service') if [[ "$*" == *uk-video-stage-videoworker* ]]; then touch "$TEST_TMP/worker"; else touch "$TEST_TMP/web"; fi; echo ok ;;
