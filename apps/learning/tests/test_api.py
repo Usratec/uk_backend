@@ -143,6 +143,23 @@ class TestLesson:
 
         assert response.status_code == 404
 
+    def test_a_lesson_with_nothing_published_in_it_is_not_found(self, api, live_tree, student, publisher, content):
+        from apps.learning import services
+
+        services.unpublish(actor=publisher, instance=content)
+
+        response = sign_in(api, student()).get(lesson_url("warning-signs"))
+
+        assert response.status_code == 404
+
+    def test_a_lesson_whose_only_block_is_scheduled_for_later_is_not_found(self, api, live_tree, student, content):
+        content.publish_from = timezone.now() + timedelta(days=1)
+        content.save(update_fields=["publish_from"])
+
+        response = sign_in(api, student()).get(lesson_url("warning-signs"))
+
+        assert response.status_code == 404
+
     def test_an_unknown_lesson_is_not_found(self, api, student):
         assert sign_in(api, student()).get(lesson_url("no-such-lesson")).status_code == 404
 

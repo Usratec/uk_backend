@@ -98,10 +98,12 @@ class TestChecksBeforePublishing:
         with pytest.raises(services.NotReadyToPublishError, match="no content"):
             services.publish(actor=publisher, instance=content)
 
-    def test_material_in_an_unpublished_subchapter_is_refused(self, publisher, content):
-        """Students reach material through its subchapter, so it would be unreachable."""
-        with pytest.raises(services.NotReadyToPublishError, match="not published"):
-            services.publish(actor=publisher, instance=content)
+    def test_material_in_an_unpublished_subchapter_is_allowed(self, publisher, content):
+        services.publish(actor=publisher, instance=content)
+
+        content.refresh_from_db()
+        assert content.is_published
+        assert services.live_lesson(content.subchapter.slug) is None
 
     def test_a_subchapter_in_an_unpublished_chapter_is_refused(self, publisher, subchapter, content):
         content.status = PublishStatus.PUBLISHED
@@ -132,21 +134,51 @@ class TestChecksBeforePublishing:
         subchapter.refresh_from_db()
         assert subchapter.status == PublishStatus.DRAFT
 
-    def test_a_subchapter_is_published_on_a_block_that_is_still_a_draft(self, publisher, chapter, subchapter, content):
-        """Written material is enough: the block itself cannot go live until the lesson has."""
+    def test_a_subchapter_whose_blocks_are_all_drafts_is_refused(self, publisher, chapter, subchapter, content):
+        """Written but unpublished shows a student nothing, so the lesson would open blank."""
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
+
+        with pytest.raises(services.NotReadyToPublishError, match="nothing in this lesson"):
+            services.publish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+
+    def test_scheduling_a_subchapter_whose_blocks_are_all_drafts_is_refused(
+        self, publisher, chapter, subchapter, content
+    ):
+        """Scheduling is publishing with a date on it, so it is checked the same way."""
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+        subchapter.publish_from = timezone.now() + timedelta(days=7)
+        subchapter.save(update_fields=["publish_from"])
+
+        with pytest.raises(services.NotReadyToPublishError, match="nothing in this lesson"):
+            services.publish(actor=publisher, instance=subchapter)
+
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+
+    def test_one_published_block_is_enough_even_beside_drafts(self, publisher, chapter, subchapter, content):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+        ready = LearningContent.objects.create(
+            subchapter=subchapter, slug="ready", title="Ready", body_html=CONTENT, order=2
+        )
+        services.publish(actor=publisher, instance=ready)
 
         services.publish(actor=publisher, instance=subchapter)
 
         subchapter.refresh_from_db()
+        content.refresh_from_db()
         assert subchapter.is_published
-        assert "nothing in this subchapter" in services.warnings_about(subchapter)[0].lower()
+        assert content.status == PublishStatus.DRAFT
 
     def test_a_subchapter_holding_a_video_is_published(self, publisher, chapter, subchapter):
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
-        video_block(subchapter)
+        services.publish(actor=publisher, instance=video_block(subchapter))
 
         services.publish(actor=publisher, instance=subchapter)
 
@@ -160,7 +192,7 @@ class TestChecksBeforePublishing:
         chapter.save(update_fields=["status"])
         question = make_question(key="limits")
         services.publish(actor=publisher, instance=question)
-        LearningContent.objects.create(
+        block = LearningContent.objects.create(
             subchapter=subchapter,
             slug="check",
             title="Check",
@@ -168,6 +200,7 @@ class TestChecksBeforePublishing:
             question=question,
             order=1,
         )
+        services.publish(actor=publisher, instance=block)
 
         services.publish(actor=publisher, instance=subchapter)
 
@@ -189,16 +222,16 @@ class TestChecksBeforePublishing:
         assert chapter.is_published
         assert "no subchapter" in services.warnings_about(chapter)[0].lower()
 
-    def test_a_whole_branch_can_be_published_from_the_top_down(self, publisher, chapter, subchapter, content):
-        """The order staff actually work in: a chapter, then its sections, then what goes in them.
+    def test_a_whole_branch_can_be_published(self, publisher, chapter, subchapter, content):
+        """The order staff work in: a chapter, what goes in a lesson, then the lesson itself.
 
         Every level used to wait on another — a chapter for a live subchapter, a subchapter for a
         live chapter — so nothing could be published at all. This is the test that would have
         caught it.
         """
         services.publish(actor=publisher, instance=chapter)
-        services.publish(actor=publisher, instance=subchapter)
         services.publish(actor=publisher, instance=content)
+        services.publish(actor=publisher, instance=subchapter)
 
         for item in (chapter, subchapter, content):
             item.refresh_from_db()
@@ -206,8 +239,8 @@ class TestChecksBeforePublishing:
 
     def test_a_filled_branch_reports_no_warnings(self, publisher, chapter, subchapter, content):
         services.publish(actor=publisher, instance=chapter)
-        services.publish(actor=publisher, instance=subchapter)
         services.publish(actor=publisher, instance=content)
+        services.publish(actor=publisher, instance=subchapter)
 
         assert services.warnings_about(chapter) == []
         assert services.warnings_about(subchapter) == []

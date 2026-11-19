@@ -104,14 +104,31 @@ class TestPublishAction:
         content.refresh_from_db()
         assert content.status == PublishStatus.DRAFT
 
-    def test_material_that_is_not_ready_reports_why(self, publisher_client, content):
-        response = self.publish(publisher_client, content)
+    def test_material_that_is_not_ready_reports_why(self, publisher_client, subchapter):
+        empty = LearningContent.objects.create(
+            subchapter=subchapter, slug="empty", title="Empty", body_html="", order=2
+        )
 
-        assert "not published" in response.content.decode()
-        content.refresh_from_db()
-        assert content.status == PublishStatus.DRAFT
+        response = self.publish(publisher_client, empty)
+
+        assert "no content" in response.content.decode()
+        empty.refresh_from_db()
+        assert empty.status == PublishStatus.DRAFT
 
     def test_an_empty_lesson_is_refused_and_stays_a_draft(self, publisher_client, chapter, subchapter):
+        chapter.status = PublishStatus.PUBLISHED
+        chapter.save(update_fields=["status"])
+
+        response = self.publish(publisher_client, subchapter)
+
+        assert "nothing in this lesson" in response.content.decode()
+        assert "Published 1 item(s)." not in response.content.decode()
+        subchapter.refresh_from_db()
+        assert subchapter.status == PublishStatus.DRAFT
+
+    def test_a_lesson_whose_blocks_are_all_drafts_is_refused_and_stays_a_draft(
+        self, publisher_client, chapter, subchapter, content
+    ):
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
 
@@ -128,6 +145,8 @@ class TestPublishAction:
         """Bulk publishing is item by item: the sound one goes live, the empty one is reported."""
         chapter.status = PublishStatus.PUBLISHED
         chapter.save(update_fields=["status"])
+        content.status = PublishStatus.PUBLISHED
+        content.save(update_fields=["status"])
         empty = Subchapter.objects.create(chapter=chapter, slug="nothing-here", title="Nothing here", order=2)
 
         response = self.publish_all(publisher_client, [subchapter, empty])
