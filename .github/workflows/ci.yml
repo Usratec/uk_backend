@@ -44,6 +44,9 @@ jobs:
       - name: Check Dev migration deployment
         run: bash tests/deploy/test_dev_migrations.sh
 
+      - name: Check Prod migration deployment
+        run: bash tests/deploy/test_prod_migrations.sh
+
       - name: Check Dev deployment waiter
         run: bash tests/deploy/test_wait_ecs_dev.sh
 
