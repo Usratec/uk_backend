@@ -13,7 +13,6 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from apps.accounts.models import User
-from apps.entitlements import services as entitlements
 from apps.integrations import s3_client
 from apps.learning import key_auth, media_processing, media_services
 from apps.learning.media_serializers import (
@@ -249,9 +248,6 @@ class MediaPlaybackView(APIView):
         asset = media_processing.media_for_playback(media_id)
         if asset is None or asset.kind != MediaKind.VIDEO:
             return _error(NOT_FOUND, status.HTTP_404_NOT_FOUND)
-
-        if not entitlements.has_access(student):
-            return _error(PLAN_NEEDED, status.HTTP_402_PAYMENT_REQUIRED)
 
         try:
             playback = media_processing.playback_for(student=student, asset=asset)

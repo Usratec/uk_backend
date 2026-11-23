@@ -706,6 +706,24 @@ class TestTheProgressiveMp4:
         assert asset.mp4_key in bucket.objects
         assert first not in bucket.objects
 
+    def test_reprocessing_publishes_a_new_playlist_url_rather_than_overwriting_the_old(
+        self, uploaded, ffmpeg, bucket, editor
+    ):
+        asset = uploaded()
+        transcode_video(asset_id=asset.pk, job=str(asset.processing_job))
+        asset.refresh_from_db()
+        first_master, first_prefix = asset.hls_master_key, asset.hls_prefix
+
+        job = media_processing.queue_processing(asset, actor=editor, force=True)
+        transcode_video(asset_id=asset.pk, job=str(job))
+
+        asset.refresh_from_db()
+        assert asset.hls_master_key != first_master
+        assert asset.hls_prefix != first_prefix
+        assert str(job) in asset.hls_prefix
+        assert bucket.keys_under(first_prefix) == []
+        assert media_processing.MANIFEST_CACHE_CONTROL == bucket.cache_control[asset.hls_master_key]
+
 
 class TestUnrelatedMediaIsUntouched:
     def test_processing_one_video_does_not_touch_another(self, uploaded, ffmpeg, bucket, make_clip):

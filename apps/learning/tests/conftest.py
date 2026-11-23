@@ -289,6 +289,7 @@ class FakeBucket:
         self.signed_parts: list[dict] = []
         self.deleted: list[str] = []
         self.uploaded: list[str] = []
+        self.cache_control: dict[str, str] = {}
         self.aborted: list[str] = []
         self._next_upload = 0
 
@@ -349,6 +350,7 @@ class FakeBucket:
 
     def upload_file(self, *, key: str, path: str, content_type: str, cache_control: str = "") -> None:
         self.uploaded.append(key)
+        self.cache_control[key] = cache_control
         self.objects[key] = (Path(path).stat().st_size, content_type)
 
     def delete_prefix(self, *, prefix: str) -> int:
@@ -403,6 +405,15 @@ def bucket(monkeypatch, settings):
 def signing_key_pem() -> str:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     return key.private_bytes(Encoding.PEM, PrivateFormat.TraditionalOpenSSL, NoEncryption()).decode()
+
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    from django.core.cache import cache
+
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture

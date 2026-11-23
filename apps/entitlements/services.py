@@ -23,8 +23,15 @@ from apps.billing.models import Order, PromoCode
 from apps.catalog.models import Feature, ProductLine
 from apps.core import audit
 from apps.entitlements.models import RevocationReason, Subscription
+from apps.learning import access_cache
 
 logger = logging.getLogger(__name__)
+
+
+def _release_cached_video_access(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    transaction.on_commit(lambda: access_cache.forget(user_id))
 
 
 def granting() -> models.QuerySet[Subscription]:
@@ -343,6 +350,7 @@ def activate(order: Order, user: User) -> tuple[Subscription, bool]:
     )
 
     _sync_account(user, subscription)
+    _release_cached_video_access(user.pk)
 
     if order.promo_code_id:
         _count_promo_use(order.promo_code_id)
@@ -399,6 +407,7 @@ def revoke(order: Order, reason: RevocationReason) -> Subscription | None:
     subscription.revoked_at = timezone.now()
     subscription.revoked_reason = reason
     subscription.save(update_fields=["revoked_at", "revoked_reason", "updated_at"])
+    _release_cached_video_access(subscription.user_id)
 
     audit.record(
         actor=None,
@@ -439,6 +448,7 @@ def restore(order: Order, reason: RevocationReason) -> Subscription | None:
     subscription.revoked_at = None
     subscription.revoked_reason = ""
     subscription.save(update_fields=["revoked_at", "revoked_reason", "updated_at"])
+    _release_cached_video_access(subscription.user_id)
 
     audit.record(
         actor=None,
