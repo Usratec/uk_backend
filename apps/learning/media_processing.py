@@ -15,7 +15,7 @@ from apps.catalog.models import Feature
 from apps.core import audit
 from apps.entitlements import services as entitlements
 from apps.integrations import cloudfront, s3_client
-from apps.learning import services, transcode
+from apps.learning import access_cache, services, transcode
 from apps.learning.models import (
     ACTIVE_PROCESSING_STATUSES,
     EDITION_FEATURES,
@@ -49,7 +49,7 @@ SEGMENT_CONTENT_TYPE = "video/mp2t"
 MP4_CONTENT_TYPE = "video/mp4"
 
 
-MANIFEST_CACHE_CONTROL = "private, max-age=60"
+MANIFEST_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
 SEGMENT_CACHE_CONTROL = "private, max-age=31536000, immutable"
@@ -371,6 +371,15 @@ def playback_for(*, student, asset: MediaAsset) -> Playback:
 
 def may_watch(*, student, asset: MediaAsset) -> bool:
     """Whether the student's package unlocks something live that shows this asset.
+
+    The one answer both the playback endpoint and the segment-key endpoint ask for, so neither can
+    decide differently from the other. Reused for a minute per student and video.
+    """
+    return access_cache.decide(user=student, asset=asset, check=lambda: _may_watch(student=student, asset=asset))
+
+
+def _may_watch(*, student, asset: MediaAsset) -> bool:
+    """The permission check itself.
 
     Asked per place the asset can appear, each against the feature that serves it there, so a
     mock test package plays the clips in its exams but not the lesson videos or the clip library.

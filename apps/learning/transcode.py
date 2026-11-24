@@ -70,7 +70,7 @@ class Rendition:
 
 
 LADDER = (
-    Rendition(name="360p", height=360, video_kbps=800, audio_kbps=96, profile="main"),
+    Rendition(name="360p", height=360, video_kbps=500, audio_kbps=96, profile="main"),
     Rendition(name="720p", height=720, video_kbps=2500, audio_kbps=128, profile="high"),
     Rendition(name="1080p", height=1080, video_kbps=4000, audio_kbps=128, profile="high"),
 )
