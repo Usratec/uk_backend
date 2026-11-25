@@ -9,15 +9,16 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.blog import html, images
-from apps.blog.models import BlogImage, BlogPost, BlogPostRedirect, BlogStatus
-from apps.core import audit
+from apps.blog.models import BlogImage, BlogPost, BlogPostFAQ, BlogPostRedirect, BlogStatus
+from apps.core import audit, seo
 from apps.staff.authz import require_permission
 
 logger = logging.getLogger(__name__)
 
 PUBLISH_PERMISSION = "blog.publish_blogpost"
 
-POST_PATH = "/blog/{slug}/"
+BLOG_PATH = "/blog/"
+POST_PATH = BLOG_PATH + "{slug}/"
 
 DUE_BATCH_SIZE = 200
 
@@ -44,7 +45,21 @@ def live_posts(*, category: str = "", featured: bool | None = None, at: datetime
 
 
 def live_post(*, slug: str, at: datetime | None = None) -> BlogPost | None:
-    return BlogPost.objects.live(at).select_related("category", "author").filter(slug=slug).first()
+    return (
+        BlogPost.objects.live(at)
+        .select_related("category", "author")
+        .prefetch_related("faqs")
+        .filter(slug=slug)
+        .first()
+    )
+
+
+def faqs_of(post: BlogPost) -> list[BlogPostFAQ]:
+    return [faq for faq in post.faqs.all() if faq.is_complete]
+
+
+def canonical_of(post: BlogPost) -> str:
+    return post.canonical_url or seo.site_url(path_of(post))
 
 
 def redirect_target(*, slug: str, at: datetime | None = None) -> BlogPost | None:

@@ -44,6 +44,15 @@
                 <p class="adm-preview__placeholder">Nothing has been written yet.</p>
             {% endif %}
 
+            {% if faqs %}
+                <h2 class="adm-preview__block-title">Frequently asked questions</h2>
+                <ul class="adm-preview__answers">
+                    {% for faq in faqs %}
+                        <li><strong>{{ faq.question }}</strong><br>{{ faq.answer|safe }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+
             <h2 class="adm-preview__block-title">Search and sharing</h2>
             <ul class="adm-preview__answers">
                 <li>Title: {{ post.meta_title|default:post.title }}</li>

@@ -2,7 +2,7 @@ import pytest
 from django.contrib.auth.models import Group, Permission
 from django.urls import reverse
 
-from apps.blog.roles import BLOG_MANAGER, BLOG_MODELS
+from apps.blog.roles import BLOG_MANAGER, BLOG_SCREENS
 
 from .conftest import make_post
 
@@ -51,7 +51,7 @@ class TestTheRole:
 
 
 class TestWhatABlogManagerReaches:
-    @pytest.mark.parametrize("model", BLOG_MODELS)
+    @pytest.mark.parametrize("model", BLOG_SCREENS)
     def test_every_blog_screen_opens(self, manager_client, model):
         assert manager_client.get(reverse(f"admin:blog_{model}_changelist")).status_code == 200
 
@@ -125,7 +125,7 @@ class TestViewOnlyBlogStaff:
 
 
 class TestASuperuserWithoutTheRole:
-    @pytest.mark.parametrize("model", BLOG_MODELS)
+    @pytest.mark.parametrize("model", BLOG_SCREENS)
     def test_cannot_open_any_blog_screen(self, client, root, model):
         client.force_login(root)
 
@@ -166,7 +166,7 @@ class TestASuperuserWhoGrantsThemselvesTheRole:
         client.force_login(root)
         return client
 
-    @pytest.mark.parametrize("model", BLOG_MODELS)
+    @pytest.mark.parametrize("model", BLOG_SCREENS)
     def test_can_then_open_the_screens(self, granted, model):
         assert granted.get(reverse(f"admin:blog_{model}_changelist")).status_code == 200
 
@@ -184,7 +184,7 @@ class TestASuperuserWhoGrantsThemselvesTheRole:
 
 
 class TestAnonymousVisitors:
-    @pytest.mark.parametrize("model", BLOG_MODELS)
+    @pytest.mark.parametrize("model", BLOG_SCREENS)
     def test_are_sent_to_the_login_page(self, client, model):
         response = client.get(reverse(f"admin:blog_{model}_changelist"))
 
