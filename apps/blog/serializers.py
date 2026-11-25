@@ -2,6 +2,7 @@ from django.urls import reverse
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from apps.blog import schema, services
 from apps.blog.models import BlogCategory, BlogPost
 
 
@@ -87,6 +88,14 @@ class BlogPostSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(path) if request else path
 
 
+class BlogPostFAQSerializer(serializers.Serializer):
+    question = serializers.CharField()
+    answer = serializers.CharField(
+        help_text="The answer as rich text, cleaned to prose markup only: no headings or pictures.",
+    )
+    order = serializers.IntegerField(help_text="Lower numbers come first. The list is already sorted by it.")
+
+
 class BlogPostDetailSerializer(BlogPostSerializer):
     content = serializers.CharField(
         source="body_html",
@@ -96,9 +105,38 @@ class BlogPostDetailSerializer(BlogPostSerializer):
     study_tip = serializers.SerializerMethodField(
         help_text="The Study tip box shown under the post, or null where the post has none.",
     )
+    faqs = serializers.SerializerMethodField(
+        help_text=(
+            "The post's FAQ block in display order, or an empty list where it has none. "
+            "Half-filled entries are left out."
+        ),
+    )
+    structured_data = serializers.SerializerMethodField(
+        help_text=(
+            "schema.org JSON-LD for this post: an Article, a FAQPage where it has FAQs, and a "
+            "BreadcrumbList. The frontend must render each object into its own "
+            '`<script type="application/ld+json">` element; returning it here does not put it in '
+            "the published page."
+        ),
+    )
 
     class Meta(BlogPostSerializer.Meta):
-        fields = [*BlogPostSerializer.Meta.fields, "content", "study_tip", "created_at"]
+        fields = [
+            *BlogPostSerializer.Meta.fields,
+            "content",
+            "study_tip",
+            "faqs",
+            "structured_data",
+            "created_at",
+        ]
+
+    @extend_schema_field(BlogPostFAQSerializer(many=True))
+    def get_faqs(self, post: BlogPost) -> list[dict]:
+        return [{"question": faq.question, "answer": faq.answer, "order": faq.order} for faq in services.faqs_of(post)]
+
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
+    def get_structured_data(self, post: BlogPost) -> list[dict]:
+        return schema.structured_data_for(post, request=self.context.get("request"))
 
     @extend_schema_field(StudyTipSerializer(allow_null=True))
     def get_study_tip(self, post: BlogPost) -> dict | None:

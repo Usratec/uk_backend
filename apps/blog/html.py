@@ -16,6 +16,8 @@ ALLOWED_TAGS = {
     "h2",
     "h3",
     "h4",
+    "h5",
+    "h6",
     "ul",
     "ol",
     "li",
@@ -40,11 +42,29 @@ ALLOWED_ATTRIBUTES = {
     "img": {"src", "alt", "width", "height"},
     "th": {"colspan", "rowspan", "scope"},
     "td": {"colspan", "rowspan"},
-    "figure": {"class"},
-    "table": {"class"},
+}
+
+ALLOWED_CLASSES = {
+    "figure": {
+        "image",
+        "image-inline",
+        "image_resized",
+        "image-style-side",
+        "image-style-align-left",
+        "image-style-align-center",
+        "image-style-align-right",
+        "image-style-block-align-left",
+        "image-style-block-align-right",
+        "table",
+    },
+    "table": {"ck-table-resized"},
 }
 
 ALLOWED_SCHEMES = {"http", "https", "mailto"}
+
+ANSWER_TAGS = {"p", "br", "strong", "b", "em", "i", "ul", "ol", "li", "a"}
+
+ANSWER_ATTRIBUTES = {"a": {"href", "title"}}
 
 IMAGE_REFERENCE = "/api/blog/images/{key}/"
 
@@ -65,6 +85,20 @@ def clean(html: str | None) -> str:
         html,
         tags=ALLOWED_TAGS,
         attributes={tag: set(attributes) for tag, attributes in ALLOWED_ATTRIBUTES.items()},
+        allowed_classes={tag: set(classes) for tag, classes in ALLOWED_CLASSES.items()},
+        url_schemes=ALLOWED_SCHEMES,
+        link_rel="noopener noreferrer",
+    )
+
+
+def clean_answer(html: str | None) -> str:
+    if not html:
+        return ""
+
+    return nh3.clean(
+        html,
+        tags=ANSWER_TAGS,
+        attributes={tag: set(attributes) for tag, attributes in ANSWER_ATTRIBUTES.items()},
         url_schemes=ALLOWED_SCHEMES,
         link_rel="noopener noreferrer",
     )
