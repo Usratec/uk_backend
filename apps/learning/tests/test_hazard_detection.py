@@ -120,6 +120,13 @@ class TestSpreadAcrossTheClip:
     def test_a_length_of_zero_is_treated_as_unknown(self):
         assert reason_for([1.0, 6.0, 11.0], windows=[], duration=0) is None
 
+    def test_clicks_after_the_grace_period_still_count_towards_spread(self):
+        # Last hazard ends at 15s (grace to 17s). Without counting later clicks, the final
+        # sections of a 30s clip can never be covered and spread can never fire.
+        clicks = [1.0, 6.0, 11.0, 17.01, 22.0, 29.0]
+
+        assert reason_for(clicks, windows=[HAZARD], duration=30) == HazardVoidReason.SPREAD
+
 
 class TestTheClickLimit:
     def test_fifteen_clicks_are_allowed(self):
@@ -137,10 +144,16 @@ class TestTheClickLimit:
 
         assert reason_for(clicks, windows=[HAZARD, LATE_HAZARD]) is None
 
-    def test_late_clicks_do_not_count_towards_the_limit(self):
+    def test_late_clicks_still_count_towards_the_limit(self):
         clicks = [*irregular(15), 57.01, 100.0]
 
-        assert reason_for(clicks, windows=[HAZARD, LATE_HAZARD]) is None
+        assert reason_for(clicks, windows=[HAZARD, LATE_HAZARD]) == HazardVoidReason.TOO_MANY
+
+    def test_seventeen_irregular_clicks_after_the_grace_period_are_too_many(self):
+        """UK-208 / TC-UK191-009: constant clicking after the last hazard still voids."""
+        hazard = HazardWindow(label="Test Hazard1", starts_at=18, ends_at=24)
+
+        assert reason_for(irregular(17, start=27.0), windows=[hazard]) == HazardVoidReason.TOO_MANY
 
 
 class TestSanitisingWhatWasSubmitted:
@@ -168,11 +181,17 @@ class TestLateClicks:
     def test_a_click_two_seconds_after_the_last_hazard_still_counts(self):
         assert accepted([10.5, 17.0]) == [10.5, 17.0]
 
-    def test_a_click_after_that_is_ignored(self):
-        assert accepted([10.5, 17.01]) == [10.5]
+    def test_a_click_after_that_is_kept_for_voiding_but_not_scoring(self):
+        verdict = hazard_detection.inspect([10.5, 17.01], [HAZARD], max_clicks=15)
+
+        assert list(verdict.clicks) == [10.5, 17.01]
+        assert list(verdict.scorable) == [10.5]
 
     def test_the_cutoff_follows_the_last_hazard_of_several(self):
-        assert accepted([10.5, 30.0, 57.0, 57.01], windows=[HAZARD, LATE_HAZARD]) == [10.5, 30.0, 57.0]
+        verdict = hazard_detection.inspect([10.5, 30.0, 57.0, 58.0], [HAZARD, LATE_HAZARD], max_clicks=15)
+
+        assert list(verdict.clicks) == [10.5, 30.0, 57.0, 58.0]
+        assert list(verdict.scorable) == [10.5, 30.0, 57.0]
 
     def test_a_clip_with_no_hazards_keeps_every_click(self):
         assert accepted([10.5, 400.0], windows=[]) == [10.5, 400.0]
