@@ -55,6 +55,7 @@ container start, so scaling out can't run them concurrently.
 | Google sign-in | `POST /api/auth/google/`, `POST /api/auth/google/link/` |
 | Catalogue | `GET /api/packages/?product_line=course\|mock_tests`, `GET /api/packages/<slug>/` |
 | Site content | `GET /api/content/faqs/`, `GET /api/content/testimonials/`, `POST /api/content/contact/` |
+| Legal documents | `GET /api/legal/`, `GET /api/legal/<terms\|privacy\|cookies>/` |
 | Landing page | `GET /api/landing/`, `GET /api/landing/text/`, `GET /api/landing/media/` |
 | Blog | `GET /api/blog/`, `GET /api/blog/<slug>/`, `GET /api/blog/<slug>/cover-image/`, `GET /api/blog/<slug>/social-image/`, `GET /api/blog/images/<uuid>/` |
 | Sitemap | `GET /api/sitemap.xml` |
@@ -195,6 +196,23 @@ from the admin. To move one into the admin, register the same identifier with id
 document versions. An inactive admin entry also disables the matching environment entry. Admin
 changes take effect without a restart. Unavailable consent configuration returns 503. An unknown
 version when consent is configured, or an inactive version, returns 400 on `consent_version`.
+
+#### Legal documents
+
+Terms, Privacy and Cookie texts are managed in **Django admin → Legal documents** (role: Legal Manager).
+A document has a type, version, effective date and text. Create it as a draft, then use the
+**Publish the selected drafts** action. Only one version per type is published; publishing archives
+the previous one, and published or archived versions cannot be edited or deleted. `GET /api/legal/`
+returns the current version of each type (`type`, `version`, `date`, `text`), and `GET /api/legal/<type>/`
+returns one, or 404.
+
+Checkout takes `terms_version` and `privacy_policy_version` from the published documents and stores
+the documents themselves on the order (`terms_document`, `privacy_document`), so a later publication
+never changes an older order. A type with nothing published yet falls back to the version string of
+the purchase consent version, with a warning in the log. A storefront may also send
+`terms_document_version` and `privacy_document_version` (the versions it showed); if either is no longer
+current, checkout answers 400 on that field and the storefront must reload the documents. The Cookie
+Policy is served but not recorded on orders: the cookie list comes from Cookiebot.
 
 The order stores both accepted values, server timestamp, consent version, exact checkbox wording
 and Terms/Privacy versions in the same transaction as the purchase attempt. A guest order has no
