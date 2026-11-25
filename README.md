@@ -206,12 +206,14 @@ the previous one, and published or archived versions cannot be edited or deleted
 returns the current version of each type (`type`, `version`, `date`, `text`), and `GET /api/legal/<type>/`
 returns one, or 404.
 
-Checkout takes `terms_version` and `privacy_policy_version` from the published documents and stores
-the documents themselves on the order (`terms_document`, `privacy_document`), so a later publication
-never changes an older order. A type with nothing published yet falls back to the version string of
-the purchase consent version, with a warning in the log. A storefront may also send
-`terms_document_version` and `privacy_document_version` (the versions it showed); if either is no longer
-current, checkout answers 400 on that field and the storefront must reload the documents. The Cookie
+Publishing makes a version current at once, so a document can only be published on or after its
+effective date. Checkout records a published document as accepted only when the storefront sends
+the version it showed (`terms_document_version`, `privacy_document_version`, each independent) and
+that is still the current one; otherwise it answers 400 on that field and the storefront must reload
+the documents. The order then stores `terms_version` and `privacy_policy_version` from the document
+and links it (`terms_document`, `privacy_document`), so a later publication never changes an older
+order. Without those fields, or for a type with nothing published yet, checkout keeps the legacy
+version strings of the purchase consent version and links no document. The Cookie
 Policy is served but not recorded on orders: the cookie list comes from Cookiebot.
 
 The order stores both accepted values, server timestamp, consent version, exact checkbox wording

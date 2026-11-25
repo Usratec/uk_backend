@@ -14,7 +14,7 @@ PUBLISH_PERMISSION = "legal.publish_legaldocument"
 
 
 class DocumentNotPublishableError(Exception):
-    """Only a draft can be published; a published or archived version is history."""
+    """Only a draft can be published, and only once its effective date has come."""
 
 
 def published(document_type: str) -> LegalDocument | None:
@@ -36,6 +36,11 @@ def publish(*, actor, document: LegalDocument, reason: str = "") -> LegalDocumen
     document = next(v for v in versions if v.pk == document.pk)
     if document.status != PublishStatus.DRAFT:
         raise DocumentNotPublishableError(f"{document} is {document.status}, only a draft can be published.")
+    # Publishing makes it current at once, so a later effective date would announce the wrong text.
+    if document.effective_date > timezone.localdate():
+        raise DocumentNotPublishableError(
+            f"{document} takes effect on {document.effective_date:%d %b %Y}. Publish it on or after that day."
+        )
 
     previous = next((v for v in versions if v.status == PublishStatus.PUBLISHED), None)
     if previous is not None:

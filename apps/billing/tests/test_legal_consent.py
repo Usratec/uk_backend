@@ -35,7 +35,7 @@ def publisher(db):
 
 def publish(publisher, document_type, version):
     document = LegalDocument.objects.create(
-        document_type=document_type, version=version, effective_date=date(2026, 12, 1), body_html="<p>x</p>"
+        document_type=document_type, version=version, effective_date=date(2026, 11, 1), body_html="<p>x</p>"
     )
     return services.publish(actor=publisher, document=document)
 
@@ -50,7 +50,8 @@ def test_order_records_the_published_documents(api, package, stripe, publisher):
     terms = publish(publisher, DocumentType.TERMS, "terms-2026-12")
     privacy = publish(publisher, DocumentType.PRIVACY, "privacy-2026-12")
 
-    assert buy(api, package).status_code == 201
+    response = buy(api, package, terms_document_version="terms-2026-12", privacy_document_version="privacy-2026-12")
+    assert response.status_code == 201
 
     order = Order.objects.get()
     assert (order.terms_version, order.privacy_policy_version) == ("terms-2026-12", "privacy-2026-12")
@@ -59,7 +60,7 @@ def test_order_records_the_published_documents(api, package, stripe, publisher):
 
 def test_new_publication_does_not_change_older_orders(api, package, stripe, publisher):
     old = publish(publisher, DocumentType.TERMS, "terms-v1")
-    buy(api, package)
+    buy(api, package, terms_document_version="terms-v1")
     publish(publisher, DocumentType.TERMS, "terms-v2")
 
     order = Order.objects.get()
@@ -68,10 +69,34 @@ def test_new_publication_does_not_change_older_orders(api, package, stripe, publ
 
 
 def test_checkout_falls_back_when_nothing_is_published(api, package, stripe):
-    assert buy(api, package).status_code == 201
+    response = buy(api, package, terms_document_version="terms-test-v1")
+    assert response.status_code == 201
     order = Order.objects.get()
     assert order.terms_version == "terms-test-v1"
     assert order.terms_document is None and order.privacy_document is None
+
+
+def test_without_evidence_of_what_was_shown_no_document_is_recorded(api, package, stripe, publisher):
+    publish(publisher, DocumentType.TERMS, "terms-v2")
+    publish(publisher, DocumentType.PRIVACY, "privacy-v2")
+
+    assert buy(api, package).status_code == 201
+
+    order = Order.objects.get()
+    assert (order.terms_version, order.privacy_policy_version) == ("terms-test-v1", "privacy-test-v1")
+    assert order.terms_document is None and order.privacy_document is None
+
+
+def test_each_type_needs_its_own_evidence(api, package, stripe, publisher):
+    terms = publish(publisher, DocumentType.TERMS, "terms-v2")
+    publish(publisher, DocumentType.PRIVACY, "privacy-v2")
+
+    assert buy(api, package, terms_document_version="terms-v2").status_code == 201
+
+    order = Order.objects.get()
+    assert order.terms_document == terms
+    assert order.privacy_document is None
+    assert order.privacy_policy_version == "privacy-test-v1"
 
 
 def test_versions_the_buyer_saw_must_still_be_current(api, package, stripe, publisher):

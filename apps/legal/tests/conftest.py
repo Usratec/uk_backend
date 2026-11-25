@@ -23,9 +23,15 @@ def publisher(db) -> User:
 
 @pytest.fixture
 def make_document(db):
-    def factory(document_type=DocumentType.TERMS, version="v1", body="<p>Text</p>", **extra) -> LegalDocument:
+    def factory(
+        document_type=DocumentType.TERMS, version="v1", body="<p>Text</p>", effective_date=None, **extra
+    ) -> LegalDocument:
         return LegalDocument.objects.create(
-            document_type=document_type, version=version, effective_date=date(2026, 12, 1), body_html=body, **extra
+            document_type=document_type,
+            version=version,
+            effective_date=effective_date or date(2026, 11, 1),
+            body_html=body,
+            **extra,
         )
 
     return factory

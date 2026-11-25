@@ -19,7 +19,9 @@ class LegalDocument(TimestampedModel):
 
     document_type = models.CharField(max_length=20, choices=DocumentType.choices)
     version = models.CharField(max_length=128, help_text="Shown to customers and stored on their order.")
-    effective_date = models.DateField(help_text="The day this version takes effect.")
+    effective_date = models.DateField(
+        help_text="The day this version takes effect. It can only be published on or after this day."
+    )
     body_html = models.TextField(verbose_name="text", help_text="The full text of the document.")
     status = models.CharField(max_length=10, choices=PublishStatus.choices, default=PublishStatus.DRAFT)
     published_at = models.DateTimeField(null=True, blank=True, editable=False)

@@ -48,10 +48,10 @@ def resolve_consent(
 ) -> ConsentSnapshot:
     """Use the requested version and keep accepting versions configured before the admin was added.
 
-    The document versions come from the published legal documents. A type with nothing published
-    yet falls back to the version string of the consent entry, so checkout keeps working until the
-    business has published its texts. When the browser says which versions it showed, they must
-    still be the current ones, so nobody accepts a text they did not see.
+    A published legal document is only recorded as accepted when the browser says which version it
+    showed and that is still the current one, so nobody is recorded as accepting a text they did not
+    see. Without that evidence, or for a type with nothing published yet, the version string of the
+    consent entry is kept and no document is linked.
     """
     entry = PurchaseConsentVersion.objects.filter(consent_version=version).values(*WORDING_FIELDS, "is_active").first()
     if entry is not None:
@@ -74,19 +74,20 @@ def resolve_consent(
 
     wording = {field: entry[field] for field in WORDING_FIELDS}
     documents = legal.current_documents()
-    document_ids: dict[str, int | None] = {}
+    document_ids: dict[str, int | None] = {"terms_version": None, "privacy_policy_version": None}
     for document_type, field, seen_field, seen in (
         (DocumentType.TERMS, "terms_version", "terms_document_version", seen_terms_version),
         (DocumentType.PRIVACY, "privacy_policy_version", "privacy_document_version", seen_privacy_version),
     ):
+        if seen is None:
+            # No evidence of what was shown: keep the legacy version string and link no document.
+            continue
         document = documents.get(document_type)
-        if document is not None:
-            wording[field] = document.version
-        else:
-            logger.warning("No published %s document; using the version from consent %r", document_type, version)
-        document_ids[field] = document.pk if document is not None else None
-        if seen is not None and seen != wording[field]:
+        shown = document.version if document is not None else wording[field]
+        if seen != shown:
             raise ValidationError({seen_field: [DOCUMENTS_CHANGED]})
+        wording[field] = shown
+        document_ids[field] = document.pk if document is not None else None
     return ConsentSnapshot(
         consent_version=version,
         **wording,

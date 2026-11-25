@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 import pytest
 from django.db import IntegrityError, transaction
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.core.models import AuditEvent, PublishStatus
@@ -35,6 +38,20 @@ def test_only_a_draft_can_be_published(make_document, publisher):
         services.publish(actor=publisher, document=document)
 
 
+def test_a_future_dated_document_cannot_be_published_yet(make_document, publisher):
+    current = services.publish(actor=publisher, document=make_document(version="v1"))
+    tomorrow = timezone.localdate() + timedelta(days=1)
+    upcoming = make_document(version="v2", effective_date=tomorrow)
+
+    with pytest.raises(services.DocumentNotPublishableError):
+        services.publish(actor=publisher, document=upcoming)
+
+    current.refresh_from_db()
+    upcoming.refresh_from_db()
+    assert current.status == PublishStatus.PUBLISHED
+    assert upcoming.status == PublishStatus.DRAFT
+
+
 def test_publishing_needs_the_permission(make_document, db):
     staff = User.objects.create_user(email="staff@example.com", password="Riverbank42", is_staff=True)
     with pytest.raises(PermissionDeniedError):
@@ -67,7 +84,7 @@ def test_api_returns_current_documents_only(api, make_document, publisher):
     response = api.get(reverse("legal-list"))
 
     assert response.status_code == 200
-    assert response.data == [{"type": "terms", "version": "v2", "date": "2026-12-01", "text": "<p>New</p>"}]
+    assert response.data == [{"type": "terms", "version": "v2", "date": "2026-11-01", "text": "<p>New</p>"}]
 
 
 def test_api_detail_and_missing(api, make_document, publisher):
