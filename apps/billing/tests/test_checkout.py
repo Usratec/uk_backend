@@ -196,3 +196,50 @@ class TestRefusedCheckout:
         response = checkout(api, package)
 
         assert response.status_code == 429
+
+
+class TestAnalyticsFields:
+    CLIENT_ID = "123456789.987654321"
+
+    def test_are_stored_on_the_order(self, api, package, stripe):
+        checkout(api, package, ga_client_id=self.CLIENT_ID, ga_session_id="1764000000", analytics_consent=True)
+
+        order = Order.objects.get()
+        assert (order.ga_client_id, order.ga_session_id, order.analytics_consent) == (
+            self.CLIENT_ID,
+            "1764000000",
+            True,
+        )
+
+    @pytest.mark.parametrize(
+        "sent",
+        [{}, {"ga_client_id": None, "ga_session_id": "", "analytics_consent": None}],
+        ids=["absent", "null or empty"],
+    )
+    def test_a_checkout_without_them_still_works(self, api, package, stripe, sent):
+        response = checkout(api, package, **sent)
+
+        assert response.status_code == 201
+        order = Order.objects.get()
+        assert (order.ga_client_id, order.ga_session_id, order.analytics_consent) == ("", "", None)
+
+    def test_refused_consent_is_stored_as_refused_not_as_no_answer(self, api, package, stripe):
+        checkout(api, package, ga_client_id=self.CLIENT_ID, analytics_consent=False)
+
+        assert Order.objects.get().analytics_consent is False
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("ga_client_id", 12345),
+            ("analytics_consent", "true"),
+            ("analytics_consent", 1),
+            ("ga_client_id", "x" * 65),
+        ],
+    )
+    def test_the_wrong_type_is_refused_rather_than_guessed_at(self, api, package, stripe, field, value):
+        response = checkout(api, package, **{field: value})
+
+        assert response.status_code == 400
+        assert field in response.data
+        assert Order.objects.count() == 0

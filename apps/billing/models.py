@@ -184,6 +184,31 @@ class Order(TimestampedModel):
         blank=True,
         help_text="Set only once Stripe confirms the payment can no longer be completed.",
     )
+    ga_client_id = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="The GA4 client id the browser sent when payment started. Blank if it sent none.",
+    )
+    ga_session_id = models.CharField(
+        max_length=32,
+        blank=True,
+        help_text="The GA4 session id the browser sent when payment started. Blank if it sent none.",
+    )
+    analytics_consent = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="Cookiebot Statistics consent at the moment of payment. Only true allows GA4 tracking.",
+    )
+    ga4_purchase_queued_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the GA4 purchase event was claimed for delivery. Not proof that it was sent.",
+    )
+    ga4_purchase_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When GA4 accepted the purchase event. Set only after a successful delivery.",
+    )
 
     failure_code = models.CharField(max_length=100, blank=True, help_text="Stripe's decline or error code.")
     failure_message = models.CharField(

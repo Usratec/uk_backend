@@ -111,6 +111,7 @@ class CheckoutView(APIView):
                 first_name=data.validated_data["first_name"],
                 last_name=data.validated_data["last_name"],
                 promo_code=data.validated_data["promo_code"],
+                analytics=data.validated_data["analytics"],
             )
         except pricing.PromoCodeUnavailableError:
             return Response(
@@ -162,6 +163,7 @@ class PaymentIntentView(APIView):
                 package=package,
                 promo_code=typed_promo_code,
                 consent=data.validated_data["consent_snapshot"],
+                analytics=data.validated_data["analytics"],
             )
         except pricing.PromoCodeUnavailableError:
             return Response(
@@ -211,7 +213,7 @@ class OrderStatusView(APIView):
     )
     def get(self, request: Request, order_id: str) -> Response:
         user = cast(User, request.user)
-        order = history.readable_by(user).filter(pk=order_id).select_related("package").first()
+        order = history.readable_by(user).filter(pk=order_id).select_related("package", "promo_code").first()
         if order is None:
             return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(OrderStatusSerializer(order).data)

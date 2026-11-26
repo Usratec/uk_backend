@@ -266,3 +266,27 @@ class TestOtherBuyers:
         redirect_order.refresh_from_db()
         assert redirect_order.status == OrderStatus.PENDING
         assert stripe.cancelled == []
+
+
+class TestAnalyticsFields:
+    CLIENT_ID = "123456789.987654321"
+
+    def test_are_stored_on_the_order(self, signed_in, package, stripe):
+        start(signed_in, package, ga_client_id=self.CLIENT_ID, ga_session_id="1764000000", analytics_consent=True)
+
+        order = Order.objects.get()
+        assert (order.ga_client_id, order.ga_session_id, order.analytics_consent) == (
+            self.CLIENT_ID,
+            "1764000000",
+            True,
+        )
+
+    def test_a_retry_does_not_wipe_what_the_first_attempt_captured(self, signed_in, package, stripe):
+        first = start(signed_in, package, ga_client_id=self.CLIENT_ID, analytics_consent=True)
+
+        second = start(signed_in, package)
+
+        assert second.status_code == 201
+        assert second.data["order_id"] == first.data["order_id"]
+        order = Order.objects.get()
+        assert (order.ga_client_id, order.analytics_consent) == (self.CLIENT_ID, True)

@@ -3,6 +3,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+import requests
+from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -10,7 +12,7 @@ from apps.billing.intent import OPEN_INTENT_STATUSES
 from apps.billing.models import DiscountType, Order, PromoCode
 from apps.catalog.models import Package
 from apps.integrations import stripe_client
-from apps.integrations.stripe_client import PaymentIntent, StripeError
+from apps.integrations.stripe_client import CheckoutSession, PaymentIntent, StripeError
 
 
 @pytest.fixture(autouse=True)
@@ -157,3 +159,76 @@ def stripe_down(monkeypatch):
 
     monkeypatch.setattr(stripe_client, "create_payment_intent", refuse)
     monkeypatch.setattr(stripe_client, "retrieve_payment_intent", lambda intent_id: refuse())
+
+
+class GA4Response:
+    def __init__(self, status_code=204, body=None):
+        self.status_code = status_code
+        self._body = body
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 300
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+@pytest.fixture
+def ga4_configured(settings):
+    settings.GA4_MEASUREMENT_ID = "G-TEST123456"
+    settings.GA4_API_SECRET = "test-secret"
+    return settings
+
+
+@pytest.fixture
+def ga4_sent(monkeypatch):
+    class Collector:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self.answer = GA4Response()
+
+        def post(self, url, params=None, json=None, timeout=None, allow_redirects=None):
+            self.calls.append(
+                {"url": url, "params": params, "payload": json, "timeout": timeout, "redirects": allow_redirects}
+            )
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    collector = Collector()
+    monkeypatch.setattr(requests, "post", collector.post)
+    return collector
+
+
+@pytest.fixture
+def stripe_checkout(monkeypatch):
+    def fake_create(**kwargs):
+        return CheckoutSession(id="cs_test_123", url="https://checkout.stripe.test/pay/cs_test_123")
+
+    monkeypatch.setattr(stripe_client, "create_checkout_session", fake_create)
+
+
+@pytest.fixture
+def stripe_event(monkeypatch):
+    def deliver(event):
+        monkeypatch.setattr(stripe_client, "read_webhook_event", lambda payload, signature: event)
+
+    return deliver
+
+
+@pytest.fixture
+def webhook(api, django_capture_on_commit_callbacks):
+    def deliver():
+        with django_capture_on_commit_callbacks(execute=True):
+            response = api.post(
+                reverse("stripe-webhook"),
+                data=b"{}",
+                content_type="application/json",
+                HTTP_STRIPE_SIGNATURE="t=1,v1=sig",
+            )
+        return response
+
+    return deliver

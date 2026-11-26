@@ -161,6 +161,46 @@ To receive webhooks locally, forward them with the Stripe CLI:
 stripe listen --forward-to localhost:8000/api/payments/webhook/stripe/
 ```
 
+#### GA4 purchase tracking
+
+The frontend reports everything up to the moment of payment, but it cannot be trusted to report
+the payment itself: a customer who closes the tab as Stripe takes the money would never send the
+`purchase` event, and that is the one the business counts revenue with. So the purchase is sent
+from the server, from the same webhook that marks the order paid.
+
+Both payment endpoints accept three optional fields, all of which may be absent, `null` or empty —
+a checkout that sends none of them is a normal checkout:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ga_client_id` | string | The GA4 client id, from the `_ga` cookie. |
+| `ga_session_id` | string | The GA4 session id for this visit. |
+| `analytics_consent` | boolean | The customer's Cookiebot **Statistics** answer. |
+
+They are stored on the order and read again when Stripe confirms the payment. A second payment
+attempt that sends nothing keeps what the first one captured, so a retry from a browser with an ad
+blocker does not cost us the evidence.
+
+An event is sent only when all three of these hold: the order is paid, `analytics_consent` is
+exactly `true`, and there is a client id. Marketing consent has nothing to do with it, and the
+presence of a `_ga` cookie is not consent — only the stored answer is read. Set
+`GA4_MEASUREMENT_ID` and `GA4_API_SECRET` to switch sending on; with either missing, nothing is
+sent and nothing else changes.
+
+Delivery is **at most once**, not exactly once. The Measurement Protocol has no idempotency key,
+so when the outcome of a request is unknown — a read timeout, a 5xx — it cannot be repeated
+safely, and a purchase counted twice would overstate revenue in every report that reads it. The
+order is therefore claimed with a single conditional `UPDATE` before anything is sent
+(`ga4_purchase_queued_at`), and the claim is only given back when GA4 certainly did not receive
+the event, which is what `Ga4NotDeliveredError` means in `apps/integrations/ga4.py`. A read that
+timed out leaves the claim in place and an error in the log naming the order, for someone to
+reconcile by hand. `ga4_purchase_sent_at` is set only after GA4 has accepted the event. Both are
+visible, read-only, under **Analytics** on the order in the admin.
+
+A 2xx from the Measurement Protocol is not proof that an event was understood — it answers 204 to
+payloads it silently discards. Google's debug endpoint is the only thing that says a payload is
+well formed, and it records nothing, so real purchases never go there.
+
 ### Contact form
 
 `POST /api/content/contact/` takes the contact page's form and delivers it to the support inbox.

@@ -73,6 +73,36 @@ def send_confirmation_email(self, order_id: str) -> None:
     logger.info("Sent the confirmation for order %s", order_id)
 
 
+@shared_task(bind=True, max_retries=3, default_retry_delay=60, retry_backoff=True)
+def send_ga4_purchase(self, order_id: str) -> None:
+    from apps.billing import analytics
+    from apps.integrations import ga4
+
+    try:
+        analytics.deliver(order_id)
+    except ga4.Ga4NotDeliveredError as error:
+        if self.request.retries >= self.max_retries:
+            logger.error(
+                "Giving up on the GA4 purchase event for order %s after %d attempts; it is owed again",
+                order_id,
+                self.request.retries + 1,
+            )
+            analytics.release(order_id)
+            return
+        logger.warning(
+            "GA4 did not receive the purchase event for order %s (attempt %d); retrying",
+            order_id,
+            self.request.retries + 1,
+        )
+        raise self.retry(exc=error) from error
+    except ga4.Ga4UnconfirmedError:
+        logger.exception(
+            "The GA4 purchase event for order %s may or may not have been recorded; "
+            "leaving it claimed rather than risk counting the sale twice",
+            order_id,
+        )
+
+
 @shared_task
 def send_pending_confirmation_emails() -> int:
     owed = (

@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.billing.analytics import NO_ANALYTICS, AnalyticsSnapshot
 from apps.billing.checkout import FreeOrderNotSupportedError
 from apps.billing.consent import ConsentSnapshot
 from apps.billing.models import UNSETTLED_STATUSES, Order, OrderStatus
@@ -46,7 +47,14 @@ class StartedPayment:
     amount_pence: int
 
 
-def start_payment(*, user: User, package: Package, promo_code: str = "", consent: ConsentSnapshot) -> StartedPayment:
+def start_payment(
+    *,
+    user: User,
+    package: Package,
+    promo_code: str = "",
+    consent: ConsentSnapshot,
+    analytics: AnalyticsSnapshot = NO_ANALYTICS,
+) -> StartedPayment:
     priced = quote(package, promo_code)
     if priced.is_free:
         raise FreeOrderNotSupportedError
@@ -62,9 +70,12 @@ def start_payment(*, user: User, package: Package, promo_code: str = "", consent
             promo_code=promo_code,
             consent=consent,
             package=package,
+            analytics=analytics,
         )
 
-    return _open(user=user, package=package, priced=priced, promo_code=promo_code, consent=consent)
+    return _open(
+        user=user, package=package, priced=priced, promo_code=promo_code, consent=consent, analytics=analytics
+    )
 
 
 def _claim_a_slot_to_pay_in(*, user: User, package: Package) -> tuple[str | None, list[str]]:
@@ -91,7 +102,14 @@ def _claim_a_slot_to_pay_in(*, user: User, package: Package) -> tuple[str | None
 
 
 def _resume(
-    *, order_id: str, user: User, priced: Quote, promo_code: str, consent: ConsentSnapshot, package: Package
+    *,
+    order_id: str,
+    user: User,
+    priced: Quote,
+    promo_code: str,
+    consent: ConsentSnapshot,
+    package: Package,
+    analytics: AnalyticsSnapshot,
 ) -> StartedPayment:
     order = Order.objects.get(pk=order_id)
 
@@ -102,6 +120,7 @@ def _resume(
             priced=priced,
             consent=consent,
             package=package,
+            analytics=analytics,
             discard_if_refused=False,
         )
 
@@ -117,10 +136,20 @@ def _resume(
         _record_cancelled(order_id=order_id, intent_status=intent.status)
         raise PaymentUnverifiableError(intent.status)
 
-    return _reprice(order=order, priced=priced, promo_code=promo_code, consent=consent, package=package)
+    return _reprice(
+        order=order, priced=priced, promo_code=promo_code, consent=consent, package=package, analytics=analytics
+    )
 
 
-def _open(*, user: User, package: Package, priced: Quote, promo_code: str, consent: ConsentSnapshot) -> StartedPayment:
+def _open(
+    *,
+    user: User,
+    package: Package,
+    priced: Quote,
+    promo_code: str,
+    consent: ConsentSnapshot,
+    analytics: AnalyticsSnapshot,
+) -> StartedPayment:
     with transaction.atomic():
         claim_slot(promo_code)
         order = Order.objects.create(
@@ -135,15 +164,29 @@ def _open(*, user: User, package: Package, priced: Quote, promo_code: str, conse
             promo_code=priced.promo_code,
             payment_intent_expires_at=_expiry(priced),
             **_consent_fields(consent),
+            **analytics.to_order_fields(),
         )
 
     return _attach_intent(
-        order=order, user=user, priced=priced, consent=consent, package=package, discard_if_refused=True
+        order=order,
+        user=user,
+        priced=priced,
+        consent=consent,
+        package=package,
+        analytics=analytics,
+        discard_if_refused=True,
     )
 
 
 def _attach_intent(
-    *, order: Order, user: User, priced: Quote, consent: ConsentSnapshot, package: Package, discard_if_refused: bool
+    *,
+    order: Order,
+    user: User,
+    priced: Quote,
+    consent: ConsentSnapshot,
+    package: Package,
+    analytics: AnalyticsSnapshot,
+    discard_if_refused: bool,
 ) -> StartedPayment:
     try:
         intent = stripe_client.create_payment_intent(
@@ -165,6 +208,7 @@ def _attach_intent(
         payment_intent_expires_at=_expiry(priced),
         updated_at=now,
         **_consent_fields(consent),
+        **analytics.to_order_fields(),
     )
 
     logger.info("Opened an embedded payment for order %s", order.pk)
@@ -172,7 +216,13 @@ def _attach_intent(
 
 
 def _reprice(
-    *, order: Order, priced: Quote, promo_code: str, consent: ConsentSnapshot, package: Package
+    *,
+    order: Order,
+    priced: Quote,
+    promo_code: str,
+    consent: ConsentSnapshot,
+    package: Package,
+    analytics: AnalyticsSnapshot,
 ) -> StartedPayment:
     changed = order.final_price != priced.final_price
     if changed:
@@ -197,6 +247,7 @@ def _reprice(
                 payment_intent_expires_at=_expiry(priced),
                 updated_at=timezone.now(),
                 **_consent_fields(consent),
+                **analytics.to_order_fields(),
             )
     except Exception:
         if changed:
