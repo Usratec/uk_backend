@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('billing', '0009_ga4_purchase_tracking'),
+        ('billing', '0010_ga4_purchase_tracking'),
     ]
 
     operations = [

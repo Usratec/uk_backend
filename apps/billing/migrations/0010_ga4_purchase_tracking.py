@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('billing', '0008_confirmation_email_tracking'),
+        ('billing', '0009_order_privacy_document_order_terms_document'),
     ]
 
     operations = [
