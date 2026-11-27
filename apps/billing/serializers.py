@@ -28,10 +28,18 @@ class PurchaseConsentSerializer(serializers.Serializer):
     terms_accepted = RequiredAcceptanceField(required=True)
     immediate_access_accepted = RequiredAcceptanceField(required=True)
     consent_version = ConsentVersionField(max_length=32, trim_whitespace=False)
+    # The document versions the buyer was shown. Optional so older storefronts keep working; when
+    # sent, they must still be the published ones.
+    terms_document_version = serializers.CharField(max_length=128, required=False, write_only=True)
+    privacy_document_version = serializers.CharField(max_length=128, required=False, write_only=True)
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        attrs["consent_snapshot"] = resolve_consent(attrs["consent_version"])
+        attrs["consent_snapshot"] = resolve_consent(
+            attrs["consent_version"],
+            seen_terms_version=attrs.get("terms_document_version"),
+            seen_privacy_version=attrs.get("privacy_document_version"),
+        )
         return attrs
 
 

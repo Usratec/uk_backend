@@ -154,6 +154,14 @@ class Order(TimestampedModel):
     immediate_access_wording = models.TextField(blank=True)
     terms_version = models.CharField(max_length=128, blank=True)
     privacy_policy_version = models.CharField(max_length=128, blank=True)
+    # The exact texts accepted. Blank where no document was published yet and the version string
+    # came from the purchase consent version instead.
+    terms_document = models.ForeignKey(
+        "legal.LegalDocument", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    privacy_document = models.ForeignKey(
+        "legal.LegalDocument", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
 
     stripe_session_id = models.CharField(max_length=255, blank=True)
     stripe_payment_intent_id = models.CharField(max_length=255, blank=True)

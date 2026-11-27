@@ -107,6 +107,7 @@ INSTALLED_APPS = [
     "apps.crm",
     "apps.learning",
     "apps.content",
+    "apps.legal",
     "apps.landing",
     "apps.blog",
     "apps.analytics",
