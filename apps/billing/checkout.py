@@ -13,6 +13,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.billing.analytics import NO_ANALYTICS, AnalyticsSnapshot
 from apps.billing.consent import ConsentSnapshot
 from apps.billing.models import Order, PromoCode
 from apps.billing.pricing import PROMO_HOLD, claim_slot, quote
@@ -47,6 +48,7 @@ def start_checkout(
     first_name: str = "",
     last_name: str = "",
     promo_code: str = "",
+    analytics: AnalyticsSnapshot = NO_ANALYTICS,
 ) -> tuple[Order, str]:
     """Create a pending order and a Stripe payment page. Returns the order and where to send the
     customer.
@@ -78,6 +80,7 @@ def start_checkout(
             immediate_access_accepted=True,
             consent_recorded_at=timezone.now(),
             **asdict(consent),
+            **analytics.to_order_fields(),
         )
 
     session = stripe_client.create_checkout_session(

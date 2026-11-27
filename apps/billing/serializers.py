@@ -2,6 +2,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.serializers import EmailField
+from apps.billing.analytics import AnalyticsSnapshot
 from apps.billing.consent import resolve_consent
 from apps.billing.models import Order
 
@@ -43,7 +44,63 @@ class PurchaseConsentSerializer(serializers.Serializer):
         return attrs
 
 
-class CheckoutSerializer(PurchaseConsentSerializer):
+class AnalyticsConsentField(serializers.BooleanField):
+    def to_internal_value(self, data):
+        if data is not True and data is not False:
+            raise serializers.ValidationError("Analytics consent has to be true or false.")
+        return data
+
+
+class AnalyticsIdField(serializers.CharField):
+    def to_internal_value(self, data):
+        if not isinstance(data, str):
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
+class AnalyticsFieldsMixin(serializers.Serializer):
+    ga_client_id = AnalyticsIdField(
+        max_length=64,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        default="",
+        help_text="The GA4 client id, from the _ga cookie. Optional.",
+    )
+    ga_session_id = AnalyticsIdField(
+        max_length=32,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        default="",
+        help_text="The GA4 session id for this visit. Optional.",
+    )
+    analytics_consent = AnalyticsConsentField(
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="Cookiebot Statistics consent. Only true allows a server-side GA4 purchase event.",
+    )
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        attrs["analytics"] = AnalyticsSnapshot(
+            ga_client_id=(attrs.get("ga_client_id") or "").strip(),
+            ga_session_id=(attrs.get("ga_session_id") or "").strip(),
+            analytics_consent=attrs.get("analytics_consent"),
+        )
+        return attrs
+
+
+class CurrencyFieldMixin(serializers.Serializer):
+    currency = serializers.SerializerMethodField(help_text="Always GBP; the site sells in pounds only.")
+
+    @extend_schema_field(serializers.CharField())
+    def get_currency(self, order: Order) -> str:
+        return CURRENCY
+
+
+class CheckoutSerializer(AnalyticsFieldsMixin, PurchaseConsentSerializer):
     package_id = serializers.IntegerField()
     email = EmailField()
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
@@ -56,12 +113,12 @@ class PromoCodeValidateSerializer(serializers.Serializer):
     promo_code = serializers.CharField(max_length=50)
 
 
-class PaymentIntentSerializer(PurchaseConsentSerializer):
+class PaymentIntentSerializer(AnalyticsFieldsMixin, PurchaseConsentSerializer):
     package_id = serializers.IntegerField()
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
 
 
-class OrderStatusSerializer(serializers.ModelSerializer):
+class OrderStatusSerializer(CurrencyFieldMixin, serializers.ModelSerializer):
     """What the storefront polls while waiting for Stripe to confirm the payment.
 
     The order id is a capability URL (it is emailed and can sit in browser history), so the
@@ -70,7 +127,10 @@ class OrderStatusSerializer(serializers.ModelSerializer):
     """
 
     package_name = serializers.CharField(source="package.name", read_only=True)
+    package_slug = serializers.CharField(source="package.slug", read_only=True)
     package_duration_days = serializers.IntegerField(source="package.duration_days", read_only=True)
+    product_line = serializers.CharField(source="package.product_line", read_only=True)
+    promo_code = serializers.SerializerMethodField(help_text="The code that was used, or null.")
 
     class Meta:
         model = Order
@@ -78,21 +138,30 @@ class OrderStatusSerializer(serializers.ModelSerializer):
             "id",
             "status",
             "package_name",
+            "package_slug",
             "package_duration_days",
+            "product_line",
             "original_price",
             "discount_amount",
             "final_price",
+            "currency",
+            "promo_code",
             "paid_at",
             "created_at",
             "failure_code",
             "failure_message",
         ]
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_promo_code(self, order: Order) -> str | None:
+        if not order.promo_code_id or order.promo_code is None:
+            return None
+        return order.promo_code.code
 
-class OrderHistoryItemSerializer(serializers.ModelSerializer):
+
+class OrderHistoryItemSerializer(CurrencyFieldMixin, serializers.ModelSerializer):
     package_name = serializers.CharField(source="package.name", read_only=True)
     package_duration_days = serializers.IntegerField(source="package.duration_days", read_only=True)
-    currency = serializers.SerializerMethodField(help_text="Always GBP; the site sells in pounds only.")
 
     class Meta:
         model = Order
@@ -110,10 +179,6 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
             "refunded_at",
         ]
         read_only_fields = fields
-
-    @extend_schema_field(serializers.CharField())
-    def get_currency(self, order: Order) -> str:
-        return CURRENCY
 
 
 # --- Response shapes, declared so the OpenAPI schema documents them ------------------------------

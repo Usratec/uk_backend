@@ -8,6 +8,7 @@ from django.urls import reverse
 
 from apps.accounts.models import User
 from apps.billing.models import OrderStatus
+from apps.catalog.models import ProductLine
 
 pytestmark = pytest.mark.django_db
 
@@ -43,10 +44,14 @@ class TestOrderStatus:
             "id",
             "status",
             "package_name",
+            "package_slug",
             "package_duration_days",
+            "product_line",
             "original_price",
             "discount_amount",
             "final_price",
+            "currency",
+            "promo_code",
             "paid_at",
             "created_at",
             "failure_code",
@@ -65,6 +70,37 @@ class TestOrderStatus:
 
         assert response.data["package_name"] == "30 day access"
         assert response.data["package_duration_days"] == 30
+
+    def test_shows_the_package_slug_and_product_line(self, signed_in, order):
+        response = signed_in.get(status_url(order.id))
+
+        assert response.data["package_slug"] == order.package.slug
+        assert response.data["product_line"] == "course"
+
+    def test_shows_the_product_line_of_a_mock_test_package(self, signed_in, order):
+        order.package.product_line = ProductLine.MOCK_TESTS
+        order.package.save(update_fields=["product_line"])
+
+        assert signed_in.get(status_url(order.id)).data["product_line"] == "mock_tests"
+
+    def test_is_priced_in_pounds(self, signed_in, order):
+        assert signed_in.get(status_url(order.id)).data["currency"] == "GBP"
+
+    def test_shows_the_promo_code_that_was_used(self, signed_in, order, promo_code):
+        order.promo_code = promo_code
+        order.save(update_fields=["promo_code"])
+
+        assert signed_in.get(status_url(order.id)).data["promo_code"] == "SAVE10"
+
+    def test_promo_code_is_null_when_none_was_used(self, signed_in, order):
+        assert signed_in.get(status_url(order.id)).data["promo_code"] is None
+
+    def test_reads_the_order_in_one_query(self, signed_in, order, promo_code, django_assert_num_queries):
+        order.promo_code = promo_code
+        order.save(update_fields=["promo_code"])
+
+        with django_assert_num_queries(1):
+            signed_in.get(status_url(order.id))
 
     def test_shows_the_payment_once_it_lands(self, signed_in, order):
         assert signed_in.get(status_url(order.id)).data["status"] == "pending"

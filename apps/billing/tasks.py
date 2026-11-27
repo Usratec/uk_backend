@@ -18,6 +18,10 @@ FULFILMENT_GRACE = timedelta(minutes=5)
 
 CONFIRMATION_GRACE = timedelta(minutes=30)
 
+GA4_PURCHASE_GRACE = timedelta(minutes=45)
+
+GA4_RETRY_DELAYS = (60, 300, 1800)
+
 
 @shared_task(
     bind=True,
@@ -71,6 +75,70 @@ def send_confirmation_email(self, order_id: str) -> None:
 
     Order.objects.filter(pk=order_id).update(confirmation_email_sent_at=timezone.now())
     logger.info("Sent the confirmation for order %s", order_id)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def send_ga4_purchase(self, order_id: str) -> None:
+    from apps.billing import analytics
+    from apps.integrations import ga4
+
+    try:
+        analytics.deliver(order_id)
+    except ga4.Ga4NotDeliveredError as error:
+        if self.request.retries >= self.max_retries:
+            logger.error(
+                "Giving up on the GA4 purchase event for order %s after %d attempts; "
+                "send_pending_ga4_purchases will offer it again",
+                order_id,
+                self.request.retries + 1,
+            )
+            analytics.release(order_id)
+            return
+        countdown = GA4_RETRY_DELAYS[min(self.request.retries, len(GA4_RETRY_DELAYS) - 1)]
+        logger.warning(
+            "GA4 did not receive the purchase event for order %s (attempt %d); retrying in %ds",
+            order_id,
+            self.request.retries + 1,
+            countdown,
+        )
+        raise self.retry(exc=error, countdown=countdown) from error
+    except ga4.Ga4UnconfirmedError:
+        logger.exception(
+            "The GA4 purchase event for order %s may or may not have been recorded; "
+            "leaving it claimed rather than risk counting the sale twice",
+            order_id,
+        )
+
+
+@shared_task
+def send_pending_ga4_purchases() -> int:
+    from apps.billing import analytics
+
+    owed = (
+        Order.objects.filter(
+            status=OrderStatus.PAID,
+            analytics_consent=True,
+            ga4_purchase_queued_at__isnull=True,
+            ga4_purchase_attempted_at__isnull=True,
+            ga4_purchase_sent_at__isnull=True,
+            paid_at__lt=timezone.now() - GA4_PURCHASE_GRACE,
+        )
+        .exclude(ga_client_id="")
+        .select_related("package", "promo_code")
+        .order_by("paid_at")
+    )
+
+    queued = 0
+    for order in owed:
+        logger.warning("Order %s was never reported to GA4; offering it again", order.id)
+        try:
+            analytics.track_purchase(order)
+        except Exception:
+            logger.exception("Could not offer order %s to GA4; will try again on the next run", order.id)
+            continue
+        queued += 1
+
+    return queued
 
 
 @shared_task

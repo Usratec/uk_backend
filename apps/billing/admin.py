@@ -98,9 +98,23 @@ class OrderAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
         "privacy_policy_version",
     )
 
+    analytics_fields = (
+        "analytics_consent",
+        "ga_client_id",
+        "ga_session_id",
+        "ga4_purchase_queued_at",
+        "ga4_purchase_attempted_at",
+        "ga4_purchase_sent_at",
+    )
+
     def get_fieldsets(self, request, obj=None):
-        fields = [field for field in self.get_fields(request, obj) if field not in self.consent_fields]
-        return [(None, {"fields": fields}), ("Purchase consent", {"fields": self.consent_fields})]
+        grouped = {*self.consent_fields, *self.analytics_fields}
+        fields = [field for field in self.get_fields(request, obj) if field not in grouped]
+        return [
+            (None, {"fields": fields}),
+            ("Purchase consent", {"fields": self.consent_fields}),
+            ("Analytics", {"fields": self.analytics_fields}),
+        ]
 
     @admin.display(description="Sold as", ordering="package__product_line")
     def product_line(self, order: Order) -> str:

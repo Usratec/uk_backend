@@ -287,6 +287,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.send_pending_confirmation_emails",
         "schedule": crontab(minute="35"),
     },
+    "send-pending-ga4-purchases": {
+        "task": "apps.billing.tasks.send_pending_ga4_purchases",
+        "schedule": crontab(minute="50"),
+    },
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),
@@ -327,6 +331,9 @@ STRIPE_WEBHOOK_SECRET = env.str("STRIPE_WEBHOOK_SECRET", default="")
 
 # Versioned legal wording supplied by the business. An empty registry disables new purchases.
 PURCHASE_CONSENT_VERSIONS = env.json("PURCHASE_CONSENT_VERSIONS", default={})
+
+GA4_MEASUREMENT_ID = env.str("GA4_MEASUREMENT_ID", default="")
+GA4_API_SECRET = env.str("GA4_API_SECRET", default="")
 
 # --- Browser Web Push ----------------------------------------------------------------------------
 # Empty keys disable push until each deployment has its own stable VAPID pair.

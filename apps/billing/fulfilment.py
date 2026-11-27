@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from apps.accounts.models import AuthMethod, User
 from apps.accounts.services import send_email_verification
-from apps.billing import emails
+from apps.billing import analytics, emails
 from apps.billing.models import Order, OrderStatus
 from apps.crm import notifications
 from apps.entitlements import services as entitlements
@@ -40,6 +40,7 @@ def fulfil(order: Order) -> None:
     send_welcome(order, user)
     send_order_confirmation(order)
     notifications.notify_access_granted(order, user)
+    track_purchase(order)
 
 
 def provision_account(order: Order) -> User:
@@ -125,6 +126,13 @@ def send_order_confirmation(order: Order) -> None:
         # never fails the purchase.
         logger.exception("Could not send the confirmation for order %s", order.id)
         release_confirmation_email(order.pk)
+
+
+def track_purchase(order: Order) -> None:
+    try:
+        analytics.track_purchase(order)
+    except Exception:
+        logger.exception("Could not report order %s to GA4; the purchase itself is unaffected", order.id)
 
 
 def claim_confirmation_email(order: Order) -> bool:

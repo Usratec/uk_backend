@@ -45,7 +45,11 @@ existing task role and receives a supplementary policy for those prefixes.
    additional KMS policy here.
 7. Populate a runtime JSON secret with `SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`
    `CELERY_BROKER_URL`, `FRONTEND_BASE_URL`, `STRIPE_SECRET_KEY`,
-   `STRIPE_WEBHOOK_SECRET` and `POSTMARK_SERVER_TOKEN`. Match the current web
+   `STRIPE_WEBHOOK_SECRET`, `POSTMARK_SERVER_TOKEN`, `GA4_MEASUREMENT_ID` and
+   `GA4_API_SECRET`. Every key the task definitions reference must exist in the
+   secret before the stack is deployed: ECS fails the task when one is missing,
+   so add them first. `GA4_MEASUREMENT_ID` and `GA4_API_SECRET` may be empty
+   strings, which only switches purchase tracking off. Match the current web
    runtime exactly. Include any additional integration settings and secrets
    needed by ordinary jobs before opting into `CreateGeneralWorker=true`.
 
