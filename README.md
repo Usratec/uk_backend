@@ -87,6 +87,22 @@ article. Reading time is worked out from the content on every save, so the listi
 without the content; a cover needs a description, and a study tip needs both a title and its words,
 with a button label and link that stand or fall together.
 
+The detail response also carries the post's FAQ block and its structured data, both left off the
+listing so the cards cost nothing extra. `faqs` is a list of `{question, answer, order}` in display
+order, written on the post's own admin screen; an entry missing either half is left out, and a post
+without questions returns `[]`. `structured_data` is the schema.org JSON-LD for the post: an
+`Article` always, a `FAQPage` when it has FAQs, and a `BreadcrumbList` of Home › Blog › the post,
+whose last step carries no `item` because it is the page being read. **The frontend has to render
+each object into its own `<script type="application/ld+json">` element** — returning it here puts
+nothing in the published HTML.
+
+The content itself is cleaned on every save against the allowlist: headings
+`h2`–`h6`, the usual prose markup, links, pictures
+and tables. The editor's source-editing button lets the SEO team write that HTML by hand, which is
+why `class` is restricted to the handful of values the editor itself emits for image and table
+alignment rather than left open; anything else, including every script, event handler, style block
+and `iframe`, does not survive the save.
+
 When a post's slug changes, the old address keeps working: it answers `301 Moved Permanently` with a
 `Location` header for the post's new API address and a body of
 `{"detail": …, "slug": "<new-slug>", "path": "/blog/<new-slug>/"}`, so the frontend can send the

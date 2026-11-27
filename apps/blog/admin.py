@@ -11,7 +11,7 @@ from django.utils.safestring import SafeString, mark_safe
 
 from apps.accounts.models import User
 from apps.blog import services
-from apps.blog.models import BlogCategory, BlogImage, BlogPost, BlogPostRedirect, BlogStatus
+from apps.blog.models import BlogCategory, BlogImage, BlogPost, BlogPostFAQ, BlogPostRedirect, BlogStatus
 from apps.blog.roles import BLOG_MANAGER
 from apps.blog.widgets import BlogCKEditor5Widget
 from apps.staff.access import granted_permissions
@@ -31,7 +31,7 @@ class BlogPostForm(forms.ModelForm):
     body_html = forms.CharField(
         label="Content",
         required=False,
-        widget=BlogCKEditor5Widget(config_name="default"),
+        widget=BlogCKEditor5Widget(config_name="blog"),
     )
 
     class Meta:
@@ -57,6 +57,24 @@ class BlogPostForm(forms.ModelForm):
             "canonical_url",
             "social_image",
         ]
+
+
+class BlogPostFAQInline(PermissionRequiredAdminMixin, admin.TabularInline):
+    model = BlogPostFAQ
+    extra = 1
+    fields = ["order", "question", "answer"]
+    ordering = ["order", "id"]
+    verbose_name = "FAQ"
+    verbose_name_plural = "FAQs"
+
+    def permission_for(self, action: str) -> str:
+        return f"blog.{action}_blogpost"
+
+    def has_add_permission(self, request: HttpRequest, obj=None) -> bool:
+        return self.has_change_permission(request, obj)
+
+    def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
+        return self.has_change_permission(request, obj)
 
 
 @admin.register(BlogCategory)
@@ -144,6 +162,7 @@ class BlogPostRedirectAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
 @admin.register(BlogPost)
 class BlogPostAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
     form = BlogPostForm
+    inlines = [BlogPostFAQInline]
     preview_template = "admin/blog/preview.html"
     list_display = ["title", "category", "byline", "publish_at", "state", "featured"]
     list_filter = ["status", "category", "featured"]
@@ -303,6 +322,7 @@ class BlogPostAdmin(PermissionRequiredAdminMixin, admin.ModelAdmin):
                 **self.admin_site.each_context(request),
                 "title": f"Preview: {post}",
                 "post": post,
+                "faqs": services.faqs_of(post),
                 "problems": services.problems_with(post),
                 "warnings": services.warnings_about(post),
                 "opts": self.model._meta,

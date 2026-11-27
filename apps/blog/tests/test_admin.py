@@ -38,8 +38,23 @@ def form_data(when=None, **overrides) -> dict:
         "meta_title": "",
         "meta_description": "",
         "canonical_url": "",
+        **faq_data(),
     }
     data.update(overrides)
+    return data
+
+
+def faq_data(*questions: tuple[int, str, str], initial: int = 0) -> dict:
+    data: dict = {
+        "faqs-TOTAL_FORMS": str(len(questions)),
+        "faqs-INITIAL_FORMS": str(initial),
+        "faqs-MIN_NUM_FORMS": "0",
+        "faqs-MAX_NUM_FORMS": "1000",
+    }
+    for index, (order, question, answer) in enumerate(questions):
+        data[f"faqs-{index}-order"] = str(order)
+        data[f"faqs-{index}-question"] = question
+        data[f"faqs-{index}-answer"] = answer
     return data
 
 

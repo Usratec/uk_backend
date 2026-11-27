@@ -336,6 +336,47 @@ class BlogPost(TimestampedModel):
         return f"{author.first_name} {author.last_name}".strip()
 
 
+class BlogPostFAQ(TimestampedModel):
+    post = models.ForeignKey(BlogPost, on_delete=models.CASCADE, related_name="faqs")
+    question = models.CharField(
+        max_length=300,
+        help_text="Asked the way a reader would ask it, e.g. How many questions are on the theory test?",
+    )
+    answer = models.TextField(
+        max_length=2000,
+        help_text="A full answer in a sentence or two. Bold, italics, lists and links are kept; "
+        "headings and pictures are not.",
+    )
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text="Lower numbers come first. Questions sharing a number fall back to the order they were added.",
+    )
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name = "blog FAQ"
+        verbose_name_plural = "blog FAQs"
+        indexes = [models.Index(fields=["post", "order"], name="blog_faq_post_order")]
+
+    def __str__(self) -> str:
+        return self.question
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.question.strip():
+            raise ValidationError({"question": ["A question cannot be blank."]})
+        if not html.plain_text(self.answer).strip():
+            raise ValidationError({"answer": ["An answer cannot be blank."]})
+
+    def save(self, *args, **kwargs):
+        self.answer = html.clean_answer(self.answer)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.question.strip() and html.plain_text(self.answer).strip())
+
+
 class BlogPostRedirect(TimestampedModel):
     post = models.ForeignKey(BlogPost, on_delete=models.CASCADE, related_name="redirects")
     old_slug = models.SlugField(
