@@ -76,12 +76,13 @@ jq --arg image "$image" --arg container "$service" --arg secret_arn "$runtime_se
                 {name: "POSTMARK_SENDER", value: "support@1theorytest.co.uk"},
                 {name: "AWS_CLOUDFRONT_DOMAIN", value: "https://stage.1theorytest.co.uk"},
                 {name: "SENTRY_DSN", value: ""},
-                {name: "STRIPE_PUBLISHABLE_KEY", value: ""}
+                {name: "STRIPE_PUBLISHABLE_KEY", value: ""},
+                {name: "GA4_MEASUREMENT_ID", value: "G-JTJFJH64SG"}
             ]
             | .secrets = ([
                 "SECRET_KEY", "DATABASE_URL", "REDIS_URL", "CELERY_BROKER_URL",
                 "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "POSTMARK_SERVER_TOKEN",
-                "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"
+                "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "GA4_API_SECRET"
             ] | map({name: ., valueFrom: ($secret_arn + ":" + . + "::")})) + [{name: "CLOUDFRONT_PRIVATE_KEY", valueFrom: $key_secret}]
         else . end
     )

@@ -18,11 +18,12 @@ aws() {
     'ecs register-task-definition')
       for arg in "$@"; do if [[ $arg == file://* ]]; then file=${arg#file://}; fi; done
       if jq -e '.family == "worker"' "$file" >/dev/null; then
-        jq -e '.containerDefinitions[0] | .image | endswith(":abc1234-stage")' "$file" >/dev/null
-        jq -e '.containerDefinitions[0].environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")' "$file" >/dev/null
+        jq -e '.containerDefinitions[0] | .image | endswith(":abc1234-stage")' "$file" >/dev/null || return 1
+        jq -e '.containerDefinitions[0].environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")' "$file" >/dev/null || return 1
         echo worker:2
       else
-        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "CELERY_QUEUES" and .value == "celery")] | length == 1) and ([.environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")] | length == 1) and ([.environment[] | select(.name == "AWS_ENDPOINT_URL_S3" and .value == "https://s3.eu-west-2.amazonaws.com")] | length == 1) and ([.environment[] | select(.name == "GOOGLE_CLIENT_IDS" and .value == "932236057244-n2ovo2i53a176klup4q60hu2ke7p3usn.apps.googleusercontent.com")] | length == 1) and ([.environment[] | select(.name == "EMAIL_ENABLED" and .value == "true")] | length == 1) and ([.environment[] | select(.name == "DEFAULT_FROM_EMAIL" and .value == "support@1theorytest.co.uk")] | length == 1) and ([.secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY" and .valueFrom == "signing-arn")] | length == 1)' "$file" >/dev/null
+        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "CELERY_QUEUES" and .value == "celery")] | length == 1) and ([.environment[] | select(.name == "VIDEO_S3_BUCKET_NAME" and .value == "stage-bucket")] | length == 1) and ([.environment[] | select(.name == "AWS_ENDPOINT_URL_S3" and .value == "https://s3.eu-west-2.amazonaws.com")] | length == 1) and ([.environment[] | select(.name == "GOOGLE_CLIENT_IDS" and .value == "932236057244-n2ovo2i53a176klup4q60hu2ke7p3usn.apps.googleusercontent.com")] | length == 1) and ([.environment[] | select(.name == "EMAIL_ENABLED" and .value == "true")] | length == 1) and ([.environment[] | select(.name == "DEFAULT_FROM_EMAIL" and .value == "support@1theorytest.co.uk")] | length == 1) and ([.secrets[] | select(.name == "CLOUDFRONT_PRIVATE_KEY" and .valueFrom == "signing-arn")] | length == 1)' "$file" >/dev/null || return 1
+        jq -e '.containerDefinitions[0] | ([.environment[] | select(.name == "GA4_MEASUREMENT_ID" and .value == "G-JTJFJH64SG")] | length == 1) and ([.secrets[] | select(.name == "GA4_API_SECRET" and .valueFrom == "runtime-arn:GA4_API_SECRET::")] | length == 1) and ([.environment[] | select(.name == "GA4_API_SECRET")] | length == 0)' "$file" >/dev/null || return 1
         echo web:2
       fi ;;
     'ecs update-service') if [[ "$*" == *uk-video-stage-videoworker* ]]; then touch "$TEST_TMP/worker"; else touch "$TEST_TMP/web"; fi; echo ok ;;
