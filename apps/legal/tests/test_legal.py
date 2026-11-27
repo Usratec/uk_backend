@@ -76,6 +76,35 @@ def test_text_is_cleaned(make_document):
     assert "javascript:" not in document.body_html
 
 
+def test_publishing_and_archiving_never_rewrite_the_text(make_document, publisher):
+    # Stored as if cleaned under older rules: today's cleaner would change it.
+    stored = '<p onclick="x">Accepted text</p>'
+    first = make_document(version="v1")
+    LegalDocument.objects.filter(pk=first.pk).update(body_html=stored)
+
+    first.refresh_from_db()
+    services.publish(actor=publisher, document=first)
+    first.refresh_from_db()
+    assert first.body_html == stored
+
+    services.publish(actor=publisher, document=make_document(version="v2"))
+    first.refresh_from_db()
+    assert first.status == PublishStatus.ARCHIVED
+    assert first.body_html == stored
+
+    first.save()
+    first.refresh_from_db()
+    assert first.body_html == stored
+
+
+def test_editing_a_draft_cleans_the_new_text(make_document):
+    document = make_document()
+    document.body_html = "<p>New</p><script>alert(1)</script>"
+    document.save()
+    document.refresh_from_db()
+    assert document.body_html == "<p>New</p>"
+
+
 def test_api_returns_current_documents_only(api, make_document, publisher):
     services.publish(actor=publisher, document=make_document(version="v1", body="<p>Old</p>"))
     services.publish(actor=publisher, document=make_document(version="v2", body="<p>New</p>"))

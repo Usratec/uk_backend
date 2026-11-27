@@ -50,8 +50,10 @@ class LegalDocument(TimestampedModel):
         return f"{self.get_document_type_display()} {self.version}"
 
     def save(self, *args, **kwargs):
-        self.body_html = html.clean(self.body_html)
+        # Only text being written is cleaned. A published or archived text is what buyers accepted, so
+        # a later save must not rewrite it, even if the cleaning rules have changed since.
         update_fields = kwargs.get("update_fields")
-        if update_fields is not None and "body_html" not in update_fields:
-            kwargs["update_fields"] = [*update_fields, "body_html"]
+        writes_text = update_fields is None or "body_html" in update_fields
+        if writes_text and (self._state.adding or self.status == PublishStatus.DRAFT):
+            self.body_html = html.clean(self.body_html)
         super().save(*args, **kwargs)

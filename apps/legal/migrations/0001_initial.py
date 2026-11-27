@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('document_type', models.CharField(choices=[('terms', 'Terms and Conditions'), ('privacy', 'Privacy Policy'), ('cookies', 'Cookie Policy')], max_length=20)),
                 ('version', models.CharField(help_text='Shown to customers and stored on their order.', max_length=128)),
-                ('effective_date', models.DateField(help_text='The day this version takes effect.')),
+                ('effective_date', models.DateField(help_text='The day this version takes effect. It can only be published on or after this day.')),
                 ('body_html', models.TextField(help_text='The full text of the document.', verbose_name='text')),
                 ('status', models.CharField(choices=[('draft', 'Draft'), ('published', 'Published'), ('archived', 'Archived')], default='draft', max_length=10)),
                 ('published_at', models.DateTimeField(blank=True, editable=False, null=True)),
