@@ -98,6 +98,10 @@ services:
       # Blank is valid; Google sign-in stays refused until it is set.
       - key: GOOGLE_CLIENT_IDS
         sync: false
+      - key: GA4_MEASUREMENT_ID
+        value: G-JTJFJH64SG
+      - key: GA4_API_SECRET
+        sync: false
 
       # --- Uploaded files ---------------------------------------------------------------------
       # An S3-compatible bucket, because this service's own disk is wiped on every deploy.

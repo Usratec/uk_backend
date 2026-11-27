@@ -286,6 +286,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.send_pending_confirmation_emails",
         "schedule": crontab(minute="35"),
     },
+    "send-pending-ga4-purchases": {
+        "task": "apps.billing.tasks.send_pending_ga4_purchases",
+        "schedule": crontab(minute="50"),
+    },
     "notify-pending-access-grants": {
         "task": "apps.crm.tasks.notify_pending_access_grants",
         "schedule": crontab(minute="15"),

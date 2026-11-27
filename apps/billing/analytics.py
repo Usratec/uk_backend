@@ -25,15 +25,18 @@ class AnalyticsSnapshot:
     ga_session_id: str = ""
     analytics_consent: bool | None = None
 
+    @property
+    def is_empty(self) -> bool:
+        return not self.ga_client_id and not self.ga_session_id and self.analytics_consent is None
+
     def to_order_fields(self) -> dict:
-        fields: dict = {}
-        if self.ga_client_id:
-            fields["ga_client_id"] = self.ga_client_id
-        if self.ga_session_id:
-            fields["ga_session_id"] = self.ga_session_id
-        if self.analytics_consent is not None:
-            fields["analytics_consent"] = self.analytics_consent
-        return fields
+        if self.is_empty:
+            return {}
+        return {
+            "ga_client_id": self.ga_client_id,
+            "ga_session_id": self.ga_session_id,
+            "analytics_consent": self.analytics_consent,
+        }
 
 
 NO_ANALYTICS = AnalyticsSnapshot()
@@ -123,6 +126,20 @@ def release(order_id) -> None:
     Order.objects.filter(pk=order_id, ga4_purchase_sent_at__isnull=True).update(ga4_purchase_queued_at=None)
 
 
+def claim_attempt(order_id) -> bool:
+    return bool(
+        Order.objects.filter(
+            pk=order_id,
+            ga4_purchase_attempted_at__isnull=True,
+            ga4_purchase_sent_at__isnull=True,
+        ).update(ga4_purchase_attempted_at=timezone.now())
+    )
+
+
+def release_attempt(order_id) -> None:
+    Order.objects.filter(pk=order_id, ga4_purchase_sent_at__isnull=True).update(ga4_purchase_attempted_at=None)
+
+
 def deliver(order_id: str) -> None:
     order = Order.objects.select_related("package", "promo_code").filter(pk=order_id).first()
     if order is None:
@@ -138,7 +155,20 @@ def deliver(order_id: str) -> None:
         release(order_id)
         return
 
-    ga4.send_event(purchase_payload(order))
+    if not claim_attempt(order_id):
+        logger.error(
+            "An earlier attempt to report order %s to GA4 ended without an answer, so it is left "
+            "alone rather than risk counting the sale twice",
+            order_id,
+        )
+        return
+
+    payload = purchase_payload(order)
+    try:
+        ga4.send_event(payload)
+    except ga4.Ga4NotDeliveredError:
+        release_attempt(order_id)
+        raise
 
     Order.objects.filter(pk=order_id, ga4_purchase_sent_at__isnull=True).update(ga4_purchase_sent_at=timezone.now())
     logger.info("Reported order %s to GA4 as a purchase", order_id)

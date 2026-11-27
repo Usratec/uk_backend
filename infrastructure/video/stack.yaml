@@ -487,6 +487,12 @@ Resources:
         - Name: POSTMARK_SERVER_TOKEN
           ValueFrom:
             Fn::Sub: '${RuntimeSecretArn}:POSTMARK_SERVER_TOKEN::'
+        - Name: GA4_MEASUREMENT_ID
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:GA4_MEASUREMENT_ID::'
+        - Name: GA4_API_SECRET
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:GA4_API_SECRET::'
         LogConfiguration:
           LogDriver: awslogs
           Options:
@@ -648,6 +654,12 @@ Resources:
         - Name: POSTMARK_SERVER_TOKEN
           ValueFrom:
             Fn::Sub: '${RuntimeSecretArn}:POSTMARK_SERVER_TOKEN::'
+        - Name: GA4_MEASUREMENT_ID
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:GA4_MEASUREMENT_ID::'
+        - Name: GA4_API_SECRET
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:GA4_API_SECRET::'
         LogConfiguration:
           LogDriver: awslogs
           Options:
@@ -810,6 +822,12 @@ Resources:
         - Name: POSTMARK_SERVER_TOKEN
           ValueFrom:
             Fn::Sub: '${RuntimeSecretArn}:POSTMARK_SERVER_TOKEN::'
+        - Name: GA4_MEASUREMENT_ID
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:GA4_MEASUREMENT_ID::'
+        - Name: GA4_API_SECRET
+          ValueFrom:
+            Fn::Sub: '${RuntimeSecretArn}:GA4_API_SECRET::'
         LogConfiguration:
           LogDriver: awslogs
           Options:

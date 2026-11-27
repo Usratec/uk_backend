@@ -1,14 +1,16 @@
 import json
 import threading
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
 import requests
 from django.db import connection
+from django.utils import timezone
 
 from apps.billing import analytics, fulfilment
 from apps.billing.models import Order, OrderStatus
-from apps.billing.tasks import send_ga4_purchase
+from apps.billing.tasks import send_ga4_purchase, send_pending_ga4_purchases
 from apps.billing.tests.conftest import GA4Response
 from apps.catalog.models import ProductLine
 from apps.integrations import ga4
@@ -171,11 +173,12 @@ class TestDelivery:
         "answer,expected",
         [
             (GA4Response(400), ga4.Ga4NotDeliveredError),
-            (requests.ConnectionError("no route to host"), ga4.Ga4NotDeliveredError),
+            (requests.ConnectTimeout("never opened"), ga4.Ga4NotDeliveredError),
+            (requests.ConnectionError("reset after the body went out"), ga4.Ga4UnconfirmedError),
             (requests.ReadTimeout("took too long"), ga4.Ga4UnconfirmedError),
             (GA4Response(503), ga4.Ga4UnconfirmedError),
         ],
-        ids=["refused", "unreachable", "read timeout", "server error"],
+        ids=["refused", "never connected", "connection lost", "read timeout", "server error"],
     )
     def test_a_failure_says_whether_ga4_could_have_recorded_the_event(
         self, order, ga4_configured, ga4_sent, answer, expected
@@ -188,6 +191,18 @@ class TestDelivery:
 
         tracked.refresh_from_db()
         assert tracked.ga4_purchase_sent_at is None
+        certainly_missed = expected is ga4.Ga4NotDeliveredError
+        assert (tracked.ga4_purchase_attempted_at is None) is certainly_missed
+
+    def test_a_worker_lost_before_the_result_was_written_does_not_send_a_second_time(
+        self, order, ga4_configured, ga4_sent
+    ):
+        tracked = tracked_order(order, status=OrderStatus.PAID)
+        assert analytics.claim_attempt(tracked.pk) is True
+
+        analytics.deliver(str(tracked.pk))
+
+        assert ga4_sent.calls == []
 
 
 class TestOneEventPerOrder:
@@ -389,3 +404,44 @@ class TestTask:
         tracked.refresh_from_db()
         assert tracked.ga4_purchase_sent_at is None
         assert tracked.ga4_purchase_queued_at is not None
+
+
+class TestSweeper:
+    def test_offers_a_purchase_that_nothing_else_reported(self, order, ga4_configured, ga4_sent):
+        tracked = tracked_order(order, status=OrderStatus.PAID, paid_at=timezone.now() - timedelta(hours=2))
+
+        assert send_pending_ga4_purchases() == 1
+
+        tracked.refresh_from_db()
+        assert tracked.ga4_purchase_sent_at is not None
+
+    def test_leaves_an_attempt_that_went_unanswered_alone(self, order, ga4_configured, ga4_sent):
+        tracked = tracked_order(order, status=OrderStatus.PAID, paid_at=timezone.now() - timedelta(hours=2))
+        analytics.claim_attempt(tracked.pk)
+
+        assert send_pending_ga4_purchases() == 0
+        assert ga4_sent.calls == []
+
+    @pytest.mark.parametrize(
+        "fields",
+        [{"paid_at": timezone.now()}, {"analytics_consent": False}, {"ga_client_id": ""}],
+        ids=["only just paid", "no statistics consent", "no client id"],
+    )
+    def test_passes_over_a_purchase_it_must_not_report(self, order, ga4_configured, ga4_sent, fields):
+        long_ago = timezone.now() - timedelta(hours=2)
+        tracked_order(order, status=OrderStatus.PAID, **{"paid_at": long_ago, **fields})
+
+        assert send_pending_ga4_purchases() == 0
+        assert ga4_sent.calls == []
+
+    def test_recovers_a_purchase_the_task_gave_up_on(self, order, ga4_configured, ga4_sent):
+        ga4_sent.answer = GA4Response(400)
+        tracked = tracked_order(order, status=OrderStatus.PAID, paid_at=timezone.now() - timedelta(hours=2))
+        analytics.claim(tracked)
+        send_ga4_purchase.apply(kwargs={"order_id": str(tracked.pk)}, retries=3, throw=False)
+
+        ga4_sent.answer = GA4Response(204)
+        assert send_pending_ga4_purchases() == 1
+
+        tracked.refresh_from_db()
+        assert tracked.ga4_purchase_sent_at is not None

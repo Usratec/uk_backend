@@ -103,6 +103,7 @@ class OrderAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
         "ga_client_id",
         "ga_session_id",
         "ga4_purchase_queued_at",
+        "ga4_purchase_attempted_at",
         "ga4_purchase_sent_at",
     )
 

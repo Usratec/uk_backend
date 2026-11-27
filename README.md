@@ -177,9 +177,11 @@ a checkout that sends none of them is a normal checkout:
 | `ga_session_id` | string | The GA4 session id for this visit. |
 | `analytics_consent` | boolean | The customer's Cookiebot **Statistics** answer. |
 
-They are stored on the order and read again when Stripe confirms the payment. A second payment
-attempt that sends nothing keeps what the first one captured, so a retry from a browser with an ad
-blocker does not cost us the evidence.
+They are stored on the order and read again when Stripe confirms the payment. A payment attempt
+that sends nothing at all keeps what the earlier one captured, so a retry from a browser with an
+ad blocker does not cost us the evidence; one that sends anything replaces all three together,
+because a consent answer belongs to the client id it arrived with and pairing a new id with an
+older answer would report a visitor who never agreed to be reported.
 
 An event is sent only when all three of these hold: the order is paid, `analytics_consent` is
 exactly `true`, and there is a client id. Marketing consent has nothing to do with it, and the
@@ -191,11 +193,19 @@ Delivery is **at most once**, not exactly once. The Measurement Protocol has no 
 so when the outcome of a request is unknown — a read timeout, a 5xx — it cannot be repeated
 safely, and a purchase counted twice would overstate revenue in every report that reads it. The
 order is therefore claimed with a single conditional `UPDATE` before anything is sent
-(`ga4_purchase_queued_at`), and the claim is only given back when GA4 certainly did not receive
-the event, which is what `Ga4NotDeliveredError` means in `apps/integrations/ga4.py`. A read that
-timed out leaves the claim in place and an error in the log naming the order, for someone to
-reconcile by hand. `ga4_purchase_sent_at` is set only after GA4 has accepted the event. Both are
-visible, read-only, under **Analytics** on the order in the admin.
+(`ga4_purchase_queued_at`), and a second `UPDATE` records the attempt (`ga4_purchase_attempted_at`)
+before the request goes on the wire, so a worker killed between GA4 accepting the event and the
+result being written cannot run again and send the sale twice. Either mark is given back only when
+GA4 certainly did not receive the event, which is what `Ga4NotDeliveredError` means in
+`apps/integrations/ga4.py` — only a connection that was never opened counts as that; a connection
+lost after the body was sent does not. A read that timed out leaves the marks in place and an error
+in the log naming the order, for someone to reconcile by hand. `ga4_purchase_sent_at` is set only
+after GA4 has accepted the event. All three are visible, read-only, under **Analytics** on the
+order in the admin.
+
+Retries run 1, 5 and 30 minutes apart. After that, and for a purchase paid while GA4 was not yet
+configured, the hourly `send_pending_ga4_purchases` job offers the order again — but only if its
+claim was given back, so an attempt whose outcome GA4 never confirmed is left alone for good.
 
 A 2xx from the Measurement Protocol is not proof that an event was understood — it answers 204 to
 payloads it silently discards. Google's debug endpoint is the only thing that says a payload is

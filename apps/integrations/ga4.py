@@ -51,9 +51,11 @@ def _post(payload: dict) -> requests.Response:
             timeout=TIMEOUT,
             allow_redirects=False,
         )
+    except requests.ConnectTimeout as error:
+        raise Ga4NotDeliveredError("GA4 could not be reached") from error
     except requests.ReadTimeout as error:
         raise Ga4UnconfirmedError("GA4 did not answer in time") from error
-    except (requests.ConnectionError, requests.ConnectTimeout) as error:
-        raise Ga4NotDeliveredError("GA4 could not be reached") from error
+    except requests.ConnectionError as error:
+        raise Ga4UnconfirmedError("The connection to GA4 was lost") from error
     except requests.RequestException as error:
         raise Ga4UnconfirmedError("The GA4 request failed") from error

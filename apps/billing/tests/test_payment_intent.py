@@ -290,3 +290,11 @@ class TestAnalyticsFields:
         assert second.data["order_id"] == first.data["order_id"]
         order = Order.objects.get()
         assert (order.ga_client_id, order.analytics_consent) == (self.CLIENT_ID, True)
+
+    def test_a_retry_with_a_new_client_id_does_not_reuse_the_earlier_consent_answer(self, signed_in, package, stripe):
+        start(signed_in, package, ga_client_id=self.CLIENT_ID, ga_session_id="1764000000", analytics_consent=True)
+
+        start(signed_in, package, ga_client_id="999999999.1")
+
+        order = Order.objects.get()
+        assert (order.ga_client_id, order.ga_session_id, order.analytics_consent) == ("999999999.1", "", None)

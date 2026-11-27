@@ -204,6 +204,11 @@ class Order(TimestampedModel):
         blank=True,
         help_text="When the GA4 purchase event was claimed for delivery. Not proof that it was sent.",
     )
+    ga4_purchase_attempted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the purchase event was last put on the wire. Cleared only if GA4 certainly missed it.",
+    )
     ga4_purchase_sent_at = models.DateTimeField(
         null=True,
         blank=True,
